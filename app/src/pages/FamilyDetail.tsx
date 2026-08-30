@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router";
-import type { FamilyDto, PersonDto } from "@shared";
+import type { FamilyDto, PersonDto, PersonSummaryDto } from "@shared";
 import { api } from "../lib/api";
 import { useMe } from "../context/MeContext";
 import { PersonCard } from "../components/PersonCard";
@@ -8,6 +8,7 @@ import { PhotoUpload } from "../components/PhotoUpload";
 import { Avatar } from "../components/Avatar";
 import {
   Button,
+  ConfirmDialog,
   EmptyState,
   ErrorNotice,
   Field,
@@ -36,6 +37,10 @@ export function FamilyDetail() {
   const [busy, setBusy] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState("");
+  const [removing, setRemoving] = useState<PersonSummaryDto | null>(null);
+  const [addingExisting, setAddingExisting] = useState(false);
+
+  const myPersonId = me?.appUser.personId ?? null;
 
   const load = useCallback(async () => {
     if (!id) return;
@@ -56,9 +61,12 @@ export function FamilyDetail() {
     void load();
   }, [load]);
 
+  // Deliberately not an early return on `error`: a failed mutation must not
+  // replace the whole page with a notice and lose the family being worked on.
   if (loading) return <Spinner label="Loading family" />;
-  if (error) return <ErrorNotice message={error} onRetry={() => void load()} />;
-  if (!family) return null;
+  if (!family) {
+    return error ? <ErrorNotice message={error} onRetry={() => void load()} /> : null;
+  }
 
   async function addMember(): Promise<void> {
     setBusy(true);
@@ -85,6 +93,22 @@ export function FamilyDetail() {
     await reloadMe();
   }
 
+  async function removeMember(member: PersonSummaryDto): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/families/${family!.id}/members/${member.id}`, { method: "DELETE" });
+      setRemoving(null);
+      await load();
+      // Leaving changes what the caller may edit, here and everywhere else.
+      if (member.id === myPersonId) await reloadMe();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not remove them");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function requestToJoin(): Promise<void> {
     setBusy(true);
     try {
@@ -108,14 +132,17 @@ export function FamilyDetail() {
             {family.canEdit && (
               <>
                 <Button variant="secondary" onClick={() => setAddingMember(true)}>
-                  Add a family member
+                  Create a new person
+                </Button>
+                <Button variant="secondary" onClick={() => setAddingExisting(true)}>
+                  Add an existing person
                 </Button>
                 <Button variant="ghost" onClick={() => setRenaming(true)}>
                   Rename
                 </Button>
               </>
             )}
-            {!family.isMember && !family.canEdit && me?.appUser.personId && (
+            {!family.isMember && !family.canEdit && myPersonId && (
               <Button onClick={() => void requestToJoin()} disabled={busy}>
                 Ask to join this family
               </Button>
@@ -153,6 +180,9 @@ export function FamilyDetail() {
         )}
       </div>
 
+      {/* A failed mutation reports here rather than replacing the page. */}
+      {error && <ErrorNotice message={error} />}
+
       {family.pendingJoinRequests.length > 0 && (
         <section className="mb-6 rounded-lg border border-accent/40 bg-accent/5 p-4">
           <h2 className="mb-3 font-bold text-ink">Waiting to join</h2>
@@ -180,8 +210,17 @@ export function FamilyDetail() {
       ) : (
         <ul className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
           {family.members.map((member) => (
-            <li key={member.id}>
+            <li key={member.id} className="flex flex-col gap-1">
               <PersonCard person={member} />
+              {family.canEdit && (
+                <button
+                  type="button"
+                  className="tap-target self-end text-sm font-bold text-primary hover:text-accent"
+                  onClick={() => setRemoving(member)}
+                >
+                  {member.id === myPersonId ? "Leave this family" : "Remove from family"}
+                </button>
+              )}
             </li>
           ))}
         </ul>
@@ -264,6 +303,146 @@ export function FamilyDetail() {
           </form>
         </Modal>
       )}
+
+      {removing && (
+        <ConfirmDialog
+          title={removing.id === myPersonId ? "Leave this family?" : "Remove from family?"}
+          confirmLabel={removing.id === myPersonId ? "Leave" : "Remove"}
+          busy={busy}
+          onConfirm={() => void removeMember(removing)}
+          onClose={() => setRemoving(null)}
+        >
+          {removing.id === myPersonId ? (
+            <>
+              You will leave the {family.name} family. Any details you share with them will be
+              cleared, and you will have to ask to join again.
+            </>
+          ) : removing.appUserId ? (
+            <>
+              {removing.firstName} will be removed from the {family.name} family and any details
+              they share with relatives will be cleared. They can ask to join again.
+            </>
+          ) : (
+            <>
+              {removing.firstName} has no account of their own. Removing them clears any details
+              they share with the family — they will have no family until someone adds them back.
+            </>
+          )}
+        </ConfirmDialog>
+      )}
+
+      {addingExisting && (
+        <AddExistingMemberModal
+          familyId={family.id}
+          familyName={family.name}
+          onClose={() => setAddingExisting(false)}
+          onAdded={async () => {
+            setAddingExisting(false);
+            await load();
+          }}
+        />
+      )}
     </>
+  );
+}
+
+/**
+ * Adds someone already in the directory who has no family. Only people without
+ * an account appear: anyone with one joins by asking, which is the whole point
+ * of the request flow.
+ */
+function AddExistingMemberModal({
+  familyId,
+  familyName,
+  onClose,
+  onAdded,
+}: {
+  familyId: string;
+  familyName: string;
+  onClose: () => void;
+  onAdded: () => Promise<void>;
+}) {
+  const [candidates, setCandidates] = useState<{ id: string; name: string }[] | null>(null);
+  const [personId, setPersonId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    void (async () => {
+      try {
+        const { candidates: loaded } = await api<{ candidates: { id: string; name: string }[] }>(
+          `/families/${familyId}/candidates`
+        );
+        setCandidates(loaded);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Could not load people");
+        setCandidates([]);
+      }
+    })();
+  }, [familyId]);
+
+  async function submit(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/families/${familyId}/members`, { method: "POST", body: { personId } });
+      await onAdded();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not add them");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Add an existing person" onClose={onClose}>
+      {candidates === null ? (
+        <Spinner label="Loading people" />
+      ) : candidates.length === 0 ? (
+        <EmptyState title="Nobody to add">
+          Everyone in the directory without an account already belongs to a family.
+        </EmptyState>
+      ) : (
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <p className="text-ink-muted">
+            Someone already in the directory who has no family, such as a person removed from{" "}
+            {familyName} by mistake.
+          </p>
+          <Field label="Person">
+            <select
+              className={inputClass}
+              value={personId}
+              onChange={(event) => setPersonId(event.target.value)}
+            >
+              <option value="">Choose someone</option>
+              {candidates.map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>
+                  {candidate.name}
+                </option>
+              ))}
+            </select>
+          </Field>
+          {error && (
+            <p role="alert" className="font-bold text-primary">
+              {error}
+            </p>
+          )}
+          <div className="flex flex-col gap-2 sm:flex-row">
+            <Button type="submit" disabled={busy || personId === ""}>
+              {busy ? "Adding…" : "Add"}
+            </Button>
+            <Button variant="ghost" onClick={onClose} disabled={busy}>
+              Cancel
+            </Button>
+          </div>
+        </form>
+      )}
+    </Modal>
   );
 }

@@ -42,6 +42,8 @@ interface FormState {
   postalCode: string;
   country: string;
   patronSaint: string;
+  /** "" means no family. Only ever edited when `families` is supplied. */
+  familyId: string;
   inherit: Record<InheritableAttribute, string | null>;
 }
 
@@ -62,6 +64,7 @@ function initialState(person: PersonDto): FormState {
     postalCode: person.inheritedFrom.address ? "" : (person.postalCode ?? ""),
     country: person.inheritedFrom.address ? "" : (person.country ?? ""),
     patronSaint: person.patronSaint ?? "",
+    familyId: person.familyId ?? "",
     inherit: {
       email: person.inheritedFrom.email?.personId ?? null,
       phone: person.inheritedFrom.phone?.personId ?? null,
@@ -80,11 +83,18 @@ function formatInherited(phone: string | null | undefined): string {
 export function PersonForm({
   person,
   familyMembers,
+  families,
   onSaved,
   onCancel,
 }: {
   person: PersonDto;
   familyMembers: PersonSummaryDto[];
+  /**
+   * Supplying this shows the family picker. Only admins may move someone
+   * between families, and that gate lives at the call site so this component
+   * stays driven purely by props.
+   */
+  families?: { id: string; name: string }[];
   onSaved: (updated: PersonDto) => void;
   onCancel?: () => void;
 }) {
@@ -95,6 +105,15 @@ export function PersonForm({
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
+
+  /*
+   * Inheritance is validated against the *destination* family, so a move and a
+   * set of pointers cannot travel in one request: the API would reject every
+   * source as "not in the same family", or refuse the lot with "join a family
+   * before inheriting". The move drops them anyway, so the form does the same
+   * and says so.
+   */
+  const movingFamily = families !== undefined && form.familyId !== (person.familyId ?? "");
 
   /*
    * Which family members already inherit which attribute. Offering them as a
@@ -150,11 +169,14 @@ export function PersonForm({
             country: form.country,
           }),
       patronSaint: form.patronSaint,
-      inheritEmailFromPersonId: form.inherit.email,
-      inheritPhoneFromPersonId: form.inherit.phone,
-      inheritAltPhoneFromPersonId: form.inherit.altPhone,
-      inheritLastNameFromPersonId: form.inherit.lastName,
-      inheritAddressFromPersonId: form.inherit.address,
+      inheritEmailFromPersonId: movingFamily ? null : form.inherit.email,
+      inheritPhoneFromPersonId: movingFamily ? null : form.inherit.phone,
+      inheritAltPhoneFromPersonId: movingFamily ? null : form.inherit.altPhone,
+      inheritLastNameFromPersonId: movingFamily ? null : form.inherit.lastName,
+      inheritAddressFromPersonId: movingFamily ? null : form.inherit.address,
+      // Absent unless the picker is shown, because the API treats the key being
+      // present as an instruction to move.
+      ...(families ? { familyId: form.familyId || null } : {}),
     };
 
     // Validate with the API's own schema before the round trip.
@@ -232,6 +254,30 @@ export function PersonForm({
         </Field>
       </div>
 
+      {families && (
+        <Field
+          label="Family"
+          hint={
+            movingFamily
+              ? "Save the move first, then choose who they share details with."
+              : "Moving someone clears the details they share with their current family, and the details their relatives share from them."
+          }
+        >
+          <select
+            className={inputClass}
+            value={form.familyId}
+            onChange={(e) => set("familyId", e.target.value)}
+          >
+            <option value="">No family</option>
+            {families.map((family) => (
+              <option key={family.id} value={family.id}>
+                {family.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      )}
+
       <div className="grid gap-4 md:grid-cols-2">
         <div>
           <InheritToggle
@@ -240,6 +286,7 @@ export function PersonForm({
             candidates={candidatesFor("lastName")}
             sourceId={form.inherit.lastName}
             onChange={(id) => set("inherit", { ...form.inherit, lastName: id })}
+            disabled={movingFamily}
           />
           <Field
             label="Last name"
@@ -264,6 +311,7 @@ export function PersonForm({
             candidates={candidatesFor("email")}
             sourceId={form.inherit.email}
             onChange={(id) => set("inherit", { ...form.inherit, email: id })}
+            disabled={movingFamily}
           />
           <Field
             label="Email"
@@ -291,6 +339,7 @@ export function PersonForm({
             candidates={candidatesFor("phone")}
             sourceId={form.inherit.phone}
             onChange={(id) => set("inherit", { ...form.inherit, phone: id })}
+            disabled={movingFamily}
           />
           <Field
             label="Phone"
@@ -326,6 +375,7 @@ export function PersonForm({
             candidates={candidatesFor("altPhone")}
             sourceId={form.inherit.altPhone}
             onChange={(id) => set("inherit", { ...form.inherit, altPhone: id })}
+            disabled={movingFamily}
           />
           <Field
             label="Alternate phone"
@@ -358,6 +408,7 @@ export function PersonForm({
           candidates={candidatesFor("address")}
           sourceId={form.inherit.address}
           onChange={(id) => set("inherit", { ...form.inherit, address: id })}
+          disabled={movingFamily}
         />
 
         {form.inherit.address ? (

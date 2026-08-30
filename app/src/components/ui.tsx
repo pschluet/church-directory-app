@@ -151,6 +151,43 @@ export function Modal({
   );
 }
 
+/**
+ * A modal that asks before doing something that cannot be undone from the same
+ * screen. Pass the consequence as children -- "Are you sure?" on its own tells
+ * nobody anything.
+ */
+export function ConfirmDialog({
+  title,
+  confirmLabel = "Confirm",
+  busy = false,
+  onConfirm,
+  onClose,
+  children,
+}: {
+  title: string;
+  confirmLabel?: string;
+  busy?: boolean;
+  onConfirm: () => void;
+  onClose: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <Modal title={title} onClose={onClose}>
+      <div className="space-y-4">
+        <div className="text-ink-muted">{children}</div>
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button variant="danger" onClick={onConfirm} disabled={busy}>
+            {busy ? "Working…" : confirmLabel}
+          </Button>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
 export function Badge({
   children,
   tone = "neutral",

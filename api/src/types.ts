@@ -140,6 +140,29 @@ export const familyWriteSchema = z.object({
 });
 export type FamilyWrite = z.infer<typeof familyWriteSchema>;
 
+/**
+ * Creating is the write schema plus a choice the rename does not have: whether
+ * the creator joins. `join: false` lets an admin set a family up for someone
+ * else, so the invite form has something to point at.
+ */
+export const familyCreateSchema = familyWriteSchema.extend({
+  join: z.boolean().default(true),
+});
+export type FamilyCreate = z.infer<typeof familyCreateSchema>;
+
+export const familyMemberSchema = z.object({ personId: uuidSchema });
+
+/** A row in the families list. */
+export interface FamilySummaryDto {
+  id: string;
+  name: string;
+  memberCount: number;
+  /** A few member names, so same-named families can be told apart. */
+  memberNames: string[];
+  /** The caller's own undecided request to join this family, if any. */
+  pendingJoinRequestId: string | null;
+}
+
 export interface FamilyDto {
   id: string;
   organizationId: string;

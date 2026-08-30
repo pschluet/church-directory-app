@@ -24,6 +24,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Directory" },
   { to: "/search", label: "Search" },
   { to: "/dates", label: "Special Dates" },
+  { to: "/families", label: "Families" },
   { to: "/me", label: "My Details" },
   { to: "/admin/users", label: "People & Accounts", adminOnly: true },
   { to: "/admin/organizations", label: "Churches", superAdminOnly: true },

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
-import type { FamilyDto, PersonDto, PersonSummaryDto } from "@shared";
+import type { FamilyDto, FamilySummaryDto, PersonDto, PersonSummaryDto } from "@shared";
 import { api } from "../lib/api";
+import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
 import { PersonForm } from "../components/PersonForm";
 import { PhoneLink } from "../components/PhoneLink";
@@ -23,8 +24,10 @@ import {
  */
 export function PersonDetail() {
   const { id } = useParams<{ id: string }>();
+  const { isAdmin } = useMe();
   const [person, setPerson] = useState<PersonDto | null>(null);
   const [family, setFamily] = useState<FamilyDto | null>(null);
+  const [families, setFamilies] = useState<FamilySummaryDto[]>([]);
   const [directory, setDirectory] = useState<PersonSummaryDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -41,7 +44,7 @@ export function PersonDetail() {
       setPerson(loaded);
       // The family is needed for the inheritance pickers; the directory for
       // choosing the other half of an anniversary.
-      const [familyResult, directoryResult] = await Promise.all([
+      const [familyResult, directoryResult, familyListResult] = await Promise.all([
         loaded.familyId
           ? api<FamilyDto>(`/families/${loaded.familyId}`).catch(() => null)
           : Promise.resolve(null),
@@ -50,15 +53,21 @@ export function PersonDetail() {
               () => ({ people: [] })
             )
           : Promise.resolve({ people: [] }),
+        // Only an admin may move someone between families, so only they need
+        // a list to choose from.
+        isAdmin
+          ? api<{ families: FamilySummaryDto[] }>("/families").catch(() => ({ families: [] }))
+          : Promise.resolve({ families: [] }),
       ]);
       setFamily(familyResult);
       setDirectory(directoryResult.people);
+      setFamilies(familyListResult.families);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load that person");
     } finally {
       setLoading(false);
     }
-  }, [id]);
+  }, [id, isAdmin]);
 
   useEffect(() => {
     void load();
@@ -227,10 +236,13 @@ export function PersonDetail() {
           <PersonForm
             person={person}
             familyMembers={family?.members ?? []}
+            families={isAdmin ? families : undefined}
             onCancel={() => setEditing(false)}
             onSaved={(updated) => {
               setPerson(updated);
               setEditing(false);
+              // A move changes which relatives the inheritance pickers offer.
+              if (updated.familyId !== person.familyId) void load();
             }}
           />
         </Modal>

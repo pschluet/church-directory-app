@@ -6,6 +6,7 @@ import {
   createNonUserPerson,
   createOrganization,
   createUser,
+  setInheritance,
   type CreatedUser,
 } from "./helpers/fixtures";
 
@@ -310,6 +311,97 @@ describe.skipIf(!hasDb)("authorization", () => {
         slug: "holy-trinity",
       });
       expect(status).toBe(409);
+    });
+  });
+
+  /**
+   * Removing a member authorises the family, so the person id has to be checked
+   * separately -- clearInheritanceFor runs before the family-scoped update and
+   * is keyed on the person alone. Without the membership check, a member of any
+   * family could name a stranger and wipe their inheritance.
+   */
+  describe("removing a family member", () => {
+    const INHERIT_COLUMNS = [
+      "inherit_email_from_person_id",
+      "inherit_phone_from_person_id",
+      "inherit_alt_phone_from_person_id",
+      "inherit_last_name_from_person_id",
+      "inherit_address_from_person_id",
+    ].join(", ");
+
+    async function pointers(personId: string): Promise<Record<string, string | null>> {
+      const { rows } = await db().query(`select ${INHERIT_COLUMNS} from persons where id = $1`, [
+        personId,
+      ]);
+      return rows[0] as Record<string, string | null>;
+    }
+
+    it("will not let a member wipe the inheritance of someone in another parish", async () => {
+      const familyB = await createFamily(db(), orgB, "Georgiev");
+      const parent = await createNonUserPerson(db(), {
+        organizationId: orgB,
+        familyId: familyB,
+        firstName: "Boris",
+      });
+      const victim = await createNonUserPerson(db(), {
+        organizationId: orgB,
+        familyId: familyB,
+        firstName: "Elena",
+      });
+      const dependant = await createNonUserPerson(db(), {
+        organizationId: orgB,
+        familyId: familyB,
+        firstName: "Ivan",
+      });
+      await setInheritance(db(), victim, { lastName: parent, address: parent });
+      await setInheritance(db(), dependant, { lastName: victim });
+
+      const { status } = await as(user).call(
+        "DELETE",
+        `/api/families/${familyA}/members/${victim}`
+      );
+      expect(status).toBe(404);
+
+      // Both directions must survive: the victim's own pointers, and the
+      // pointer aimed at them from someone else in their family.
+      expect(await pointers(victim)).toMatchObject({
+        inherit_last_name_from_person_id: parent,
+        inherit_address_from_person_id: parent,
+      });
+      expect(await pointers(dependant)).toMatchObject({
+        inherit_last_name_from_person_id: victim,
+      });
+    });
+
+    it("will not let a member wipe the inheritance of another family in their own parish", async () => {
+      const head = await createNonUserPerson(db(), {
+        organizationId: orgA,
+        familyId: otherFamilyA,
+        firstName: "Dimitri",
+      });
+      const victim = await createNonUserPerson(db(), {
+        organizationId: orgA,
+        familyId: otherFamilyA,
+        firstName: "Sofia",
+      });
+      await setInheritance(db(), victim, { lastName: head });
+
+      const { status } = await as(user).call(
+        "DELETE",
+        `/api/families/${familyA}/members/${victim}`
+      );
+      expect(status).toBe(404);
+      expect(await pointers(victim)).toMatchObject({
+        inherit_last_name_from_person_id: head,
+      });
+    });
+
+    it("404s on a person who does not exist rather than reporting success", async () => {
+      const { status } = await as(user).call(
+        "DELETE",
+        `/api/families/${familyA}/members/00000000-0000-0000-0000-000000000000`
+      );
+      expect(status).toBe(404);
     });
   });
 });

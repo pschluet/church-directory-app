@@ -4,6 +4,29 @@ import { clearInheritanceFor } from "./inheritance";
 import type { OrganizationMoveDto } from "../types";
 
 /**
+ * Cancels a person's undecided requests to join a family, optionally sparing
+ * one -- the family they are joining right now.
+ *
+ * `family_join_requests_decided_consistently` requires `decided_at` to be set
+ * in the same statement that moves the status off PENDING, so this cannot be
+ * split into a plain status update.
+ */
+export async function cancelPendingJoinRequests(
+  q: Queryable,
+  personId: string,
+  exceptFamilyId?: string | null
+): Promise<void> {
+  await q.query(
+    `update family_join_requests
+        set status = 'CANCELLED', decided_at = now()
+      where person_id = $1
+        and status = 'PENDING'
+        and ($2::uuid is null or family_id <> $2)`,
+    [personId, exceptFamilyId ?? null]
+  );
+}
+
+/**
  * Which parish an account belongs to, and keeping its directory record in step.
  *
  * This exists because an account's parish and its `persons` row have to move
@@ -121,12 +144,7 @@ export async function setAccountOrganization(
 
     // Family membership is parish-scoped, so it cannot survive the move.
     await tx.query("update persons set family_id = null where id = $1", [personId]);
-    await tx.query(
-      `update family_join_requests
-          set status = 'CANCELLED', decided_at = now()
-        where person_id = $1 and status = 'PENDING'`,
-      [personId]
-    );
+    await cancelPendingJoinRequests(tx, personId);
 
     // Don't leave a family in the old parish pointing at them as its creator.
     await tx.query(

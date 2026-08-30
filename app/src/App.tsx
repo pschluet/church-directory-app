@@ -9,6 +9,7 @@ import { Search } from "./pages/Search";
 import { UpcomingDates } from "./pages/UpcomingDates";
 import { PersonDetail } from "./pages/PersonDetail";
 import { MyDetails } from "./pages/MyDetails";
+import { Families } from "./pages/Families";
 import { FamilyDetail } from "./pages/FamilyDetail";
 import { AdminUsers } from "./pages/AdminUsers";
 import { AdminOrganizations } from "./pages/AdminOrganizations";
@@ -48,6 +49,7 @@ function SignedInRoutes() {
         <Route path="dates" element={<UpcomingDates />} />
         <Route path="people/:id" element={<PersonDetail />} />
         <Route path="me" element={<MyDetails />} />
+        <Route path="families" element={<Families />} />
         <Route path="families/:id" element={<FamilyDetail />} />
         <Route
           path="admin/users"
