@@ -124,7 +124,7 @@ permissions_policy=$(cat <<JSON
     {
       "Sid": "RunTheMigrationTask",
       "Effect": "Allow",
-      "Action": ["ecs:RunTask", "ecs:DescribeTasks", "ecs:DescribeTaskDefinition"],
+      "Action": ["ecs:RunTask", "ecs:DescribeTasks"],
       "Resource": [
         "arn:aws:ecs:${REGION}:${ACCOUNT_ID}:task-definition/${STACK_NAME}*:*",
         "arn:aws:ecs:${REGION}:${ACCOUNT_ID}:task/${STACK_NAME}*/*"

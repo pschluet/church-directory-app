@@ -109,10 +109,10 @@ jobs:
             --query 'tasks[0].stoppedReason' --output text)
 
           # Flyway's own output is the only useful diagnostic when a migration
-          # fails, so surface it either way.
-          LOG_GROUP=$(aws ecs describe-task-definition --task-definition "$TASK_DEF" \
-            --query 'taskDefinition.containerDefinitions[0].logConfiguration.options."awslogs-group"' \
-            --output text)
+          # fails, so surface it either way. The log group comes from the stack
+          # outputs rather than from ecs:DescribeTaskDefinition, which AWS does
+          # not allow to be scoped to a resource.
+          LOG_GROUP=$(read_output MigrationLogGroup)
           TASK_ID="${TASK_ARN##*/}"
           aws logs get-log-events \
             --log-group-name "$LOG_GROUP" \

@@ -264,6 +264,12 @@ describe("ChurchDirectoryStack", () => {
       });
     });
 
+    it("publishes its log group, so the workflow needs no DescribeTaskDefinition", () => {
+      // ecs:DescribeTaskDefinition cannot be scoped to a resource, so looking
+      // the log group up at deploy time would mean granting it on "*".
+      template.hasOutput("MigrationLogGroup", {});
+    });
+
     it("takes the database credentials from Secrets Manager, not the task definition", () => {
       const tasks = template.findResources("AWS::ECS::TaskDefinition");
       const container = (

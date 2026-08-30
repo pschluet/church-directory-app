@@ -347,11 +347,16 @@ export class ChurchDirectoryStack extends Stack {
       },
     });
 
+    const migrationLogGroup = new logs.LogGroup(this, "MigrationLogs", {
+      retention: logs.RetentionDays.ONE_MONTH,
+      removalPolicy: RemovalPolicy.DESTROY,
+    });
+
     migrationTask.addContainer("flyway", {
       image: ecs.ContainerImage.fromDockerImageAsset(migrationImage),
       logging: ecs.LogDrivers.awsLogs({
         streamPrefix: "flyway",
-        logRetention: logs.RetentionDays.ONE_MONTH,
+        logGroup: migrationLogGroup,
       }),
       environment: {
         FLYWAY_URL: `jdbc:postgresql://${database.dbInstanceEndpointAddress}:${database.dbInstanceEndpointPort}/${DB_NAME}`,
@@ -504,5 +509,8 @@ function handler(event) {
     new CfnOutput(this, "MigrationSecurityGroupId", {
       value: migrationSecurityGroup.securityGroupId,
     });
+    // So the deploy workflow can print Flyway's output without needing
+    // ecs:DescribeTaskDefinition, which AWS does not allow to be scoped.
+    new CfnOutput(this, "MigrationLogGroup", { value: migrationLogGroup.logGroupName });
   }
 }
