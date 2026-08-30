@@ -388,10 +388,24 @@ export class ChurchDirectoryStack extends Stack {
       defaultAuthorizer: authorizer,
     });
 
+    const apiIntegration = new HttpLambdaIntegration("ApiIntegration", apiFn);
+
     httpApi.addRoutes({
       path: "/api/{proxy+}",
       methods: [apigwv2.HttpMethod.ANY],
-      integration: new HttpLambdaIntegration("ApiIntegration", apiFn),
+      integration: apiIntegration,
+    });
+
+    // The health check has to opt out of the authorizer here, not in the Hono
+    // app: with a default authorizer on the API, API Gateway rejects the
+    // request before the Lambda ever runs, so an in-code exemption is dead
+    // code. A specific static path takes precedence over the greedy proxy
+    // route, so this wins for GET /api/health.
+    httpApi.addRoutes({
+      path: "/api/health",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: apiIntegration,
+      authorizer: new apigwv2.HttpNoneAuthorizer(),
     });
 
     // -------------------------------------------------------------------

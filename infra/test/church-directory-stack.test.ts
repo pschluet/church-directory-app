@@ -202,6 +202,24 @@ describe("ChurchDirectoryStack", () => {
     });
   });
 
+  describe("HTTP API", () => {
+    it("leaves the health check unauthenticated at the gateway, not just in code", () => {
+      // With a default authorizer, API Gateway rejects before the Lambda runs,
+      // so exempting a path inside the Hono app alone would never take effect.
+      const routes = template.findResources("AWS::ApiGatewayV2::Route");
+      const health = Object.values(routes).find(
+        (r) => (r.Properties as { RouteKey?: string }).RouteKey === "GET /api/health"
+      );
+      expect(health).toBeDefined();
+      expect((health!.Properties as { AuthorizationType?: string }).AuthorizationType).toBe("NONE");
+
+      const proxy = Object.values(routes).find(
+        (r) => (r.Properties as { RouteKey?: string }).RouteKey === "ANY /api/{proxy+}"
+      );
+      expect((proxy!.Properties as { AuthorizationType?: string }).AuthorizationType).toBe("JWT");
+    });
+  });
+
   describe("CloudFront", () => {
     it("rewrites SPA deep links on the default behaviour only", () => {
       // A distribution-wide custom error response would also rewrite genuine

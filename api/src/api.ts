@@ -72,9 +72,11 @@ export function createApp(queryable?: Queryable) {
     return c.json({ error: "Something went wrong" }, 500);
   });
 
-  // Unauthenticated: used by the CD workflow and for a quick "is it up" check.
-  // Listed explicitly rather than relying on being registered before the
-  // middleware, so the exemption cannot be broken by reordering.
+  // Unauthenticated "is it up" check. The exemption that actually matters is
+  // on the API Gateway route (see the HttpNoneAuthorizer in
+  // infra/lib/church-directory-stack.ts) -- with a default authorizer on the
+  // API, anything rejected there never reaches this Lambda. This list keeps
+  // the local server, which has no gateway in front of it, consistent.
   const PUBLIC_PATHS = new Set(["/api/health"]);
   const auth = authMiddleware(queryable);
   app.use("/api/*", async (c, next) => {
