@@ -53,6 +53,23 @@ describe("ChurchDirectoryStack", () => {
       expect(Object.keys(routes)).toHaveLength(2);
     });
 
+    it("lets the API security group out over IPv6", () => {
+      // `allowAllOutbound: true` only emits the 0.0.0.0/0 rule. Without the
+      // ::/0 companion the Lambda reaches the database and the S3 gateway
+      // endpoint but nothing outside the VPC, because Cognito and SES are both
+      // reached over IPv6 -- an invite then hangs until the function times out.
+      const apiGroups = template.findResources("AWS::EC2::SecurityGroup", {
+        Properties: { GroupDescription: Match.stringLikeRegexp("API Lambda$") },
+      });
+      expect(Object.keys(apiGroups)).toHaveLength(1);
+      const egress = (
+        Object.values(apiGroups)[0].Properties as { SecurityGroupEgress: Record<string, unknown>[] }
+      ).SecurityGroupEgress;
+      expect(egress).toEqual(
+        expect.arrayContaining([expect.objectContaining({ CidrIpv6: "::/0", IpProtocol: "-1" })])
+      );
+    });
+
     it("has a free S3 gateway endpoint, since s3 has no IPv6 endpoint", () => {
       template.hasResourceProperties("AWS::EC2::VPCEndpoint", {
         VpcEndpointType: "Gateway",

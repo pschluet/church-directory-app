@@ -57,12 +57,12 @@ export class ChurchDirectoryStack extends Stack {
     // AWS SDK reaches it over IPv6 with no endpoint override needed.
     //
     // The catch, and the reason for the S3 gateway endpoint below: sts, s3 and
-    // ses are IPv4-only on their standard endpoints. Nothing here needs STS
-    // (Lambda credentials come from the runtime's link-local endpoint) or SES
-    // (Cognito sends the invitation and OTP emails itself), and presigning an
-    // S3 URL is a local signature. Real S3 calls -- deleting a replaced photo
-    // -- go over IPv4 through the gateway endpoint, which works without NAT
-    // because the ENI still has an IPv4 address in its subnet.
+    // ses are IPv4-only on their *standard* endpoints. Nothing here needs STS
+    // (Lambda credentials come from the runtime's link-local endpoint); SES has
+    // a dual-stack endpoint the client opts into (see api/src/email.ts); and
+    // presigning an S3 URL is a local signature. Real S3 calls -- deleting a
+    // replaced photo -- go over IPv4 through the gateway endpoint, which works
+    // without NAT because the ENI still has an IPv4 address in its subnet.
     //
     // If a future feature needs an AWS API that has no IPv6 endpoint, add an
     // interface endpoint for it rather than reaching for NAT.
@@ -237,7 +237,13 @@ export class ChurchDirectoryStack extends Stack {
     const apiSecurityGroup = new ec2.SecurityGroup(this, "ApiSecurityGroup", {
       vpc,
       description: "API Lambda",
+      // Both, and the IPv6 one is not optional: `allowAllOutbound` emits only
+      // the 0.0.0.0/0 egress rule, which covers the database and the S3
+      // gateway endpoint but silently drops every packet to Cognito and SES --
+      // the two calls that leave the VPC, and both of them over IPv6. The
+      // symptom is an invite that hangs until the function times out.
       allowAllOutbound: true,
+      allowAllIpv6Outbound: true,
     });
     dbSecurityGroup.addIngressRule(apiSecurityGroup, ec2.Port.tcp(5432), "API Lambda to Postgres");
 
