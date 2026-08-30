@@ -6,6 +6,7 @@ import { audit } from "../audit";
 import { assertCanGrantRole } from "../services/access";
 import { createInvitedUser, setUserEnabled, updateUserEmail } from "../cognito";
 import { sendInvitationEmail } from "../email";
+import { setAccountOrganization } from "../services/membership";
 import {
   fullName,
   inviteUserSchema,
@@ -228,6 +229,19 @@ routes.patch("/users/:id", async (c) => {
       message: "Only a super admin can move someone between organizations",
     });
   }
+  // Only super admins may be parish-less, so demoting one requires giving them
+  // a parish in the same request. Without this the CHECK constraint rejects the
+  // write and the caller gets an unexplained 400.
+  if (
+    payload.role &&
+    payload.role !== "SUPER_ADMIN" &&
+    target.role === "SUPER_ADMIN" &&
+    (payload.organizationId ?? target.organization_id) === null
+  ) {
+    throw new HTTPException(400, {
+      message: "Choose a church for this person before changing them from a super administrator",
+    });
+  }
   if (target.id === caller.appUserId && payload.status === "DISABLED") {
     throw new HTTPException(400, { message: "You cannot disable your own account" });
   }
@@ -242,13 +256,39 @@ routes.patch("/users/:id", async (c) => {
     sets.push(`status = $${values.length + 1}`);
     values.push(payload.status);
   }
-  if (payload.organizationId !== undefined) {
-    sets.push(`organization_id = $${values.length + 1}`);
-    values.push(payload.organizationId);
+  if (payload.organizationId === null && target.organization_id !== null) {
+    // Only a super admin may be parish-less, and their record would then be
+    // orphaned in a parish they no longer belong to.
+    throw new HTTPException(400, {
+      message: "An account cannot be removed from its church; move it to another one instead",
+    });
   }
-  if (sets.length > 0) {
-    await db.query(`update app_users set ${sets.join(", ")} where id = $1`, values);
-  }
+
+  let move: Awaited<ReturnType<typeof setAccountOrganization>> | null = null;
+
+  // One transaction, and the church move goes first. Demoting a super admin who
+  // has no church only becomes legal once they have one, so applying `role`
+  // first would leave the row briefly violating
+  // app_users_org_required_unless_super_admin and fail the whole request.
+  //
+  // organization_id is deliberately absent from the SET list above: moving an
+  // account between parishes has to carry its directory record, its special
+  // dates and its family membership with it, which is setAccountOrganization's
+  // job.
+  await db.transaction(async (tx) => {
+    if (payload.organizationId != null && payload.organizationId !== target.organization_id) {
+      move = await setAccountOrganization(tx, {
+        appUserId: id,
+        organizationId: payload.organizationId,
+        names: payload.firstName
+          ? { firstName: payload.firstName, lastName: payload.lastName ?? null }
+          : undefined,
+      });
+    }
+    if (sets.length > 0) {
+      await tx.query(`update app_users set ${sets.join(", ")} where id = $1`, values);
+    }
+  });
 
   // Keep Cognito in step: a disabled account must not be able to sign in even
   // before our own 403 would kick in.
@@ -264,7 +304,9 @@ routes.patch("/users/:id", async (c) => {
   });
 
   const row = await one<AppUserRow>(db, `${APP_USER_SELECT} where u.id = $1`, [id]);
-  return c.json(row ? toAppUser(row) : { id });
+  // `move` is reported so the caller can tell the user what the move discarded
+  // -- an anniversary that cannot span parishes, in particular.
+  return c.json({ ...(row ? toAppUser(row) : { id }), ...(move ? { move } : {}) });
 });
 
 /**

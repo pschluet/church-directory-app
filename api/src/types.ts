@@ -300,8 +300,41 @@ export const updateUserSchema = z.object({
   role: roleSchema.optional(),
   status: userStatusSchema.optional(),
   organizationId: uuidSchema.nullable().optional(),
+  /**
+   * Only used when giving an organization to an account that has no directory
+   * record yet. An app_users row carries no name, so one has to be supplied
+   * rather than invented.
+   */
+  firstName: z.string().trim().min(1).max(100).optional(),
+  lastName: trimmedOptional(100),
 });
 export type UpdateUser = z.infer<typeof updateUserSchema>;
+
+/**
+ * A super admin adopting a home parish. They are the only role that chooses
+ * their own: a member must not be able to move themselves between parishes.
+ */
+export const setMyOrganizationSchema = z.object({
+  organizationId: uuidSchema,
+  firstName: z.string().trim().min(1, "First name is required").max(100),
+  lastName: trimmedOptional(100),
+});
+export type SetMyOrganization = z.infer<typeof setMyOrganizationSchema>;
+
+/** What changed when an account was moved to a different parish. */
+export interface OrganizationMoveDto {
+  personId: string;
+  /** True when the account had no directory record before. */
+  created: boolean;
+  /** The parish they left, or null if they had none. */
+  movedFrom: string | null;
+  /**
+   * Anniversaries removed because the other person stayed behind. An
+   * anniversary links two Persons and cannot span parishes, so the move has to
+   * discard it -- callers should say so rather than losing it quietly.
+   */
+  removedAnniversaries: number;
+}
 
 export interface AppUserDto {
   id: string;

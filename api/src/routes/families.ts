@@ -399,6 +399,26 @@ async function joinFamily(
   personId: string,
   familyId: string
 ): Promise<void> {
+  // A family belongs to one parish, and so does a person. Nothing in the
+  // schema ties the two together -- there is no composite foreign key -- so
+  // this is the only thing stopping a person being put into another parish's
+  // family. It matters most for a super admin, whose own record sits in their
+  // home parish while they may be viewing a different one.
+  const sameOrganization = await one<{ id: string }>(
+    q,
+    `select p.id
+       from persons p
+       join families f on f.id = $2
+      where p.id = $1
+        and p.organization_id = f.organization_id`,
+    [personId, familyId]
+  );
+  if (!sameOrganization) {
+    throw new HTTPException(400, {
+      message: "That family belongs to a different church",
+    });
+  }
+
   await clearInheritanceFor(q, personId);
   await q.query("update persons set family_id = $2 where id = $1", [personId, familyId]);
   // Any other outstanding requests from this person are moot now.

@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import type { MeDto } from "@shared";
-import { api, getActiveOrganizationId, setActiveOrganizationId } from "../lib/api";
+import { api, ApiError, getActiveOrganizationId, setActiveOrganizationId } from "../lib/api";
 
 /**
  * Who the signed-in person is, as far as the directory is concerned.
@@ -38,6 +38,23 @@ export function MeProvider({ children }: { children: ReactNode }) {
     try {
       setMe(await api<MeDto>("/me"));
     } catch (err) {
+      /*
+       * The organization a super admin was last viewing is remembered in
+       * localStorage and sent on every request. If that church is later deleted
+       * -- or the id simply belongs to another environment's database -- the API
+       * rightly refuses it, and the stored value then breaks every page with no
+       * way for the user to clear it. Drop it and try once more.
+       */
+      if (err instanceof ApiError && err.status === 404 && getActiveOrganizationId()) {
+        setActiveOrganizationId(null);
+        try {
+          setMe(await api<MeDto>("/me"));
+          setError(null);
+          return;
+        } catch {
+          // Fall through to the message below.
+        }
+      }
       setError(err instanceof Error ? err.message : "Could not load your account");
       setMe(null);
     } finally {

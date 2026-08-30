@@ -97,7 +97,14 @@ const SELECT_APP_USER = `
          p.id as person_id,
          p.family_id
     from app_users u
-    left join persons p on p.app_user_id = u.id and p.deleted_at is null
+    left join persons p
+      on p.app_user_id = u.id
+     and p.deleted_at is null
+     -- A person always sits in their account's own parish. Saying so here means
+     -- that if the two ever disagree, this fails closed (no personId, no
+     -- familyId) instead of quietly handing out a record scoped to the wrong
+     -- parish. api/src/services/membership.ts is what keeps them in step.
+     and p.organization_id = u.organization_id
 `;
 
 /**

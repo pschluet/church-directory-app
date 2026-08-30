@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
-import type { AppUserDto, Role } from "@shared";
+import type { AppUserDto, OrganizationDto, Role } from "@shared";
 import { api } from "../lib/api";
 import { useMe } from "../context/MeContext";
 import {
@@ -34,6 +34,8 @@ export function AdminUsers() {
   const { me, isSuperAdmin } = useMe();
   const [users, setUsers] = useState<AppUserDto[]>([]);
   const [families, setFamilies] = useState<{ id: string; name: string }[]>([]);
+  const [organizations, setOrganizations] = useState<{ id: string; name: string }[]>([]);
+  const [moving, setMoving] = useState<AppUserDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [inviting, setInviting] = useState(false);
@@ -42,14 +44,22 @@ export function AdminUsers() {
     setLoading(true);
     setError(null);
     try {
-      const [userResult, familyResult] = await Promise.all([
+      const [userResult, familyResult, organizationResult] = await Promise.all([
         api<{ users: AppUserDto[] }>("/admin/users"),
         api<{ families: { id: string; name: string }[] }>("/families").catch(() => ({
           families: [],
         })),
+        // Only a super admin may read this, and only they can move anyone
+        // between churches.
+        isSuperAdmin
+          ? api<{ organizations: OrganizationDto[] }>("/organizations", { withOrg: false }).catch(
+              () => ({ organizations: [] })
+            )
+          : Promise.resolve({ organizations: [] }),
       ]);
       setUsers(userResult.users);
       setFamilies(familyResult.families);
+      setOrganizations(organizationResult.organizations.map((o) => ({ id: o.id, name: o.name })));
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load accounts");
     } finally {
@@ -107,6 +117,7 @@ export function AdminUsers() {
                     isSelf={user.id === me?.appUser.id}
                     isSuperAdmin={isSuperAdmin}
                     onUpdate={update}
+                    onMove={setMoving}
                   />
                 </div>
               </li>
@@ -155,6 +166,7 @@ export function AdminUsers() {
                           isSelf={user.id === me?.appUser.id}
                           isSuperAdmin={isSuperAdmin}
                           onUpdate={update}
+                          onMove={setMoving}
                         />
                       </div>
                     </td>
@@ -169,10 +181,23 @@ export function AdminUsers() {
       {inviting && (
         <InviteModal
           families={families}
+          organizations={organizations}
           canInviteSuperAdmin={isSuperAdmin}
           onClose={() => setInviting(false)}
           onInvited={async () => {
             setInviting(false);
+            await load();
+          }}
+        />
+      )}
+
+      {moving && (
+        <MoveChurchModal
+          user={moving}
+          organizations={organizations}
+          onClose={() => setMoving(null)}
+          onMoved={async () => {
+            setMoving(null);
             await load();
           }}
         />
@@ -201,11 +226,13 @@ function UserActions({
   isSelf,
   isSuperAdmin,
   onUpdate,
+  onMove,
 }: {
   user: AppUserDto;
   isSelf: boolean;
   isSuperAdmin: boolean;
   onUpdate: (user: AppUserDto, body: Record<string, unknown>) => Promise<void>;
+  onMove: (user: AppUserDto) => void;
 }) {
   const canChangeRole = isSuperAdmin || user.role !== "SUPER_ADMIN";
 
@@ -227,6 +254,15 @@ function UserActions({
           onClick={() => void onUpdate(user, { role: "USER" })}
         >
           Make member
+        </button>
+      )}
+      {isSuperAdmin && (
+        <button
+          type="button"
+          className="font-bold text-primary hover:text-accent"
+          onClick={() => onMove(user)}
+        >
+          Move church
         </button>
       )}
       {!isSelf &&
@@ -253,11 +289,13 @@ function UserActions({
 
 function InviteModal({
   families,
+  organizations,
   canInviteSuperAdmin,
   onClose,
   onInvited,
 }: {
   families: { id: string; name: string }[];
+  organizations: { id: string; name: string }[];
   canInviteSuperAdmin: boolean;
   onClose: () => void;
   onInvited: () => Promise<void>;
@@ -267,8 +305,14 @@ function InviteModal({
   const [lastName, setLastName] = useState("");
   const [role, setRole] = useState<Role>("USER");
   const [familyId, setFamilyId] = useState("");
+  const [organizationId, setOrganizationId] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  // A super admin can be given a church, in which case they get a directory
+  // record like anyone else. Left blank they administer without belonging to
+  // one, and can join later from My Details.
+  const showChurchPicker = organizations.length > 0;
 
   return (
     <Modal title="Invite someone" onClose={onClose}>
@@ -287,6 +331,7 @@ function InviteModal({
                 lastName: lastName || null,
                 role,
                 familyId: familyId || null,
+                organizationId: organizationId || null,
               },
             });
             await onInvited();
@@ -344,6 +389,30 @@ function InviteModal({
             </select>
           </Field>
 
+          {showChurchPicker && (
+            <Field
+              label={role === "SUPER_ADMIN" ? "Church (optional)" : "Church"}
+              hint={
+                role === "SUPER_ADMIN"
+                  ? "Give them a church to list them in its directory; they administer every church either way."
+                  : undefined
+              }
+            >
+              <select
+                className={inputClass}
+                value={organizationId}
+                onChange={(event) => setOrganizationId(event.target.value)}
+              >
+                <option value="">{role === "SUPER_ADMIN" ? "No church" : "My own church"}</option>
+                {organizations.map((organization) => (
+                  <option key={organization.id} value={organization.id}>
+                    {organization.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+          )}
+
           {role !== "SUPER_ADMIN" && families.length > 0 && (
             <Field label="Family (optional)">
               <select
@@ -371,6 +440,133 @@ function InviteModal({
         <div className="flex flex-col gap-2 sm:flex-row">
           <Button type="submit" disabled={busy}>
             {busy ? "Sending…" : "Send invitation"}
+          </Button>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * Moving an account to another church. The record goes with it -- see
+ * setAccountOrganization in api/src/services/membership.ts -- but family
+ * membership and inherited details cannot follow, because both are scoped to a
+ * single church. Say so before the fact rather than after.
+ */
+function MoveChurchModal({
+  user,
+  organizations,
+  onClose,
+  onMoved,
+}: {
+  user: AppUserDto;
+  organizations: { id: string; name: string }[];
+  onClose: () => void;
+  onMoved: () => Promise<void>;
+}) {
+  const [organizationId, setOrganizationId] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [lastName, setLastName] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // An app_users row carries no name, so creating a first record needs one.
+  const needsName = user.personId === null;
+
+  return (
+    <Modal title={`Move ${user.personName ?? user.email}`} onClose={onClose}>
+      <form
+        className="space-y-4"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          setError(null);
+          try {
+            const result = await api<{ move?: { removedAnniversaries: number } }>(
+              `/admin/users/${user.id}`,
+              {
+                method: "PATCH",
+                body: {
+                  organizationId,
+                  ...(needsName ? { firstName, lastName: lastName || null } : {}),
+                },
+              }
+            );
+            const removed = result.move?.removedAnniversaries ?? 0;
+            if (removed > 0) {
+              // Not an error, but it is data that is gone -- do not let it pass
+              // silently.
+              window.alert(
+                `Moved. ${removed} wedding anniversar${removed === 1 ? "y was" : "ies were"} removed, because the other person stayed in the old church.`
+              );
+            }
+            await onMoved();
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Could not move that account");
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <p className="text-ink-muted">
+          Their directory entry, photo, birthday and name day move too. Their family membership and
+          any details they shared with a relative will be cleared, because both belong to{" "}
+          {user.organizationName ?? "their current church"}.
+        </p>
+
+        <Field label="Move to">
+          <select
+            className={inputClass}
+            value={organizationId}
+            onChange={(event) => setOrganizationId(event.target.value)}
+            required
+          >
+            <option value="">Choose a church…</option>
+            {organizations
+              .filter((organization) => organization.id !== user.organizationId)
+              .map((organization) => (
+                <option key={organization.id} value={organization.id}>
+                  {organization.name}
+                </option>
+              ))}
+          </select>
+        </Field>
+
+        {needsName && (
+          <div className="grid gap-4 md:grid-cols-2">
+            <Field label="First name" hint="They have no directory entry yet">
+              <input
+                className={inputClass}
+                value={firstName}
+                onChange={(event) => setFirstName(event.target.value)}
+                required
+              />
+            </Field>
+            <Field label="Last name">
+              <input
+                className={inputClass}
+                value={lastName}
+                onChange={(event) => setLastName(event.target.value)}
+              />
+            </Field>
+          </div>
+        )}
+
+        {error && (
+          <p role="alert" className="font-bold text-primary">
+            {error}
+          </p>
+        )}
+
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button
+            type="submit"
+            disabled={busy || !organizationId || (needsName && firstName.trim() === "")}
+          >
+            {busy ? "Moving…" : "Move"}
           </Button>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
             Cancel
