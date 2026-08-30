@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router";
 import { useAuth } from "../context/AuthContext";
 import { useMe } from "../context/MeContext";
@@ -35,9 +35,34 @@ export function AppShell() {
   const { signOut, email } = useAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const location = useLocation();
+  const navRef = useRef<HTMLElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
 
   // Navigating should always close the drawer, including via the back button.
   useEffect(() => setDrawerOpen(false), [location.pathname]);
+
+  /*
+   * Tapping the page with the drawer open should dismiss it. This listens on
+   * the document rather than putting a backdrop over the page, so the tap still
+   * reaches whatever was under it -- a backdrop would swallow the first tap and
+   * make every link a two-tap affair while the menu is open.
+   *
+   * pointerdown rather than click so it closes as the finger lands, and the
+   * toggle is excluded because its own handler already flips the state.
+   */
+  useEffect(() => {
+    if (!drawerOpen) return;
+
+    function handlePointerDown(event: PointerEvent) {
+      const target = event.target as Node | null;
+      if (!target) return;
+      if (navRef.current?.contains(target) || toggleRef.current?.contains(target)) return;
+      setDrawerOpen(false);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [drawerOpen]);
 
   const items = NAV_ITEMS.filter(
     (item) => (!item.adminOnly || isAdmin) && (!item.superAdminOnly || isSuperAdmin)
@@ -69,6 +94,7 @@ export function AppShell() {
           </NavLink>
 
           <button
+            ref={toggleRef}
             type="button"
             className="tap-target -mr-2 flex shrink-0 items-center justify-center text-ink md:hidden"
             aria-expanded={drawerOpen}
@@ -76,18 +102,36 @@ export function AppShell() {
             aria-label={drawerOpen ? "Close menu" : "Open menu"}
             onClick={() => setDrawerOpen((open) => !open)}
           >
-            <svg aria-hidden="true" viewBox="0 0 24 24" className="h-7 w-7 fill-current">
-              {drawerOpen ? (
-                <path d="M6.4 5 5 6.4l5.6 5.6L5 17.6 6.4 19l5.6-5.6L17.6 19 19 17.6 13.4 12 19 6.4 17.6 5 12 10.6 6.4 5Z" />
-              ) : (
-                <path d="M3 6h18v2H3V6Zm0 5h18v2H3v-2Zm0 5h18v2H3v-2Z" />
-              )}
-            </svg>
+            {/*
+              Three bars that fold into a cross, rather than swapping one icon
+              for another. The outer two sit 7px either side of the middle and
+              animate purely by transform -- translating to the centre and
+              rotating -- which the compositor can handle without a reflow. The
+              middle bar just fades.
+            */}
+            <span aria-hidden="true" className="relative block h-4 w-6">
+              <span
+                className={`absolute left-0 top-0 block h-0.5 w-full rounded-full bg-current transition-transform duration-200 ease-out ${
+                  drawerOpen ? "translate-y-[7px] rotate-45" : ""
+                }`}
+              />
+              <span
+                className={`absolute left-0 top-1/2 block h-0.5 w-full -translate-y-1/2 rounded-full bg-current transition-opacity duration-200 ease-out ${
+                  drawerOpen ? "opacity-0" : "opacity-100"
+                }`}
+              />
+              <span
+                className={`absolute bottom-0 left-0 block h-0.5 w-full rounded-full bg-current transition-transform duration-200 ease-out ${
+                  drawerOpen ? "-translate-y-[7px] -rotate-45" : ""
+                }`}
+              />
+            </span>
           </button>
 
           {/* From md up this is the horizontal bar; below md it is the drawer,
               toggled by the button above. */}
           <nav
+            ref={navRef}
             id="main-nav"
             aria-label="Main"
             data-testid="main-nav"

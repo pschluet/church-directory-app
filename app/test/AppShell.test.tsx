@@ -143,6 +143,83 @@ describe("AppShell responsive behaviour", () => {
     expect(screen.getByRole("button", { name: /open menu/i })).toHaveClass("tap-target");
   });
 
+  /*
+   * The icon is three bars that fold into a cross rather than two swapped
+   * icons, so what is worth asserting is that the same three elements persist
+   * across the toggle and that only their transforms change -- swap one for the
+   * other and there is nothing left to animate.
+   */
+  it("folds the same three bars into a cross instead of swapping icons", async () => {
+    renderShell();
+    const toggle = screen.getByRole("button", { name: /open menu/i });
+    const bars = () => Array.from(toggle.querySelectorAll("span > span"));
+
+    expect(bars()).toHaveLength(3);
+    const [top, middle, bottom] = bars();
+    expect(top!.className).toContain("transition-transform");
+    expect(top!.className).not.toContain("rotate-45");
+    expect(middle!.className).toContain("opacity-100");
+
+    await userEvent.click(toggle);
+
+    // The very same nodes, re-styled -- not replaced.
+    const [openTop, openMiddle, openBottom] = bars();
+    expect(openTop).toBe(top);
+    expect(openBottom).toBe(bottom);
+    expect(openTop!.className).toContain("rotate-45");
+    expect(openBottom!.className).toContain("-rotate-45");
+    expect(openMiddle!.className).toContain("opacity-0");
+  });
+
+  it("closes the drawer when the page behind it is tapped", async () => {
+    renderShell();
+    await userEvent.click(screen.getByRole("button", { name: /open menu/i }));
+    expect(screen.getByTestId("main-nav")).toHaveAttribute("data-variant", "drawer-open");
+
+    await userEvent.click(screen.getByText("Directory page"));
+    expect(screen.getByTestId("main-nav")).toHaveAttribute("data-variant", "drawer-closed");
+  });
+
+  it("stays open when the drawer itself is tapped", async () => {
+    renderShell("SUPER_ADMIN", [
+      { id: "org-1", name: "All Saints" },
+      { id: "org-2", name: "St. George" },
+    ]);
+    await userEvent.click(screen.getByRole("button", { name: /open menu/i }));
+
+    // The organization switcher lives inside the drawer; using it must not
+    // dismiss the thing it is inside.
+    await userEvent.click(screen.getByLabelText(/viewing/i));
+    expect(screen.getByTestId("main-nav")).toHaveAttribute("data-variant", "drawer-open");
+  });
+
+  it("still closes from the hamburger, which the outside handler ignores", async () => {
+    renderShell();
+    const toggle = screen.getByRole("button", { name: /open menu/i });
+    await userEvent.click(toggle);
+
+    // If the document listener treated this as an outside tap it would close
+    // the drawer and the button's own handler would reopen it.
+    await userEvent.click(screen.getByRole("button", { name: /close menu/i }));
+    expect(screen.getByTestId("main-nav")).toHaveAttribute("data-variant", "drawer-closed");
+  });
+
+  it("listens only while the drawer is open", async () => {
+    const addSpy = vi.spyOn(document, "addEventListener");
+    const removeSpy = vi.spyOn(document, "removeEventListener");
+    renderShell();
+
+    const pointerListeners = () =>
+      addSpy.mock.calls.filter(([type]) => type === "pointerdown").length;
+    expect(pointerListeners()).toBe(0);
+
+    await userEvent.click(screen.getByRole("button", { name: /open menu/i }));
+    expect(pointerListeners()).toBe(1);
+
+    await userEvent.click(screen.getByRole("button", { name: /close menu/i }));
+    expect(removeSpy.mock.calls.some(([type]) => type === "pointerdown")).toBe(true);
+  });
+
   it("caps the content width so it does not stretch on a wide monitor", () => {
     renderShell();
     expect(document.querySelector("main")?.className).toContain("max-w-6xl");
