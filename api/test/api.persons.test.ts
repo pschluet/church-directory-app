@@ -181,6 +181,30 @@ describe.skipIf(!hasDb)("people and attribute inheritance", () => {
       expect(moved.body.city).toBeNull();
     });
 
+    it("cancels stale join requests when an admin moves someone", async () => {
+      const admin = await createUser(db(), {
+        organizationId: orgId,
+        role: "ADMIN",
+        email: "mover@test.example",
+      });
+      await db().query(
+        `insert into family_join_requests (organization_id, family_id, person_id)
+         values ($1, $2, $3)`,
+        [orgId, familyId, child]
+      );
+
+      const moved = await as(admin).call("PATCH", `/api/persons/${child}`, {
+        familyId: otherFamilyId,
+      });
+      expect(moved.status).toBe(200);
+
+      const { rows } = await db().query<{ status: string }>(
+        "select status from family_join_requests where person_id = $1",
+        [child]
+      );
+      expect(rows.map((r) => r.status)).toEqual(["CANCELLED"]);
+    });
+
     it("clears inheritance pointing at someone who is deleted", async () => {
       const sibling = await createNonUserPerson(db(), {
         organizationId: orgId,

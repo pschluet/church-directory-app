@@ -125,6 +125,12 @@ export async function validateInheritance(
  * `personId` themselves had. Called when someone leaves a family or is
  * deleted: without this, the resolution view would keep serving a value from
  * someone who is no longer a relative.
+ *
+ * The second statement derives the organization from `personId` rather than
+ * taking it as a parameter. That keeps every caller honest without touching
+ * their signatures, and it is the only correct source during a parish move --
+ * `setAccountOrganization` clears inheritance while the person still carries
+ * their *old* organization_id, which is exactly the set of rows to clean up.
  */
 export async function clearInheritanceFor(q: Queryable, personId: string): Promise<void> {
   const columns = Object.values(INHERIT_COLUMN);
@@ -137,7 +143,8 @@ export async function clearInheritanceFor(q: Queryable, personId: string): Promi
   await q.query(
     `update persons
         set ${columns.map((c) => `${c} = case when ${c} = $1 then null else ${c} end`).join(", ")}
-      where ${columns.map((c) => `${c} = $1`).join(" or ")}`,
+      where (${columns.map((c) => `${c} = $1`).join(" or ")})
+        and organization_id = (select organization_id from persons where id = $1)`,
     [personId]
   );
 }

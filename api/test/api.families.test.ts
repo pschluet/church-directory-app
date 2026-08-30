@@ -248,4 +248,236 @@ describe.skipIf(!hasDb)("families and the gated join flow", () => {
       (await as(joiner).call("PATCH", `/api/families/${schlueters}`, { name: "Hijacked" })).status
     ).toBe(403);
   });
+
+  describe("creating a family for someone else", () => {
+    it("lets an admin create one without joining it", async () => {
+      const created = await as(admin).call("POST", "/api/families", {
+        name: "Popov",
+        join: false,
+      });
+      expect(created.status).toBe(201);
+
+      const { body } = await as(admin).call("GET", `/api/families/${created.body.id}`);
+      expect(body.members).toEqual([]);
+
+      const { rows } = await db().query("select family_id from persons where id = $1", [
+        admin.personId,
+      ]);
+      expect(rows[0]!.family_id).toBeNull();
+    });
+
+    it("refuses join:false from an ordinary member, before inserting anything", async () => {
+      const { status } = await as(member).call("POST", "/api/families", {
+        name: "Sneaky",
+        join: false,
+      });
+      expect(status).toBe(403);
+
+      const { rows } = await db().query("select count(*) as count from families where name = $1", [
+        "Sneaky",
+      ]);
+      expect(Number(rows[0]!.count)).toBe(0);
+    });
+
+    it("still joins by default", async () => {
+      const created = await as(joiner).call("POST", "/api/families", { name: "Ivanov" });
+      expect(created.status).toBe(201);
+      const { rows } = await db().query("select family_id from persons where id = $1", [
+        joiner.personId,
+      ]);
+      expect(rows[0]!.family_id).toBe(created.body.id);
+    });
+
+    it("cancels the creator's outstanding requests when they join", async () => {
+      await as(joiner).call("POST", `/api/families/${schlueters}/join-requests`);
+      const created = await as(joiner).call("POST", "/api/families", { name: "Ivanov" });
+      expect(created.status).toBe(201);
+
+      const { rows } = await db().query<{ status: string }>(
+        "select status from family_join_requests where person_id = $1",
+        [joiner.personId]
+      );
+      expect(rows.map((r) => r.status)).toEqual(["CANCELLED"]);
+    });
+  });
+
+  describe("the families list", () => {
+    it("shows the caller their own pending request, and nobody else's", async () => {
+      await as(joiner).call("POST", `/api/families/${schlueters}/join-requests`);
+
+      const mine = await as(joiner).call("GET", "/api/families");
+      const row = mine.body.families.find((f: any) => f.id === schlueters);
+      expect(row.pendingJoinRequestId).toEqual(expect.any(String));
+
+      const theirs = await as(member).call("GET", "/api/families");
+      expect(theirs.body.families.find((f: any) => f.id === schlueters).pendingJoinRequestId).toBe(
+        null
+      );
+    });
+
+    it("carries a few member names so same-named families can be told apart", async () => {
+      await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Anna",
+      });
+      const { body } = await as(joiner).call("GET", "/api/families");
+      const row = body.families.find((f: any) => f.id === schlueters);
+      expect(row.memberCount).toBe(2);
+      expect(row.memberNames).toEqual(expect.arrayContaining(["Paul", "Anna"]));
+    });
+  });
+
+  describe("adding someone already in the directory", () => {
+    it("pulls an accountless person with no family into the family", async () => {
+      const orphan = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: null,
+        firstName: "Anna",
+      });
+
+      const { status } = await as(member).call("POST", `/api/families/${schlueters}/members`, {
+        personId: orphan,
+      });
+      expect(status).toBe(204);
+
+      const { rows } = await db().query("select family_id from persons where id = $1", [orphan]);
+      expect(rows[0]!.family_id).toBe(schlueters);
+    });
+
+    it("refuses someone who has an account", async () => {
+      const { status, body } = await as(member).call(
+        "POST",
+        `/api/families/${schlueters}/members`,
+        { personId: joiner.personId }
+      );
+      expect(status).toBe(400);
+      expect(body.error).toMatch(/account/i);
+    });
+
+    it("refuses someone already in a family", async () => {
+      const child = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Anna",
+      });
+      const popovs = await createFamily(db(), orgId, "Popov");
+      await as(admin).call("POST", `/api/families/${popovs}/members`, { personId: child });
+
+      const { status } = await as(admin).call("POST", `/api/families/${popovs}/members`, {
+        personId: child,
+      });
+      expect(status).toBe(409);
+    });
+
+    it("is closed to non-members", async () => {
+      const orphan = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: null,
+        firstName: "Anna",
+      });
+      const { status } = await as(joiner).call("POST", `/api/families/${schlueters}/members`, {
+        personId: orphan,
+      });
+      expect(status).toBe(403);
+    });
+
+    it("offers only accountless, family-less people as candidates", async () => {
+      const orphan = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: null,
+        firstName: "Anna",
+      });
+      await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Taken",
+      });
+
+      const { body } = await as(member).call("GET", `/api/families/${schlueters}/candidates`);
+      expect(body.candidates.map((p: any) => p.id)).toEqual([orphan]);
+    });
+  });
+
+  describe("emptying and deleting a family", () => {
+    it("stops a member removing the last person", async () => {
+      const { status, body } = await as(member).call(
+        "DELETE",
+        `/api/families/${schlueters}/members/${member.personId}`
+      );
+      expect(status).toBe(409);
+      expect(body.error).toMatch(/at least one member/i);
+
+      const { rows } = await db().query("select family_id from persons where id = $1", [
+        member.personId,
+      ]);
+      expect(rows[0]!.family_id).toBe(schlueters);
+    });
+
+    it("lets an admin empty a family so it can be deleted", async () => {
+      expect(
+        (await as(admin).call("DELETE", `/api/families/${schlueters}/members/${member.personId}`))
+          .status
+      ).toBe(204);
+      expect((await as(admin).call("DELETE", `/api/families/${schlueters}`)).status).toBe(204);
+
+      const { rows } = await db().query("select count(*) as count from families where id = $1", [
+        schlueters,
+      ]);
+      expect(Number(rows[0]!.count)).toBe(0);
+    });
+
+    it("refuses to delete a family that still has members", async () => {
+      const { status, body } = await as(admin).call("DELETE", `/api/families/${schlueters}`);
+      expect(status).toBe(409);
+      expect(body.error).toMatch(/members first/i);
+    });
+
+    it("is not something an ordinary member can do", async () => {
+      const { status } = await as(member).call("DELETE", `/api/families/${schlueters}`);
+      expect(status).toBe(403);
+    });
+
+    it("cancels the removed person's outstanding requests", async () => {
+      const child = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Anna",
+      });
+      const popovs = await createFamily(db(), orgId, "Popov");
+      await db().query(
+        `insert into family_join_requests (organization_id, family_id, person_id)
+         values ($1, $2, $3)`,
+        [orgId, popovs, child]
+      );
+
+      expect(
+        (await as(member).call("DELETE", `/api/families/${schlueters}/members/${child}`)).status
+      ).toBe(204);
+
+      const { rows } = await db().query<{ status: string }>(
+        "select status from family_join_requests where person_id = $1",
+        [child]
+      );
+      expect(rows.map((r) => r.status)).toEqual(["CANCELLED"]);
+    });
+  });
+
+  it("shows an admin every pending request in the parish", async () => {
+    const popovs = await createFamily(db(), orgId, "Popov");
+    await as(joiner).call("POST", `/api/families/${schlueters}/join-requests`);
+    const other = await createUser(db(), {
+      organizationId: orgId,
+      familyId: null,
+      email: "other@test.example",
+      firstName: "Sofia",
+    });
+    await as(other).call("POST", `/api/families/${popovs}/join-requests`);
+
+    const { body } = await as(admin).call("GET", "/api/families/join-requests/pending");
+    expect(body.joinRequests.map((r: any) => r.personName).sort()).toEqual([
+      "Maria Ivanova",
+      "Sofia User",
+    ]);
+  });
 });

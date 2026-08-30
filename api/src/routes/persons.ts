@@ -5,6 +5,7 @@ import { one, type Queryable } from "../db";
 import { audit } from "../audit";
 import { assertCanEditFamily, assertCanEditPerson } from "../services/access";
 import { clearInheritanceFor, validateInheritance } from "../services/inheritance";
+import { cancelPendingJoinRequests } from "../services/membership";
 import { loadPerson, PERSON_WRITE_COLUMNS } from "../services/persons";
 import { deletePhoto } from "../photos";
 import { createPersonSchema, personWriteSchema, uuidSchema, type PersonWrite } from "../types";
@@ -155,6 +156,8 @@ routes.patch("/:id", async (c) => {
         [id, ...values]
       );
     }
+    // Landing in a family settles the question everywhere else they asked.
+    if (movingFamily) await cancelPendingJoinRequests(tx, id, effectiveFamilyId);
   });
 
   await audit(db, caller, {

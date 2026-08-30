@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router";
-import type { AppUserDto, OrganizationDto, Role } from "@shared";
+import type { AppUserDto, FamilySummaryDto, JoinRequestDto, OrganizationDto, Role } from "@shared";
 import { api } from "../lib/api";
 import { useMe } from "../context/MeContext";
 import {
@@ -31,9 +31,10 @@ const ROLE_LABELS: Record<Role, string> = {
 };
 
 export function AdminUsers() {
-  const { me, isSuperAdmin } = useMe();
+  const { me, isSuperAdmin, organizationId, reload: reloadMe } = useMe();
   const [users, setUsers] = useState<AppUserDto[]>([]);
-  const [families, setFamilies] = useState<{ id: string; name: string }[]>([]);
+  const [families, setFamilies] = useState<FamilySummaryDto[]>([]);
+  const [joinRequests, setJoinRequests] = useState<JoinRequestDto[]>([]);
   const [organizations, setOrganizations] = useState<{ id: string; name: string }[]>([]);
   const [moving, setMoving] = useState<AppUserDto | null>(null);
   const [loading, setLoading] = useState(true);
@@ -44,9 +45,9 @@ export function AdminUsers() {
     setLoading(true);
     setError(null);
     try {
-      const [userResult, familyResult, organizationResult] = await Promise.all([
+      const [userResult, familyResult, organizationResult, joinRequestResult] = await Promise.all([
         api<{ users: AppUserDto[] }>("/admin/users"),
-        api<{ families: { id: string; name: string }[] }>("/families").catch(() => ({
+        api<{ families: FamilySummaryDto[] }>("/families").catch(() => ({
           families: [],
         })),
         // Only a super admin may read this, and only they can move anyone
@@ -56,20 +57,38 @@ export function AdminUsers() {
               () => ({ organizations: [] })
             )
           : Promise.resolve({ organizations: [] }),
+        // For an admin this endpoint returns the whole parish, not just their
+        // own family.
+        api<{ joinRequests: JoinRequestDto[] }>("/families/join-requests/pending").catch(() => ({
+          joinRequests: [],
+        })),
       ]);
       setUsers(userResult.users);
       setFamilies(familyResult.families);
       setOrganizations(organizationResult.organizations.map((o) => ({ id: o.id, name: o.name })));
+      setJoinRequests(joinRequestResult.joinRequests);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load accounts");
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [isSuperAdmin]);
 
   useEffect(() => {
     void load();
-  }, [load]);
+    // A super admin switching parish is administering a different set of people.
+  }, [load, organizationId]);
+
+  async function decide(request: JoinRequestDto, decision: "approve" | "deny"): Promise<void> {
+    try {
+      await api(`/families/join-requests/${request.id}/${decision}`, { method: "POST" });
+      await load();
+      // An admin can be approving their own request.
+      if (request.personId === me?.appUser.personId) await reloadMe();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not decide that request");
+    }
+  }
 
   async function update(user: AppUserDto, body: Record<string, unknown>): Promise<void> {
     try {
@@ -89,6 +108,30 @@ export function AdminUsers() {
       />
 
       {error && <ErrorNotice message={error} onRetry={() => void load()} />}
+
+      {joinRequests.length > 0 && (
+        <section className="mb-6 rounded-lg border border-accent/40 bg-accent/5 p-4">
+          <h2 className="mb-3 font-bold text-ink">Pending join requests ({joinRequests.length})</h2>
+          <ul className="space-y-2">
+            {joinRequests.map((request) => (
+              <li
+                key={request.id}
+                className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <span>
+                  {request.personName} → {request.familyName} family
+                </span>
+                <span className="flex gap-2">
+                  <Button onClick={() => void decide(request, "approve")}>Approve</Button>
+                  <Button variant="ghost" onClick={() => void decide(request, "deny")}>
+                    Decline
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {loading ? (
         <Spinner label="Loading accounts" />

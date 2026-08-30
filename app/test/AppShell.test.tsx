@@ -61,6 +61,7 @@ describe("AppShell navigation", () => {
     expect(screen.getByRole("link", { name: "Directory" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Search" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Special Dates" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Families" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "My Details" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /people & accounts/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Churches" })).not.toBeInTheDocument();
