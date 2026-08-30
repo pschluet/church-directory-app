@@ -1,0 +1,33 @@
+{
+  "name": "church-directory-app",
+  "private": true,
+  "workspaces": [
+    "infra",
+    "api",
+    "app"
+  ],
+  "scripts": {
+    "dev": "concurrently -n db,api,app -c gray,cyan,magenta \"npm run dev:db\" \"npm run dev:api\" \"npm run dev:app\"",
+    "dev:db": "docker compose up",
+    "dev:api": "npm run dev -w api",
+    "dev:app": "npm run dev -w app",
+    "db:migrate:local": "./scripts/migrate-local.sh",
+    "db:seed": "npm run seed -w api",
+    "synth": "npm run synth -w infra",
+    "deploy": "npm run deploy -w infra",
+    "build:app": "npm run build -w app",
+    "test": "npm run test --workspaces --if-present",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "lint": "biome lint .",
+    "format": "biome format .",
+    "format:write": "biome format --write .",
+    "ci:check": "biome ci ."
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.6",
+    "concurrently": "^9.1.2"
+  }
+}

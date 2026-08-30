@@ -1,0 +1,161 @@
+name: Deploy
+
+# CD runs only after the CI checks have passed on main. `workflow_run` fires
+# against the default branch by default, so every step below pins the commit
+# that CI actually validated.
+on:
+  workflow_run:
+    workflows: ["CI"]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch: {}
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  # Deterministic -- this is the fixed roleName set in the CDK stack. The role
+  # itself is created by CDK, so the very first deploy must be run locally
+  # (see the README).
+  DEPLOY_ROLE_ARN: arn:aws:iam::435432815368:role/church-directory-github-deploy
+  STACK_NAME: ChurchDirectoryStack
+
+jobs:
+  deploy:
+    # A green CI run, or a manual dispatch.
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout the commit CI validated
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version-file: ".nvmrc"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The runner is amd64 but the Flyway migration image is built for ARM64
+      # (Fargate Graviton). buildx plus QEMU makes that cross-platform build
+      # work; the Dockerfile has no RUN steps, so nothing is actually emulated
+      # and the cost is a base-image pull. The alternative -- an
+      # `ubuntu-24.04-arm` runner for a native build -- is free on public
+      # repositories, but this keeps the workflow off a specific runner label.
+      #
+      # The Lambda needs none of this: NodejsFunction bundles with the local
+      # esbuild dependency, and the output is architecture-independent JS.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy infrastructure
+        working-directory: infra
+        run: npx cdk deploy --require-approval never --outputs-file outputs.json
+
+      # Migrations run after the infrastructure (so a new column's table
+      # exists) and before the SPA is published (so the frontend is never
+      # serving against a schema that has not been applied).
+      - name: Run database migrations
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          read_output() { jq -r ".[\"${STACK_NAME}\"].$1" outputs.json; }
+
+          CLUSTER=$(read_output ClusterName)
+          TASK_DEF=$(read_output MigrationTaskArn)
+          SUBNETS=$(read_output MigrationSubnetIds)
+          SECURITY_GROUP=$(read_output MigrationSecurityGroupId)
+
+          # A public subnet with a public IP, so the task can pull its image
+          # from ECR without a NAT gateway.
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "$TASK_DEF" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$SUBNETS],securityGroups=[$SECURITY_GROUP],assignPublicIp=ENABLED}" \
+            --started-by "gha-${GITHUB_RUN_ID}" \
+            --query 'tasks[0].taskArn' --output text)
+
+          echo "Migration task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          STOPPED_REASON=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].stoppedReason' --output text)
+
+          # Flyway's own output is the only useful diagnostic when a migration
+          # fails, so surface it either way.
+          LOG_GROUP=$(aws ecs describe-task-definition --task-definition "$TASK_DEF" \
+            --query 'taskDefinition.containerDefinitions[0].logConfiguration.options."awslogs-group"' \
+            --output text)
+          TASK_ID="${TASK_ARN##*/}"
+          aws logs get-log-events \
+            --log-group-name "$LOG_GROUP" \
+            --log-stream-name "flyway/flyway/$TASK_ID" \
+            --query 'events[].message' --output text || true
+
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::Migrations failed (exit $EXIT_CODE): $STOPPED_REASON"
+            exit 1
+          fi
+
+      - name: Build the SPA
+        working-directory: app
+        run: |
+          set -euo pipefail
+          export VITE_USER_POOL_ID=$(jq -r ".[\"${STACK_NAME}\"].UserPoolId" ../infra/outputs.json)
+          export VITE_USER_POOL_CLIENT_ID=$(jq -r ".[\"${STACK_NAME}\"].UserPoolClientId" ../infra/outputs.json)
+          npm run build
+
+      - name: Publish the SPA
+        working-directory: infra
+        run: |
+          set -euo pipefail
+          SITE_BUCKET=$(jq -r ".[\"${STACK_NAME}\"].SiteBucketName" outputs.json)
+
+          # Hashed assets can be cached hard; index.html must not be, or a
+          # deploy would not reach anyone until their cache expired.
+          aws s3 sync ../app/dist "s3://$SITE_BUCKET" --delete \
+            --exclude index.html --cache-control "public,max-age=31536000,immutable"
+          aws s3 cp ../app/dist/index.html "s3://$SITE_BUCKET/index.html" \
+            --cache-control "no-cache,must-revalidate"
+
+      - name: Invalidate the CloudFront cache
+        working-directory: infra
+        run: |
+          DISTRIBUTION_ID=$(jq -r ".[\"${STACK_NAME}\"].DistributionId" outputs.json)
+          aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths "/*"
+
+      - name: Summary
+        working-directory: infra
+        run: |
+          {
+            echo "### Deployed :rocket:"
+            echo ""
+            echo "$(jq -r ".[\"${STACK_NAME}\"].SiteUrl" outputs.json)"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,113 @@
+import { Hono } from "hono";
+import { requireOrganizationId, type AppEnv } from "../auth";
+import { PERSON_COLUMNS, PERSON_ORDER, toSummaries, type PersonRow } from "../services/persons";
+
+/**
+ * Browsing and searching the directory.
+ *
+ * Both are organization-scoped, which is also what keeps search cheap: the
+ * `persons_browse_idx` index narrows to one parish first, and the ILIKE then
+ * runs over a few hundred rows. That is why "search anything in any data
+ * field" can be a single ILIKE against the resolved view's `search_text`
+ * rather than a maintained tsvector or trigram index -- there is no scale here
+ * that would justify the write-side machinery.
+ */
+const routes = new Hono<AppEnv>();
+
+const DEFAULT_LIMIT = 50;
+const MAX_LIMIT = 200;
+
+function parseLimit(raw: string | undefined): number {
+  const value = Number(raw ?? DEFAULT_LIMIT);
+  if (!Number.isFinite(value)) return DEFAULT_LIMIT;
+  return Math.min(Math.max(Math.trunc(value), 1), MAX_LIMIT);
+}
+
+/**
+ * "Scrollable view of the entire directory, sorted by last name."
+ *
+ * Keyset pagination on (last_name, first_name, id) rather than OFFSET, so
+ * scrolling cannot skip or repeat someone when a record is edited mid-scroll.
+ * The cursor is the last row of the previous page.
+ */
+routes.get("/", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const limit = parseLimit(c.req.query("limit"));
+
+  const cursorLastName = c.req.query("cursorLastName") ?? null;
+  const cursorFirstName = c.req.query("cursorFirstName") ?? null;
+  const cursorId = c.req.query("cursorId") ?? null;
+
+  // `nulls last` in the ordering means the keyset comparison has to treat a
+  // missing last name as larger than any present one, which is what the
+  // coalesce to U+FFFF does.
+  const keyset = cursorId
+    ? `and (coalesce(r.last_name, chr(65535)), r.first_name, r.id)
+         > (coalesce($2, chr(65535)), $3, $4::uuid)`
+    : "";
+
+  const params: unknown[] = [organizationId];
+  if (cursorId) params.push(cursorLastName, cursorFirstName ?? "", cursorId);
+  params.push(limit + 1);
+
+  const { rows } = await db.query<PersonRow>(
+    `select ${PERSON_COLUMNS}
+       from persons_resolved r
+      where r.organization_id = $1
+        and r.deleted_at is null
+        ${keyset}
+      ${PERSON_ORDER}
+      limit $${params.length}`,
+    params
+  );
+
+  const hasMore = rows.length > limit;
+  const page = hasMore ? rows.slice(0, limit) : rows;
+  const last = page[page.length - 1];
+
+  return c.json({
+    people: await toSummaries(caller, page),
+    nextCursor:
+      hasMore && last
+        ? { lastName: last.last_name, firstName: last.first_name, id: last.id }
+        : null,
+  });
+});
+
+/** "Search for users where the search contents match anything in any data field." */
+routes.get("/search", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const q = (c.req.query("q") ?? "").trim();
+
+  if (q.length === 0) return c.json({ people: [], query: "" });
+
+  // Every whitespace-separated term must match somewhere, so "smith chicago"
+  // narrows rather than widens. `%` and `_` are escaped so a typed wildcard is
+  // treated as a literal.
+  const terms = q.split(/\s+/).slice(0, 8);
+  const conditions = terms.map((_, i) => `r.search_text ilike $${i + 2}`).join(" and ");
+  const params = [organizationId, ...terms.map((term) => `%${escapeLike(term)}%`)];
+
+  const { rows } = await db.query<PersonRow>(
+    `select ${PERSON_COLUMNS}
+       from persons_resolved r
+      where r.organization_id = $1
+        and r.deleted_at is null
+        and ${conditions}
+      ${PERSON_ORDER}
+      limit ${MAX_LIMIT}`,
+    params
+  );
+
+  return c.json({ people: await toSummaries(caller, rows), query: q });
+});
+
+export function escapeLike(input: string): string {
+  return input.replace(/[\\%_]/g, (match) => `\\${match}`);
+}
+
+export default routes;

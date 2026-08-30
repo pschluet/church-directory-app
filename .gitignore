@@ -1,0 +1,19 @@
+node_modules/
+dist/
+build/
+cdk.out/
+*.tsbuildinfo
+coverage/
+.DS_Store
+.env
+.env.local
+app/.env
+app/.env.*.local
+api/.env
+*.log
+.aws-sam/
+outputs.json
+security-findings.md
+
+# Local photo storage for PHOTO_STORAGE=local
+.local-photos/

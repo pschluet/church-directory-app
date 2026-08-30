@@ -1,0 +1,62 @@
+@import "tailwindcss";
+
+/* Karla, self-hosted, so the app makes no third-party font request. */
+@import "@fontsource/karla/400.css";
+@import "@fontsource/karla/400-italic.css";
+@import "@fontsource/karla/700.css";
+
+/*
+ * The palette is taken from allsaintsorthodox.org, which defines exactly two
+ * custom properties in its stylesheet:
+ *   --main-accent-color: #b42d23      deep liturgical red
+ *   --secondary-accent-color: #b88c51 gold/bronze, used for hover and focus
+ * Its site title ink is #333333 and body text sits on white. Reusing those
+ * values verbatim is what makes this app look like part of the same parish
+ * rather than a separate product.
+ */
+@theme {
+  --color-primary: #b42d23;
+  --color-primary-dark: #8e231b;
+  --color-accent: #b88c51;
+  --color-accent-light: #d9c19b;
+  --color-ink: #333333;
+  --color-ink-muted: #6b6b6b;
+  --color-surface: #ffffff;
+  --color-surface-muted: #faf8f5;
+  --color-line: #e5e0d8;
+
+  --font-sans: "Karla", ui-sans-serif, system-ui, -apple-system, sans-serif;
+}
+
+@layer base {
+  html {
+    /* Anchor navigation should not slide content under the sticky header. */
+    scroll-padding-top: 5rem;
+  }
+
+  body {
+    @apply bg-surface font-sans text-ink antialiased;
+  }
+
+  /*
+   * 16px minimum on form controls: anything smaller makes iOS Safari zoom the
+   * viewport when a field is focused, which is jarring on a phone.
+   */
+  input,
+  select,
+  textarea,
+  button {
+    font-size: 1rem;
+  }
+
+  :focus-visible {
+    @apply outline-2 outline-offset-2 outline-accent;
+  }
+}
+
+@utility tap-target {
+  /* 44px is the smallest comfortable touch target; matters most for the phone
+     links, calendar day cells and inheritance toggles. */
+  min-height: 2.75rem;
+  min-width: 2.75rem;
+}

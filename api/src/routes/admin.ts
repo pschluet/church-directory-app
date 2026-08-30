@@ -1,0 +1,327 @@
+import { Hono } from "hono";
+import { HTTPException } from "hono/http-exception";
+import { requireRole, type AppEnv } from "../auth";
+import { one } from "../db";
+import { audit } from "../audit";
+import { assertCanGrantRole } from "../services/access";
+import { createInvitedUser, setUserEnabled, updateUserEmail } from "../cognito";
+import { sendInvitationEmail } from "../email";
+import {
+  fullName,
+  inviteUserSchema,
+  updateUserSchema,
+  uuidSchema,
+  type AppUserDto,
+} from "../types";
+
+/**
+ * Account management. Sign-up is disabled on the user pool, so this is the only
+ * way an account comes into existence: an admin invites someone, we create the
+ * Cognito user (which emails the invitation through SES) and the matching
+ * Person record in one transaction.
+ */
+const routes = new Hono<AppEnv>();
+
+routes.use("/users/*", requireRole("ADMIN"));
+routes.use("/users", requireRole("ADMIN"));
+
+interface AppUserRow {
+  id: string;
+  email: string;
+  role: AppUserDto["role"];
+  status: AppUserDto["status"];
+  organization_id: string | null;
+  organization_name: string | null;
+  person_id: string | null;
+  first_name: string | null;
+  last_name: string | null;
+}
+
+const APP_USER_SELECT = `
+  select u.id,
+         u.email::text as email,
+         u.role,
+         u.status,
+         u.organization_id,
+         o.name as organization_name,
+         p.id as person_id,
+         p.first_name,
+         p.last_name
+    from app_users u
+    left join organizations o on o.id = u.organization_id
+    left join persons p on p.app_user_id = u.id and p.deleted_at is null
+`;
+
+function toAppUser(row: AppUserRow): AppUserDto {
+  return {
+    id: row.id,
+    email: row.email,
+    role: row.role,
+    status: row.status,
+    organizationId: row.organization_id,
+    organizationName: row.organization_name,
+    personId: row.person_id,
+    personName: row.first_name
+      ? fullName({ firstName: row.first_name, lastName: row.last_name })
+      : null,
+  };
+}
+
+/** Admins see their own organization; super admins see everyone. */
+routes.get("/users", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+
+  const { rows } = caller.isSuperAdmin
+    ? await db.query<AppUserRow>(`${APP_USER_SELECT} order by u.email`)
+    : await db.query<AppUserRow>(
+        `${APP_USER_SELECT} where u.organization_id = $1 order by u.email`,
+        [caller.homeOrganizationId]
+      );
+
+  return c.json({ users: rows.map(toAppUser) });
+});
+
+routes.post("/users", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const payload = inviteUserSchema.parse(await c.req.json());
+
+  // A non-super-admin invite always lands in the inviter's own organization,
+  // regardless of what the client asked for.
+  const organizationId =
+    payload.role === "SUPER_ADMIN"
+      ? (payload.organizationId ?? null)
+      : (payload.organizationId ?? caller.homeOrganizationId);
+
+  assertCanGrantRole(caller, payload.role, organizationId);
+
+  if (payload.role !== "SUPER_ADMIN" && !organizationId) {
+    throw new HTTPException(400, { message: "Choose an organization for this person" });
+  }
+  if (organizationId) {
+    const org = await one<{ id: string }>(db, "select id from organizations where id = $1", [
+      organizationId,
+    ]);
+    if (!org) throw new HTTPException(404, { message: "Organization not found" });
+  }
+
+  const existing = await one<{ id: string }>(db, "select id from app_users where email = $1", [
+    payload.email,
+  ]);
+  if (existing) {
+    throw new HTTPException(409, {
+      message: "Someone with that email address already has an account",
+    });
+  }
+
+  if (payload.familyId) {
+    const family = await one<{ id: string }>(
+      db,
+      "select id from families where id = $1 and organization_id = $2",
+      [payload.familyId, organizationId]
+    );
+    if (!family) throw new HTTPException(404, { message: "Family not found" });
+  }
+
+  // Cognito first: if it fails we have written nothing, whereas the reverse
+  // order can leave an app_users row with no way to sign in.
+  const { sub } = await createInvitedUser({
+    email: payload.email,
+    firstName: payload.firstName,
+    lastName: payload.lastName ?? null,
+  });
+
+  const created = await db.transaction(async (tx) => {
+    const user = await one<{ id: string }>(
+      tx,
+      `insert into app_users (cognito_sub, email, role, organization_id, status)
+       values ($1, $2, $3, $4, 'INVITED')
+       returning id`,
+      [sub, payload.email, payload.role, organizationId]
+    );
+    if (!user) throw new HTTPException(500, { message: "Could not create that account" });
+
+    // Super admins are cross-organization and need no directory record until
+    // they are given an organization.
+    let personId: string | null = null;
+    if (organizationId) {
+      const person = await one<{ id: string }>(
+        tx,
+        `insert into persons (organization_id, family_id, app_user_id, first_name, last_name, email)
+         values ($1, $2, $3, $4, $5, $6)
+         returning id`,
+        [
+          organizationId,
+          payload.familyId ?? null,
+          user.id,
+          payload.firstName,
+          payload.lastName ?? null,
+          payload.email,
+        ]
+      );
+      personId = person?.id ?? null;
+    }
+    return { userId: user.id, personId };
+  });
+
+  await audit(db, caller, {
+    action: "user.invite",
+    entityType: "appUser",
+    entityId: created.userId,
+    changes: { email: payload.email, role: payload.role, organizationId },
+  });
+
+  const row = await one<AppUserRow>(db, `${APP_USER_SELECT} where u.id = $1`, [created.userId]);
+
+  // After the account exists, not before: a failed send leaves someone who can
+  // still be told to sign in, whereas failing the request would leave a
+  // Cognito user with no directory row.
+  try {
+    await sendInvitationEmail({
+      to: payload.email,
+      firstName: payload.firstName,
+      organizationName: row?.organization_name ?? "the parish",
+      invitedBy: caller.email,
+    });
+  } catch (err) {
+    console.error("Invitation email failed for", payload.email, err);
+  }
+
+  return c.json(row ? toAppUser(row) : { id: created.userId }, 201);
+});
+
+routes.patch("/users/:id", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const id = uuidSchema.parse(c.req.param("id"));
+  const payload = updateUserSchema.parse(await c.req.json());
+
+  const target = await one<{
+    id: string;
+    email: string;
+    role: AppUserDto["role"];
+    organization_id: string | null;
+    status: AppUserDto["status"];
+  }>(
+    db,
+    "select id, email::text as email, role, organization_id, status from app_users where id = $1",
+    [id]
+  );
+  if (!target) throw new HTTPException(404, { message: "Account not found" });
+
+  // An admin may only touch accounts inside their own organization, and may not
+  // promote anyone to super admin.
+  if (!caller.isSuperAdmin) {
+    if (target.organization_id !== caller.homeOrganizationId) {
+      throw new HTTPException(404, { message: "Account not found" });
+    }
+    if (target.role === "SUPER_ADMIN") {
+      throw new HTTPException(403, { message: "Only a super admin can change a super admin" });
+    }
+  }
+  if (payload.role) {
+    assertCanGrantRole(caller, payload.role, payload.organizationId ?? target.organization_id);
+  }
+  if (payload.organizationId !== undefined && !caller.isSuperAdmin) {
+    throw new HTTPException(403, {
+      message: "Only a super admin can move someone between organizations",
+    });
+  }
+  if (target.id === caller.appUserId && payload.status === "DISABLED") {
+    throw new HTTPException(400, { message: "You cannot disable your own account" });
+  }
+
+  const sets: string[] = [];
+  const values: unknown[] = [id];
+  if (payload.role !== undefined) {
+    sets.push(`role = $${values.length + 1}`);
+    values.push(payload.role);
+  }
+  if (payload.status !== undefined) {
+    sets.push(`status = $${values.length + 1}`);
+    values.push(payload.status);
+  }
+  if (payload.organizationId !== undefined) {
+    sets.push(`organization_id = $${values.length + 1}`);
+    values.push(payload.organizationId);
+  }
+  if (sets.length > 0) {
+    await db.query(`update app_users set ${sets.join(", ")} where id = $1`, values);
+  }
+
+  // Keep Cognito in step: a disabled account must not be able to sign in even
+  // before our own 403 would kick in.
+  if (payload.status !== undefined && payload.status !== target.status) {
+    await setUserEnabled(target.email, payload.status !== "DISABLED");
+  }
+
+  await audit(db, caller, {
+    action: "user.update",
+    entityType: "appUser",
+    entityId: id,
+    changes: payload,
+  });
+
+  const row = await one<AppUserRow>(db, `${APP_USER_SELECT} where u.id = $1`, [id]);
+  return c.json(row ? toAppUser(row) : { id });
+});
+
+/**
+ * Disables rather than deletes. Directory data is kept forever, and removing
+ * the Cognito user while the app_users row survives would let the same address
+ * be invited again and re-bind to the old record.
+ */
+routes.delete("/users/:id", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const id = uuidSchema.parse(c.req.param("id"));
+
+  const target = await one<{ id: string; email: string; organization_id: string | null }>(
+    db,
+    "select id, email::text as email, organization_id from app_users where id = $1",
+    [id]
+  );
+  if (!target) throw new HTTPException(404, { message: "Account not found" });
+  if (!caller.isSuperAdmin && target.organization_id !== caller.homeOrganizationId) {
+    throw new HTTPException(404, { message: "Account not found" });
+  }
+  if (target.id === caller.appUserId) {
+    throw new HTTPException(400, { message: "You cannot disable your own account" });
+  }
+
+  await db.query("update app_users set status = 'DISABLED' where id = $1", [id]);
+  await setUserEnabled(target.email, false);
+  await audit(db, caller, { action: "user.disable", entityType: "appUser", entityId: id });
+  return c.body(null, 204);
+});
+
+/** Changing the address an account signs in with. */
+routes.put("/users/:id/email", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const id = uuidSchema.parse(c.req.param("id"));
+  const { email } = inviteUserSchema.pick({ email: true }).parse(await c.req.json());
+
+  const target = await one<{ id: string; email: string; organization_id: string | null }>(
+    db,
+    "select id, email::text as email, organization_id from app_users where id = $1",
+    [id]
+  );
+  if (!target) throw new HTTPException(404, { message: "Account not found" });
+  if (!caller.isSuperAdmin && target.organization_id !== caller.homeOrganizationId) {
+    throw new HTTPException(404, { message: "Account not found" });
+  }
+
+  await updateUserEmail(target.email, email);
+  await db.query("update app_users set email = $2 where id = $1", [id, email]);
+  await audit(db, caller, {
+    action: "user.changeEmail",
+    entityType: "appUser",
+    entityId: id,
+    changes: { from: target.email, to: email },
+  });
+  return c.json({ id, email });
+});
+
+export default routes;

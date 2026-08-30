@@ -1,0 +1,26 @@
+# Functional Requirements
+- Deploy this app to directory.pauldev.io
+- Use design themes that are consistent with https://allsaintsorthodox.org/
+- This is a church directory app where users can manage their own directory data, and they can also see the directory data of other users
+- This is a multi-tenant app; in other words, it can support multiple organizations/churches
+- There should be 3 types of users: Super Admin, Admin, and User
+    - Super Admins: can create other Super Admins, Admins, Users, and organizations (and can assign admin users to an organization; each admin must be assigned to an organization); can also do everything that Admins and Users can do
+    - Admins: can create users in their organization (both Admin and User user types); can edit information for other Users or Persons; can also do everything that Users can do
+    - Users: can manage their own directory data and see the directory data of other users
+- An individual user can be a part of a family; any user can create a family, and other users can associate themselves with any family
+- A family can have people associated with it that aren't explicit users within the app (for example, a family might have children that don't have an account in the app); anyone in the family with a user account can manage the information for these non-user family members
+- A Person (defined as either a user or a non-user family member) can have the following attributes: email, phone number, alternate phone number, first name, last name, address, patron saint, special dates
+    - A Person that is a member of a family can choose to inherit the following attributes from another family member: email, phone number, alternate phone number, last name, address
+- Special dates can be as follows:
+    - Birthday (can optionally select month and day only or full month/day/year; checkbox should allow the person to opt-in to showing age to others; if opting-in to showing age, must select full month/day/year)
+    - Wedding Anniversary (must select month/day/year)
+        - When someone creates a wedding anniversary, that special date must link two Persons
+    - Feast Day (month and day only)
+- The app should have the following pages:
+    - Directory search: search for users where the search contents match anything in any data field
+    - Browse directory: scrollable view of the entire directory, sorted by last name
+    - Upcoming special dates
+        - Shows list of upcoming dates within the next 7 days (today and the next 6 days); can optionally change the default range to whatever you want
+        - Dates are grouped by date then special date type; if allowed, birthday and wedding anniversary date types show age and number of years respectively
+        - Optionally a month-by-month calendar view as well that shows which dates have special dates in them, allows you to tap on a date, and it shows the special dates for that day under the calendar view
+- Phone numbers should allow mobile users to tap to call that number

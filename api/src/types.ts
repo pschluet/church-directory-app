@@ -1,0 +1,407 @@
+/**
+ * Request/response contracts, as Zod schemas so validation and TypeScript
+ * types come from one definition. The SPA imports this module through the
+ * `@shared` alias (see app/vite.config.ts) so both sides agree on the shape of
+ * every payload and the client can validate forms before submitting.
+ */
+import { z } from "zod";
+
+// ---------------------------------------------------------------------------
+// Enums -- these mirror the CHECK constraints in db/migrations/V1__init.sql.
+// ---------------------------------------------------------------------------
+export const ROLES = ["SUPER_ADMIN", "ADMIN", "USER"] as const;
+export const roleSchema = z.enum(ROLES);
+export type Role = z.infer<typeof roleSchema>;
+
+export const USER_STATUSES = ["INVITED", "ACTIVE", "DISABLED"] as const;
+export const userStatusSchema = z.enum(USER_STATUSES);
+export type UserStatus = z.infer<typeof userStatusSchema>;
+
+export const SPECIAL_DATE_TYPES = ["BIRTHDAY", "ANNIVERSARY", "FEAST_DAY"] as const;
+export const specialDateTypeSchema = z.enum(SPECIAL_DATE_TYPES);
+export type SpecialDateType = z.infer<typeof specialDateTypeSchema>;
+
+export const JOIN_REQUEST_STATUSES = ["PENDING", "APPROVED", "DENIED", "CANCELLED"] as const;
+export const joinRequestStatusSchema = z.enum(JOIN_REQUEST_STATUSES);
+export type JoinRequestStatus = z.infer<typeof joinRequestStatusSchema>;
+
+/** The five attributes a family member may inherit from another. */
+export const INHERITABLE_ATTRIBUTES = [
+  "email",
+  "phone",
+  "altPhone",
+  "lastName",
+  "address",
+] as const;
+export const inheritableAttributeSchema = z.enum(INHERITABLE_ATTRIBUTES);
+export type InheritableAttribute = z.infer<typeof inheritableAttributeSchema>;
+
+// ---------------------------------------------------------------------------
+// Primitives
+// ---------------------------------------------------------------------------
+export const uuidSchema = z.string().uuid();
+
+/**
+ * Phone numbers are stored in E.164 so `tel:` links dial correctly on mobile.
+ * Use `normalizePhone` to turn typed input into this shape before validating.
+ */
+export const E164_PATTERN = /^\+[1-9][0-9]{1,14}$/;
+export const phoneSchema = z.string().regex(E164_PATTERN, "Must be a valid phone number");
+
+const trimmedOptional = (max: number) =>
+  z
+    .string()
+    .trim()
+    .max(max)
+    .transform((v) => (v === "" ? null : v))
+    .nullable()
+    .optional();
+
+export const emailSchema = z.string().trim().toLowerCase().email().max(254);
+
+export const addressSchema = z.object({
+  addressLine1: trimmedOptional(200),
+  addressLine2: trimmedOptional(200),
+  city: trimmedOptional(100),
+  state: trimmedOptional(100),
+  postalCode: trimmedOptional(20),
+  country: trimmedOptional(100),
+});
+
+// ---------------------------------------------------------------------------
+// Person
+// ---------------------------------------------------------------------------
+export const inheritanceSchema = z.object({
+  inheritEmailFromPersonId: uuidSchema.nullable().optional(),
+  inheritPhoneFromPersonId: uuidSchema.nullable().optional(),
+  inheritAltPhoneFromPersonId: uuidSchema.nullable().optional(),
+  inheritLastNameFromPersonId: uuidSchema.nullable().optional(),
+  inheritAddressFromPersonId: uuidSchema.nullable().optional(),
+});
+export type Inheritance = z.infer<typeof inheritanceSchema>;
+
+export const personWriteSchema = addressSchema.merge(inheritanceSchema).extend({
+  firstName: z.string().trim().min(1, "First name is required").max(100),
+  lastName: trimmedOptional(100),
+  email: emailSchema.nullable().optional(),
+  phone: phoneSchema.nullable().optional(),
+  altPhone: phoneSchema.nullable().optional(),
+  patronSaint: trimmedOptional(120),
+  familyId: uuidSchema.nullable().optional(),
+});
+export type PersonWrite = z.infer<typeof personWriteSchema>;
+
+/** Creating a family member who has no account of their own. */
+export const createPersonSchema = personWriteSchema.extend({
+  familyId: uuidSchema,
+});
+export type CreatePerson = z.infer<typeof createPersonSchema>;
+
+/** What browse, search and family listings need. */
+export interface PersonSummaryDto {
+  id: string;
+  organizationId: string;
+  familyId: string | null;
+  familyName: string | null;
+  appUserId: string | null;
+  firstName: string;
+  lastName: string | null;
+  email: string | null;
+  phone: string | null;
+  altPhone: string | null;
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+  patronSaint: string | null;
+  photoUrl: string | null;
+  /** Whether the caller is allowed to edit this person. */
+  canEdit: boolean;
+}
+
+/**
+ * The person detail view. `inheritedFrom` and `specialDates` are only loaded
+ * here rather than on every row of a directory listing, so a summary is never
+ * an object with a deceptively empty `specialDates: []`.
+ */
+export interface PersonDto extends PersonSummaryDto {
+  /** Which fields are inherited, and from whom -- drives the edit UI. */
+  inheritedFrom: Partial<Record<InheritableAttribute, { personId: string; name: string }>>;
+  specialDates: SpecialDateDto[];
+}
+
+// ---------------------------------------------------------------------------
+// Family
+// ---------------------------------------------------------------------------
+export const familyWriteSchema = z.object({
+  name: z.string().trim().min(1, "Family name is required").max(150),
+});
+export type FamilyWrite = z.infer<typeof familyWriteSchema>;
+
+export interface FamilyDto {
+  id: string;
+  organizationId: string;
+  name: string;
+  photoUrl: string | null;
+  members: PersonSummaryDto[];
+  pendingJoinRequests: JoinRequestDto[];
+  canEdit: boolean;
+  /** True when the caller is a member, so the UI can offer "request to join". */
+  isMember: boolean;
+}
+
+export interface JoinRequestDto {
+  id: string;
+  familyId: string;
+  familyName: string;
+  personId: string;
+  personName: string;
+  status: JoinRequestStatus;
+  requestedAt: string;
+  decidedAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Special dates
+//
+// The refinements here intentionally mirror the CHECK constraints in
+// V1__init.sql: the database is the backstop, this is the useful error message.
+// ---------------------------------------------------------------------------
+export const specialDateWriteSchema = z
+  .object({
+    type: specialDateTypeSchema,
+    month: z.number().int().min(1).max(12),
+    day: z.number().int().min(1).max(31),
+    year: z.number().int().min(1800).max(2200).nullable().optional(),
+    showYearCount: z.boolean().default(false),
+    relatedPersonId: uuidSchema.nullable().optional(),
+  })
+  .superRefine((value, ctx) => {
+    const { type, year, showYearCount, relatedPersonId, month, day } = value;
+
+    if (showYearCount && year == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["year"],
+        message: "Select a full date (month, day and year) to show the age or number of years",
+      });
+    }
+
+    if (type === "ANNIVERSARY") {
+      if (year == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["year"],
+          message: "A wedding anniversary needs a full month, day and year",
+        });
+      }
+      if (!relatedPersonId) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["relatedPersonId"],
+          message: "A wedding anniversary must link two people",
+        });
+      }
+    } else if (relatedPersonId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["relatedPersonId"],
+        message: "Only a wedding anniversary links two people",
+      });
+    }
+
+    if (type === "FEAST_DAY" && year != null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["year"],
+        message: "A feast day is a month and day only",
+      });
+    }
+
+    if (!isRealDate(month, day, year ?? null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["day"],
+        message: "That date does not exist",
+      });
+    }
+  });
+export type SpecialDateWrite = z.infer<typeof specialDateWriteSchema>;
+
+export interface SpecialDateDto {
+  id: string;
+  personId: string;
+  personName: string;
+  type: SpecialDateType;
+  month: number;
+  day: number;
+  year: number | null;
+  showYearCount: boolean;
+  relatedPersonId: string | null;
+  relatedPersonName: string | null;
+  /** The patron saint whose day this is; only set for FEAST_DAY. */
+  patronSaint: string | null;
+}
+
+/** One special date on one calendar day, with the age/years already worked out. */
+export interface SpecialDateOccurrenceDto extends SpecialDateDto {
+  /** ISO yyyy-mm-dd of the occurrence in the requested window. */
+  date: string;
+  /**
+   * Age for a birthday, years married for an anniversary. Null when the person
+   * did not opt in to showing it, or when no year is recorded.
+   */
+  yearCount: number | null;
+}
+
+export interface UpcomingDatesDto {
+  start: string;
+  end: string;
+  days: { date: string; dates: SpecialDateOccurrenceDto[] }[];
+}
+
+// ---------------------------------------------------------------------------
+// Admin: organizations and invitations
+// ---------------------------------------------------------------------------
+export const organizationWriteSchema = z.object({
+  name: z.string().trim().min(1).max(150),
+  slug: z
+    .string()
+    .trim()
+    .toLowerCase()
+    .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/, "Lowercase letters, numbers and hyphens only")
+    .max(60),
+});
+export type OrganizationWrite = z.infer<typeof organizationWriteSchema>;
+
+export interface OrganizationDto {
+  id: string;
+  name: string;
+  slug: string;
+  personCount: number;
+  familyCount: number;
+}
+
+export const inviteUserSchema = z.object({
+  email: emailSchema,
+  firstName: z.string().trim().min(1).max(100),
+  lastName: trimmedOptional(100),
+  role: roleSchema,
+  /** Required unless the invited role is SUPER_ADMIN. */
+  organizationId: uuidSchema.nullable().optional(),
+  /** Optionally place the new person straight into a family. */
+  familyId: uuidSchema.nullable().optional(),
+});
+export type InviteUser = z.infer<typeof inviteUserSchema>;
+
+export const updateUserSchema = z.object({
+  role: roleSchema.optional(),
+  status: userStatusSchema.optional(),
+  organizationId: uuidSchema.nullable().optional(),
+});
+export type UpdateUser = z.infer<typeof updateUserSchema>;
+
+export interface AppUserDto {
+  id: string;
+  email: string;
+  role: Role;
+  status: UserStatus;
+  organizationId: string | null;
+  organizationName: string | null;
+  personId: string | null;
+  personName: string | null;
+}
+
+export interface MeDto {
+  appUser: AppUserDto;
+  person: PersonDto | null;
+  /** The organization the caller is currently acting in. */
+  organization: { id: string; name: string } | null;
+  /** Super admins may switch organizations; everyone else gets an empty list. */
+  availableOrganizations: { id: string; name: string }[];
+}
+
+// ---------------------------------------------------------------------------
+// Photo uploads
+// ---------------------------------------------------------------------------
+export const PHOTO_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+export const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+
+export const photoUploadSchema = z
+  .object({
+    contentType: z.enum(PHOTO_CONTENT_TYPES),
+    contentLength: z.number().int().positive().max(MAX_PHOTO_BYTES),
+    personId: uuidSchema.optional(),
+    familyId: uuidSchema.optional(),
+  })
+  .refine((v) => Boolean(v.personId) !== Boolean(v.familyId), {
+    message: "Provide exactly one of personId or familyId",
+  });
+export type PhotoUpload = z.infer<typeof photoUploadSchema>;
+
+export interface PhotoUploadDto {
+  uploadUrl: string;
+  photoKey: string;
+}
+
+// ---------------------------------------------------------------------------
+// Shared helpers -- used by both the API and the SPA.
+// ---------------------------------------------------------------------------
+
+/** Days in a month; `year` null means "recurring", so February allows 29. */
+export function daysInMonth(month: number, year: number | null): number {
+  if (month === 2) {
+    if (year == null) return 29;
+    return isLeapYear(year) ? 29 : 28;
+  }
+  return [4, 6, 9, 11].includes(month) ? 30 : 31;
+}
+
+export function isLeapYear(year: number): boolean {
+  return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+}
+
+export function isRealDate(month: number, day: number, year: number | null): boolean {
+  if (month < 1 || month > 12 || day < 1) return false;
+  return day <= daysInMonth(month, year);
+}
+
+/**
+ * Turns whatever someone typed into E.164, assuming +1 when no country code is
+ * given (this is a US parish). Returns null if it cannot be made sense of, so
+ * callers can surface a validation error rather than storing junk.
+ */
+export function normalizePhone(input: string, defaultCountryCode = "1"): string | null {
+  const trimmed = input.trim();
+  if (trimmed === "") return null;
+
+  const hadPlus = trimmed.startsWith("+");
+  const digits = trimmed.replace(/\D/g, "");
+  if (digits === "") return null;
+
+  let candidate: string;
+  if (hadPlus) {
+    candidate = `+${digits}`;
+  } else if (digits.length === 10) {
+    candidate = `+${defaultCountryCode}${digits}`;
+  } else if (digits.length === 11 && digits.startsWith("1")) {
+    candidate = `+${digits}`;
+  } else {
+    candidate = `+${digits}`;
+  }
+
+  return E164_PATTERN.test(candidate) ? candidate : null;
+}
+
+/** `+13125551234` -> `(312) 555-1234`; anything else is returned unchanged. */
+export function formatPhone(e164: string): string {
+  const match = /^\+1(\d{3})(\d{3})(\d{4})$/.exec(e164);
+  if (!match) return e164;
+  return `(${match[1]}) ${match[2]}-${match[3]}`;
+}
+
+export function fullName(person: { firstName: string; lastName: string | null }): string {
+  return [person.firstName, person.lastName].filter(Boolean).join(" ");
+}
