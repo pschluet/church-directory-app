@@ -232,9 +232,11 @@ export function Badge({
     primary: "bg-primary/10 text-primary ring-primary/20",
     accent: "bg-accent/10 text-accent ring-accent/30",
   } as const;
+  // A badge is a one-line pill: never wrap it and never let a flex row squeeze
+  // it, or it grows a second line and shoves its neighbours around.
   return (
     <span
-      className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold ring-1 ${tones[tone]}`}
+      className={`inline-flex shrink-0 items-center whitespace-nowrap rounded-full px-2.5 py-0.5 text-xs font-bold ring-1 ${tones[tone]}`}
     >
       {children}
     </span>

@@ -22,7 +22,6 @@ interface NavItem {
 
 const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Directory" },
-  { to: "/search", label: "Search" },
   { to: "/dates", label: "Special Dates" },
   { to: "/families", label: "Families" },
   { to: "/me", label: "My Details" },

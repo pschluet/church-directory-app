@@ -17,8 +17,7 @@
         - When someone creates a wedding anniversary, that special date must link two Persons
     - Feast Day (month and day only)
 - The app should have the following pages:
-    - Directory search: search for users where the search contents match anything in any data field
-    - Browse directory: scrollable view of the entire directory, sorted by last name
+    - Directory: scrollable view of the entire directory, sorted by last name, with a search bar that matches anything in any data field
     - Upcoming special dates
         - Shows list of upcoming dates within the next 7 days (today and the next 6 days); can optionally change the default range to whatever you want
         - Dates are grouped by date then special date type; if allowed, birthday and wedding anniversary date types show age and number of years respectively

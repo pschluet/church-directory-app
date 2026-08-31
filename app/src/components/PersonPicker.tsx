@@ -52,7 +52,7 @@ export function PersonPicker({
   const listId = useId();
   const optionId = (index: number) => `${listId}-option-${index}`;
 
-  // Debounced, like the search page. The counter guards against a slow earlier
+  // Debounced, like the directory's search box. The counter guards against a slow earlier
   // response landing after a fast later one and overwriting it.
   const requestRef = useRef(0);
   useEffect(() => {

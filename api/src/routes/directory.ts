@@ -122,7 +122,7 @@ routes.get("/search", async (c) => {
  * to be chosen out of the parish.
  *
  * Separate from `/search` on purpose. That one matches "anything in any data
- * field", which is right for the search page and wrong here: typing "Newport"
+ * field", which is right for the directory's search box and wrong here: typing "Newport"
  * into a spouse picker should not offer everyone who lives on that street. So
  * this matches names only, returns a slim row rather than the whole resolved
  * record, and caps hard -- a dropdown nobody scrolls past 20 rows of.

@@ -8,7 +8,7 @@ import { Badge } from "./ui";
 
 /**
  * One person in a directory listing. A single column on a phone, gridded from
- * `md` up -- see BrowseDirectory.
+ * `md` up -- see Directory.
  *
  * Every card carries the same four things -- photo, name, account pill, family,
  * phone -- and nothing else, so the grid does not go ragged as records vary. The

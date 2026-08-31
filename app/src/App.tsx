@@ -4,8 +4,7 @@ import { MeProvider, useMe } from "./context/MeContext";
 import { AppShell } from "./components/AppShell";
 import { ErrorNotice, Spinner } from "./components/ui";
 import { Login } from "./pages/Login";
-import { BrowseDirectory } from "./pages/BrowseDirectory";
-import { Search } from "./pages/Search";
+import { Directory } from "./pages/Directory";
 import { UpcomingDates } from "./pages/UpcomingDates";
 import { PersonDetail } from "./pages/PersonDetail";
 import { MyDetails } from "./pages/MyDetails";
@@ -44,8 +43,7 @@ function SignedInRoutes() {
   return (
     <Routes>
       <Route element={<AppShell />}>
-        <Route index element={<BrowseDirectory />} />
-        <Route path="search" element={<Search />} />
+        <Route index element={<Directory />} />
         <Route path="dates" element={<UpcomingDates />} />
         <Route path="people/:id" element={<PersonDetail />} />
         <Route path="me" element={<MyDetails />} />
