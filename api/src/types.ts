@@ -278,6 +278,12 @@ export interface SpecialDateDto {
   type: SpecialDateType;
   month: number;
   day: number;
+  /**
+   * Null both when no year was recorded and when this viewer may not see the
+   * one that was -- deliberately indistinguishable, since telling the two apart
+   * would leak the very fact that a hidden year exists. See
+   * canSeeSpecialDateYear in services/persons.ts.
+   */
   year: number | null;
   showYearCount: boolean;
   relatedPersonId: string | null;

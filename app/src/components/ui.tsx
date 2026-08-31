@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
 /**
@@ -237,6 +237,74 @@ export function Badge({
       className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-xs font-bold ring-1 ${tones[tone]}`}
     >
       {children}
+    </span>
+  );
+}
+
+/**
+ * A short "why does this look like that?" note behind an info icon.
+ *
+ * Click rather than hover: hover has no equivalent on a touch screen, and this
+ * directory is used mostly on phones. Deliberately not built on
+ * `useDismissable` -- that locks page scrolling, which is right for a
+ * viewport-covering Modal and wrong for a note anchored inside a list row.
+ */
+export function InfoPopover({
+  label,
+  title,
+  children,
+}: {
+  /** What the icon does, for screen readers -- e.g. "Why is this year hidden?" */
+  label: string;
+  title: string;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  const containerRef = useRef<HTMLSpanElement>(null);
+  const panelId = useId();
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+    };
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setOpen(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKeyDown);
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKeyDown);
+    };
+  }, [open]);
+
+  return (
+    <span ref={containerRef} className="relative inline-flex">
+      <button
+        type="button"
+        aria-label={label}
+        aria-expanded={open}
+        aria-controls={panelId}
+        className="inline-flex text-ink-muted transition hover:text-accent"
+        onClick={() => setOpen((wasOpen) => !wasOpen)}
+      >
+        <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+          <path d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm0 1.5a6.5 6.5 0 1 1 0 13 6.5 6.5 0 0 1 0-13ZM9 8.5h2v6H9v-6Zm0-3h2v2H9v-2Z" />
+        </svg>
+      </button>
+      {open && (
+        // Anchored under the icon and clamped to the viewport, so it stays
+        // readable on a narrow phone instead of running off the right edge.
+        <span
+          id={panelId}
+          role="note"
+          className="absolute left-1/2 top-6 z-20 w-64 max-w-[calc(100vw-3rem)] -translate-x-1/2 rounded-md border border-line bg-surface p-3 text-left text-sm font-normal text-ink-muted shadow-lg"
+        >
+          <span className="mb-1 block font-bold text-ink">{title}</span>
+          {children}
+        </span>
+      )}
     </span>
   );
 }

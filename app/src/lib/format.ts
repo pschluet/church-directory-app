@@ -73,6 +73,15 @@ export function specialDateLabel(type: SpecialDateType): string {
 }
 
 /**
+ * The opt-in checkbox label, which reads differently for a birthday than for an
+ * anniversary. Shared, so the note explaining a hidden year can quote back the
+ * exact wording of the box the person left unchecked.
+ */
+export function showYearCountLabel(type: SpecialDateType): string {
+  return type === "BIRTHDAY" ? "Show my age to others" : "Show how many years";
+}
+
+/**
  * "41st birthday" / "16 years married" / "St. Anna". Returns null when there is
  * nothing extra to say -- which is the common case, since showing an age is
  * opt-in.

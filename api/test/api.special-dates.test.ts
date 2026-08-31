@@ -314,6 +314,134 @@ describe.skipIf(!hasDb)("special dates", () => {
     });
   });
 
+  /**
+   * "checkbox should allow the person to opt-in to showing age to others" --
+   * which only holds if the birth year goes with the age, since May 4, 1985 is
+   * one subtraction away from it. The year is withheld from the payload rather
+   * than from the page, so these assert on the JSON.
+   */
+  describe("hiding the year behind an opted-out age", () => {
+    /** Same organization as Paul, but a different family and no edit rights. */
+    async function createOutsider(): Promise<CreatedUser> {
+      const otherFamily = await createFamily(db(), orgId, "Novak");
+      return createUser(db(), {
+        organizationId: orgId,
+        familyId: otherFamily,
+        email: "outsider@test.example",
+        firstName: "Jan",
+        lastName: "Novak",
+      });
+    }
+
+    const birthdayOn = (body: any) => body.specialDates.find((d: any) => d.type === "BIRTHDAY");
+
+    it("keeps the year from another member, but not the day", async () => {
+      await as(paul).call("POST", "/api/special-dates", {
+        personId: paul.personId,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 4,
+        year: 1985,
+      });
+
+      const mine = await as(paul).call("GET", `/api/persons/${paul.personId}`);
+      expect(birthdayOn(mine.body).year).toBe(1985);
+
+      const theirs = await as(maria).call("GET", `/api/persons/${paul.personId}`);
+      const hidden = birthdayOn(theirs.body);
+      expect(hidden.year).toBeNull();
+      expect(hidden.month).toBe(5);
+      expect(hidden.day).toBe(4);
+    });
+
+    it("shows the year to everyone once the age is opted in to", async () => {
+      await as(paul).call("POST", "/api/special-dates", {
+        personId: paul.personId,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 4,
+        year: 1985,
+        showYearCount: true,
+      });
+
+      const { body } = await as(maria).call("GET", `/api/persons/${paul.personId}`);
+      expect(birthdayOn(body).year).toBe(1985);
+    });
+
+    it("shows the year to an admin, who can edit the date anyway", async () => {
+      await as(paul).call("POST", "/api/special-dates", {
+        personId: paul.personId,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 4,
+        year: 1985,
+      });
+
+      const admin = await createUser(db(), {
+        organizationId: orgId,
+        role: "ADMIN",
+        email: "admin@test.example",
+      });
+      const { body } = await as(admin).call("GET", `/api/persons/${paul.personId}`);
+      expect(birthdayOn(body).year).toBe(1985);
+    });
+
+    it("shows the year to a family member managing someone with no account", async () => {
+      await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 6,
+        year: 2015,
+      });
+
+      const { body } = await as(paul).call("GET", `/api/persons/${anna}`);
+      expect(birthdayOn(body).year).toBe(2015);
+
+      const outsider = await createOutsider();
+      const { body: outside } = await as(outsider).call("GET", `/api/persons/${anna}`);
+      expect(birthdayOn(outside).year).toBeNull();
+    });
+
+    it("shows an anniversary year to the spouse on the other side of it", async () => {
+      await as(paul).call("POST", "/api/special-dates", {
+        personId: paul.personId,
+        type: "ANNIVERSARY",
+        month: 6,
+        day: 12,
+        year: 2010,
+        relatedPersonId: maria.personId,
+      });
+
+      // Stored on Paul's record, but the wedding year is as much Maria's.
+      const { body: hers } = await as(maria).call("GET", `/api/persons/${maria.personId}`);
+      expect(hers.specialDates[0].year).toBe(2010);
+
+      const outsider = await createOutsider();
+      const { body: theirs } = await as(outsider).call("GET", `/api/persons/${paul.personId}`);
+      expect(theirs.specialDates[0].year).toBeNull();
+    });
+
+    it("redacts the year in the upcoming list too", async () => {
+      await as(paul).call("POST", "/api/special-dates", {
+        personId: paul.personId,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 4,
+        year: 1985,
+      });
+
+      const outsider = await createOutsider();
+      const { body } = await as(outsider).call(
+        "GET",
+        "/api/special-dates/upcoming?start=2026-05-04&days=1"
+      );
+      const entry = body.days[0].dates[0];
+      expect(entry.year).toBeNull();
+      expect(entry.yearCount).toBeNull();
+    });
+  });
+
   describe("updating and deleting", () => {
     it("updates a date the caller may edit", async () => {
       const created = await as(paul).call("POST", "/api/special-dates", {
