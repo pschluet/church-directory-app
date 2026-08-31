@@ -90,16 +90,20 @@ export function specialDateDetail(date: {
 
 /**
  * The other half of a linked date, as seen from one person's page. An
- * anniversary is stored once and shows on both pages, so whose name to print
+ * anniversary is stored once and shows on both pages, so who the partner is
  * depends on whose page it is: Paul's page says "with Sarah", Sarah's "with
  * Paul".
  */
-export function specialDatePartnerName(
+export function specialDatePartner(
   date: Pick<SpecialDateDto, "personId" | "personName" | "relatedPersonId" | "relatedPersonName">,
   viewedPersonId: string
-): string | null {
+): { id: string; name: string } | null {
   if (!date.relatedPersonId) return null;
-  return date.relatedPersonId === viewedPersonId ? date.personName : date.relatedPersonName;
+  const partner =
+    date.relatedPersonId === viewedPersonId
+      ? { id: date.personId, name: date.personName }
+      : { id: date.relatedPersonId, name: date.relatedPersonName };
+  return partner.name ? { id: partner.id, name: partner.name } : null;
 }
 
 /** A single-line address, skipping the parts that are missing. */

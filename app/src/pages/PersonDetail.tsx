@@ -15,7 +15,7 @@ import {
   fullName,
   specialDateDetail,
   specialDateLabel,
-  specialDatePartnerName,
+  specialDatePartner,
 } from "../lib/format";
 
 /**
@@ -197,14 +197,22 @@ export function PersonDetail() {
             {person.specialDates.map((date) => {
               const detail = specialDateDetail(date);
               const isTheirs = date.personId === person.id;
-              const partnerName = specialDatePartnerName(date, person.id);
+              const partner = specialDatePartner(date, person.id);
               return (
                 <li key={date.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-3">
                   <span className="font-bold text-ink">{specialDateLabel(date.type)}</span>
                   <span>{formatMonthDay(date.month, date.day, date.year)}</span>
                   {detail && <span className="text-sm font-bold text-accent">{detail}</span>}
-                  {partnerName && (
-                    <span className="text-sm text-ink-muted">with {partnerName}</span>
+                  {partner && (
+                    <span className="text-sm text-ink-muted">
+                      with{" "}
+                      <Link
+                        to={`/people/${partner.id}`}
+                        className="text-primary transition hover:text-accent"
+                      >
+                        {partner.name}
+                      </Link>
+                    </span>
                   )}
                   {person.canEdit && isTheirs && (
                     <span className="ml-auto flex gap-3 text-sm">

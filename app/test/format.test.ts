@@ -7,7 +7,7 @@ import {
   initials,
   specialDateDetail,
   specialDateLabel,
-  specialDatePartnerName,
+  specialDatePartner,
 } from "../src/lib/format";
 
 describe("displayPhone", () => {
@@ -52,7 +52,7 @@ describe("specialDateDetail", () => {
   });
 });
 
-describe("specialDatePartnerName", () => {
+describe("specialDatePartner", () => {
   const anniversary = {
     personId: "paul",
     personName: "Paul Schlueter",
@@ -60,18 +60,25 @@ describe("specialDatePartnerName", () => {
     relatedPersonName: "Sarah Schlueter",
   };
 
-  it("names whoever is not the person whose page it is", () => {
-    expect(specialDatePartnerName(anniversary, "paul")).toBe("Sarah Schlueter");
-    expect(specialDatePartnerName(anniversary, "sarah")).toBe("Paul Schlueter");
+  it("names whoever is not the person whose page it is, with their id to link to", () => {
+    expect(specialDatePartner(anniversary, "paul")).toEqual({
+      id: "sarah",
+      name: "Sarah Schlueter",
+    });
+    expect(specialDatePartner(anniversary, "sarah")).toEqual({
+      id: "paul",
+      name: "Paul Schlueter",
+    });
   });
 
   it("says nothing for a date that links no one", () => {
     expect(
-      specialDatePartnerName(
-        { ...anniversary, relatedPersonId: null, relatedPersonName: null },
-        "paul"
-      )
+      specialDatePartner({ ...anniversary, relatedPersonId: null, relatedPersonName: null }, "paul")
     ).toBeNull();
+  });
+
+  it("says nothing when the linked person has no name to show", () => {
+    expect(specialDatePartner({ ...anniversary, relatedPersonName: null }, "paul")).toBeNull();
   });
 });
 
