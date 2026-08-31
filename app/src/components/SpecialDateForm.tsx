@@ -2,12 +2,12 @@ import { useState } from "react";
 import {
   daysInMonth,
   specialDateWriteSchema,
-  type PersonSummaryDto,
   type SpecialDateDto,
   type SpecialDateType,
 } from "@shared";
 import { api } from "../lib/api";
 import { MONTH_NAMES, showYearCountLabel } from "../lib/format";
+import { PersonPicker, type PickedPerson } from "./PersonPicker";
 import { Button, Field, inputClass } from "./ui";
 
 /**
@@ -36,14 +36,11 @@ const TYPE_OPTIONS: { value: SpecialDateType; label: string; help: string }[] = 
 export function SpecialDateForm({
   personId,
   existing,
-  candidates,
   onSaved,
   onCancel,
 }: {
   personId: string;
   existing?: SpecialDateDto;
-  /** People in the organization who could be the other half of an anniversary. */
-  candidates: PersonSummaryDto[];
   onSaved: () => void;
   onCancel: () => void;
 }) {
@@ -52,7 +49,13 @@ export function SpecialDateForm({
   const [day, setDay] = useState(existing?.day ?? 1);
   const [year, setYear] = useState<string>(existing?.year ? String(existing.year) : "");
   const [showYearCount, setShowYearCount] = useState(existing?.showYearCount ?? false);
-  const [relatedPersonId, setRelatedPersonId] = useState(existing?.relatedPersonId ?? "");
+  // Seeded from the date being edited, so reopening an anniversary shows the
+  // partner without a lookup -- the DTO already carries their name.
+  const [relatedPerson, setRelatedPerson] = useState<PickedPerson | null>(
+    existing?.relatedPersonId && existing.relatedPersonName
+      ? { id: existing.relatedPersonId, name: existing.relatedPersonName }
+      : null
+  );
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -73,7 +76,7 @@ export function SpecialDateForm({
       day: Math.min(day, maxDay),
       year: type === "FEAST_DAY" ? null : parsedYear,
       showYearCount: canShowYearCount && showYearCount,
-      relatedPersonId: type === "ANNIVERSARY" ? relatedPersonId || null : null,
+      relatedPersonId: type === "ANNIVERSARY" ? (relatedPerson?.id ?? null) : null,
     };
 
     const parsed = specialDateWriteSchema.safeParse(payload);
@@ -177,23 +180,13 @@ export function SpecialDateForm({
       </div>
 
       {type === "ANNIVERSARY" && (
-        <Field label="Married to" hint="A wedding anniversary links two people and is stored once.">
-          <select
-            className={inputClass}
-            value={relatedPersonId}
-            required
-            onChange={(event) => setRelatedPersonId(event.target.value)}
-          >
-            <option value="">Choose a person…</option>
-            {candidates
-              .filter((candidate) => candidate.id !== personId)
-              .map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  {candidate.firstName} {candidate.lastName ?? ""}
-                </option>
-              ))}
-          </select>
-        </Field>
+        <PersonPicker
+          label="Married to"
+          hint="A wedding anniversary links two people and is stored once."
+          value={relatedPerson}
+          onChange={setRelatedPerson}
+          excludePersonId={personId}
+        />
       )}
 
       {type !== "FEAST_DAY" && (

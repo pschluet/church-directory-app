@@ -3,41 +3,16 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SpecialDateForm } from "../src/components/SpecialDateForm";
 
-const candidates = [
-  {
-    id: "spouse-id",
-    organizationId: "org",
-    familyId: "fam",
-    familyName: "Schlueter",
-    appUserId: "user",
-    firstName: "Maria",
-    lastName: "Schlueter",
-    email: null,
-    phone: null,
-    altPhone: null,
-    addressLine1: null,
-    addressLine2: null,
-    city: null,
-    state: null,
-    postalCode: null,
-    country: null,
-    patronSaint: null,
-    photoUrl: null,
-    thumbUrl: null,
-    fullUrl: null,
-    canEdit: false,
-  },
-];
+const api = vi.fn();
+vi.mock("../src/lib/api", () => ({
+  api: (...args: unknown[]) => api(...args),
+  DEV_AUTH: false,
+  uploadPhoto: vi.fn(),
+}));
 
 function renderForm() {
-  return render(
-    <SpecialDateForm
-      personId="person-id"
-      candidates={candidates}
-      onSaved={vi.fn()}
-      onCancel={vi.fn()}
-    />
-  );
+  api.mockResolvedValue({ people: [] });
+  return render(<SpecialDateForm personId="person-id" onSaved={vi.fn()} onCancel={vi.fn()} />);
 }
 
 /**
@@ -77,9 +52,23 @@ describe("SpecialDateForm", () => {
     renderForm();
     await userEvent.selectOptions(screen.getByLabelText(/occasion/i), "ANNIVERSARY");
 
-    expect(screen.getByLabelText(/married to/i)).toBeRequired();
+    expect(screen.getByRole("combobox", { name: /married to/i })).toBeInTheDocument();
     expect(yearInput()).toBeRequired();
     expect(screen.getByText(/links the two of you/i)).toBeInTheDocument();
+  });
+
+  /**
+   * The picker is not a native `required` control any more, so the guard is the
+   * shared schema -- which gives a real sentence rather than a browser tooltip.
+   */
+  it("refuses an anniversary with nobody on the other end", async () => {
+    renderForm();
+    await userEvent.selectOptions(screen.getByLabelText(/occasion/i), "ANNIVERSARY");
+    await userEvent.type(yearInput(), "2010");
+    await userEvent.click(screen.getByRole("button", { name: /add date/i }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/must link two people/i);
+    expect(api).not.toHaveBeenCalledWith("/special-dates", expect.anything());
   });
 
   it("drops the year entirely for a name day", async () => {
