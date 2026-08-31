@@ -4,6 +4,7 @@ import { handle } from "hono/aws-lambda";
 import { HTTPException } from "hono/http-exception";
 import { ZodError } from "zod";
 import { authMiddleware, type AppEnv } from "./auth";
+import { assertPhotoCookieConfig } from "./photo-cookies";
 import type { Queryable } from "./db";
 import meRoutes from "./routes/me";
 import directoryRoutes from "./routes/directory";
@@ -38,6 +39,11 @@ const NOT_NULL_VIOLATION = "23502";
  * argument -- tests pass a fake and get every route without a live Postgres.
  */
 export function createApp(queryable?: Queryable) {
+  // Fails here rather than on the first photo request: without the signing key
+  // every image on the site 403s, and a 403 from CloudFront leaves nothing in
+  // the API's logs to explain it.
+  assertPhotoCookieConfig();
+
   const app = new Hono<AppEnv>();
 
   app.onError((err, c) => {

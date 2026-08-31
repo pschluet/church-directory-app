@@ -74,6 +74,11 @@ jobs:
 
       - name: Deploy infrastructure
         working-directory: infra
+        # The photo signing key cannot live in the template -- anyone who can
+        # describe the stack could read it -- so it arrives here and lands in a
+        # KMS-encrypted Lambda environment variable. See scripts/create-photo-key.sh.
+        env:
+          CLOUDFRONT_PRIVATE_KEY: ${{ secrets.CLOUDFRONT_PRIVATE_KEY }}
         run: npx cdk deploy --require-approval never --outputs-file outputs.json
 
       # Migrations run after the infrastructure (so a new column's table
@@ -149,7 +154,12 @@ jobs:
         working-directory: infra
         run: |
           DISTRIBUTION_ID=$(jq -r ".[\"${STACK_NAME}\"].DistributionId" outputs.json)
-          aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" --paths "/*"
+          # Only index.html. Assets are content-hashed, and photo renditions
+          # live under a ULID that is never reused -- invalidating /* would
+          # evict every parish's faces from the edge on every deploy, which is
+          # the caching this feature exists to get.
+          aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" \
+            --paths "/" "/index.html"
 
       - name: Summary
         working-directory: infra

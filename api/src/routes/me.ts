@@ -1,9 +1,12 @@
 import { Hono } from "hono";
+import { setCookie } from "hono/cookie";
+import type { Context } from "hono";
 import { requireRole, type AppEnv, type Caller } from "../auth";
 import { one } from "../db";
 import { audit } from "../audit";
 import { loadPerson } from "../services/persons";
 import { setAccountOrganization } from "../services/membership";
+import { PHOTO_COOKIE_TTL_SECONDS, signPhotoCookies } from "../photo-cookies";
 import { fullName, setMyOrganizationSchema, type MeDto, type OrganizationMoveDto } from "../types";
 
 /**
@@ -75,8 +78,35 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
   };
 }
 
+/**
+ * Refreshes the CloudFront cookies that authorize photo reads.
+ *
+ * Done here rather than at sign-in because the SPA calls `/me` on every load
+ * and again whenever a super admin switches organization -- which is exactly
+ * when the cookie's scope has to change. Path is `/` and not `/api`, because
+ * these have to be sent with `/photos/*` requests.
+ */
+function issuePhotoCookies(c: Context<AppEnv>): void {
+  const caller = c.get("caller");
+  const cookies = signPhotoCookies({
+    organizationId: caller.organizationId,
+    isSuperAdmin: caller.isSuperAdmin,
+  });
+  for (const { name, value } of cookies) {
+    setCookie(c, name, value, {
+      path: "/",
+      secure: true,
+      httpOnly: true,
+      sameSite: "Lax",
+      maxAge: PHOTO_COOKIE_TTL_SECONDS,
+    });
+  }
+}
+
 routes.get("/", async (c) => {
-  return c.json(await loadMe(c.get("db"), c.get("caller")));
+  const body = await loadMe(c.get("db"), c.get("caller"));
+  issuePhotoCookies(c);
+  return c.json(body);
 });
 
 /**
@@ -116,7 +146,12 @@ routes.put("/organization", requireRole("SUPER_ADMIN"), async (c) => {
     familyId: null,
   };
 
-  return c.json({ ...(await loadMe(db, refreshed)), move });
+  const body = { ...(await loadMe(db, refreshed)), move };
+  // The home parish just changed, so the previous cookie is scoped to the wrong
+  // organization; reissue against the refreshed caller.
+  c.set("caller", refreshed);
+  issuePhotoCookies(c);
+  return c.json(body);
 });
 
 export default routes;

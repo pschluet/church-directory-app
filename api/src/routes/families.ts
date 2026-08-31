@@ -7,12 +7,13 @@ import { assertCanEditFamily, canEditFamily } from "../services/access";
 import { clearInheritanceFor } from "../services/inheritance";
 import { cancelPendingJoinRequests } from "../services/membership";
 import { PERSON_COLUMNS, PERSON_ORDER, toSummaries, type PersonRow } from "../services/persons";
-import { deletePhoto, presignDownload } from "../photos";
+import { deletePhoto, photoUrls } from "../photos";
 import {
   familyCreateSchema,
   familyMemberSchema,
   familyWriteSchema,
   fullName,
+  photoAttachSchema,
   uuidSchema,
   type FamilyDto,
   type FamilySummaryDto,
@@ -35,6 +36,9 @@ interface FamilyRow {
   organization_id: string;
   name: string;
   photo_key: string | null;
+  /** Null for photos that predate cropping; see V4__family_photo_dimensions.sql. */
+  photo_width: number | null;
+  photo_height: number | null;
 }
 
 async function loadFamilyRow(
@@ -44,11 +48,33 @@ async function loadFamilyRow(
 ): Promise<FamilyRow> {
   const row = await one<FamilyRow>(
     q,
-    "select id, organization_id, name, photo_key from families where id = $1 and organization_id = $2",
+    `select id, organization_id, name, photo_key, photo_width, photo_height
+       from families where id = $1 and organization_id = $2`,
     [familyId, organizationId]
   );
   if (!row) throw new HTTPException(404, { message: "Family not found" });
   return row;
+}
+
+/**
+ * The photo half of a family payload. `photoUrl` is deprecated and mirrors the
+ * thumbnail so a still-cached older SPA bundle keeps working.
+ */
+function familyPhotoFields(row: Pick<FamilyRow, "photo_key" | "photo_width" | "photo_height">): {
+  photoUrl: string | null;
+  thumbUrl: string | null;
+  fullUrl: string | null;
+  photoWidth: number | null;
+  photoHeight: number | null;
+} {
+  const { thumbUrl, fullUrl } = photoUrls(row.photo_key);
+  return {
+    photoUrl: thumbUrl,
+    thumbUrl,
+    fullUrl,
+    photoWidth: row.photo_width,
+    photoHeight: row.photo_height,
+  };
 }
 
 interface JoinRequestRow {
@@ -170,8 +196,8 @@ routes.get("/:id", async (c) => {
     id: family.id,
     organizationId: family.organization_id,
     name: family.name,
-    photoUrl: await presignDownload(family.photo_key),
-    members: await toSummaries(caller, memberRows),
+    ...familyPhotoFields(family),
+    members: toSummaries(caller, memberRows),
     pendingJoinRequests: pending,
     canEdit,
     isMember: caller.familyId === family.id,
@@ -255,12 +281,19 @@ routes.patch("/:id", async (c) => {
   return c.json({ id, name: payload.name });
 });
 
+/**
+ * Attaches a photo that has already been uploaded to the presigned URLs.
+ *
+ * Unlike a person's, a family crop is free-form, so the dimensions come with it
+ * and are stored -- the SPA needs them to reserve the right box and not shift
+ * the page as the photo paints.
+ */
 routes.put("/:id/photo", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
   const organizationId = requireOrganizationId(c);
   const id = uuidSchema.parse(c.req.param("id"));
-  const { photoKey } = (await c.req.json()) as { photoKey: string | null };
+  const { photoKey, photoWidth, photoHeight } = photoAttachSchema.parse(await c.req.json());
 
   const family = await loadFamilyRow(db, id, organizationId);
   assertCanEditFamily(caller, { id: family.id, organizationId: family.organization_id });
@@ -269,10 +302,21 @@ routes.put("/:id/photo", async (c) => {
     throw new HTTPException(400, { message: "That photo does not belong to this family" });
   }
 
-  await db.query("update families set photo_key = $2 where id = $1", [id, photoKey]);
+  // Clearing the photo clears the dimensions with it, so a stale ratio cannot
+  // outlive the image it described.
+  const width = photoKey ? (photoWidth ?? null) : null;
+  const height = photoKey ? (photoHeight ?? null) : null;
+
+  await db.query(
+    "update families set photo_key = $2, photo_width = $3, photo_height = $4 where id = $1",
+    [id, photoKey, width, height]
+  );
   if (family.photo_key && family.photo_key !== photoKey) await deletePhoto(family.photo_key);
 
-  return c.json({ id, photoUrl: await presignDownload(photoKey) });
+  return c.json({
+    id,
+    ...familyPhotoFields({ photo_key: photoKey, photo_width: width, photo_height: height }),
+  });
 });
 
 // ---------------------------------------------------------------------------

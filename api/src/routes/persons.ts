@@ -8,7 +8,13 @@ import { clearInheritanceFor, validateInheritance } from "../services/inheritanc
 import { cancelPendingJoinRequests } from "../services/membership";
 import { loadPerson, PERSON_WRITE_COLUMNS } from "../services/persons";
 import { deletePhoto } from "../photos";
-import { createPersonSchema, personWriteSchema, uuidSchema, type PersonWrite } from "../types";
+import {
+  createPersonSchema,
+  personWriteSchema,
+  photoAttachSchema,
+  uuidSchema,
+  type PersonWrite,
+} from "../types";
 
 /**
  * Person CRUD.
@@ -171,13 +177,15 @@ routes.patch("/:id", async (c) => {
   return c.json(person);
 });
 
-/** Attaches a photo that has already been uploaded to the presigned URL. */
+/** Attaches a photo that has already been uploaded to the presigned URLs. */
 routes.put("/:id/photo", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
   const organizationId = requireOrganizationId(c);
   const id = uuidSchema.parse(c.req.param("id"));
-  const { photoKey } = (await c.req.json()) as { photoKey: string | null };
+  // Dimensions are accepted by the schema but ignored here: a person's crop is
+  // square, so the avatar box is fixed by CSS and nothing needs reserving.
+  const { photoKey } = photoAttachSchema.parse(await c.req.json());
 
   const existing = await loadFacts(db, id, organizationId);
   assertCanEditPerson(caller, facts(existing));

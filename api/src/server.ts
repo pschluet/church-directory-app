@@ -55,12 +55,17 @@ function requiredEnv(name: string): string {
 const root = new Hono<AppEnv>();
 
 // ---------------------------------------------------------------------------
-// Local photo storage, standing in for S3 presigned PUT/GET. Registered before
-// the API so it is reachable without a token -- an <img src> cannot send one.
+// Local photo storage, standing in for S3 and CloudFront.
+//
+// Deliberately the same /photos/* paths the deployed app serves, so the API
+// hands out identical URLs in both modes and nothing downstream branches on
+// storage. Registered before the API so it is reachable without a token -- an
+// <img src> cannot send one, which is what CloudFront signed cookies solve in
+// production and nothing needs to solve here.
 // ---------------------------------------------------------------------------
 function localPhotoPath(key: string): string {
-  // Keys look like photos/<org>/person/<id>/<ulid>.jpg; flatten to one file and
-  // refuse anything that tries to climb out of the directory.
+  // Keys look like photos/<org>/person/<id>/<ulid>/thumb; flatten to one file
+  // and refuse anything that tries to climb out of the directory.
   const flat = key
     .replace(/\.\./g, "")
     .replace(/[^\w./-]/g, "_")
@@ -68,26 +73,43 @@ function localPhotoPath(key: string): string {
   return path.join(LOCAL_PHOTO_DIR, flat);
 }
 
-const CONTENT_TYPES: Record<string, string> = {
-  ".jpg": "image/jpeg",
-  ".png": "image/png",
-  ".webp": "image/webp",
-};
+/** The key a /photos/... request is asking for, with the leading slash gone. */
+function photoKeyFromUrl(url: string): string {
+  return decodeURIComponent(new URL(url).pathname).slice(1);
+}
 
-root.put("/api/dev/photos/:key", async (c) => {
-  const key = decodeURIComponent(c.req.param("key"));
+/**
+ * Renditions are stored without an extension, because deployed they carry their
+ * content type in S3 object metadata. On disk there is nowhere to put that, so
+ * sniff the magic bytes instead -- cheaper and more honest than a sidecar file.
+ */
+function sniffContentType(bytes: Buffer): string {
+  if (bytes.length >= 12 && bytes.toString("ascii", 0, 4) === "RIFF") {
+    if (bytes.toString("ascii", 8, 12) === "WEBP") return "image/webp";
+  }
+  if (bytes.length >= 3 && bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff) {
+    return "image/jpeg";
+  }
+  if (bytes.length >= 8 && bytes.toString("hex", 0, 8) === "89504e470d0a1a0a") return "image/png";
+  return "application/octet-stream";
+}
+
+root.put("/photos/*", async (c) => {
+  const key = photoKeyFromUrl(c.req.url);
   const bytes = Buffer.from(await c.req.arrayBuffer());
   await fs.mkdir(LOCAL_PHOTO_DIR, { recursive: true });
   await fs.writeFile(localPhotoPath(key), bytes);
   return c.body(null, 200);
 });
 
-root.get("/api/dev/photos/:key", async (c) => {
-  const key = decodeURIComponent(c.req.param("key"));
+root.get("/photos/*", async (c) => {
+  const key = photoKeyFromUrl(c.req.url);
   try {
     const bytes = await fs.readFile(localPhotoPath(key));
     return c.body(bytes, 200, {
-      "content-type": CONTENT_TYPES[path.extname(key).toLowerCase()] ?? "application/octet-stream",
+      "content-type": sniffContentType(bytes),
+      // Deployed these are immutable, but a dev who re-seeds wants the new
+      // bytes and the keys are not content-addressed across a reset.
       "cache-control": "no-store",
     });
   } catch {

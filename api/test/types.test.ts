@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_PHOTO_BYTES,
   daysInMonth,
   formatPhone,
   isLeapYear,
@@ -8,6 +9,7 @@ import {
   specialDateWriteSchema,
   personWriteSchema,
   organizationWriteSchema,
+  photoAttachSchema,
   photoUploadSchema,
 } from "../src/types";
 
@@ -170,7 +172,10 @@ describe("organizationWriteSchema", () => {
 });
 
 describe("photoUploadSchema", () => {
-  const base = { contentType: "image/jpeg" as const, contentLength: 1024 };
+  const base = {
+    contentType: "image/webp" as const,
+    renditions: { thumb: { contentLength: 20 * 1024 }, full: { contentLength: 180 * 1024 } },
+  };
   const id = "6f2a2d94-1a5f-4c26-9e0e-2f3a4b5c6d7e";
 
   it("needs exactly one owner", () => {
@@ -182,13 +187,60 @@ describe("photoUploadSchema", () => {
     );
   });
 
-  it("caps the upload size and the content types", () => {
+  it("requires both renditions", () => {
     expect(
-      photoUploadSchema.safeParse({ ...base, personId: id, contentLength: 50 * 1024 * 1024 })
-        .success
+      photoUploadSchema.safeParse({
+        ...base,
+        personId: id,
+        renditions: { thumb: { contentLength: 20 * 1024 } },
+      }).success
     ).toBe(false);
+  });
+
+  it("caps each rendition rather than the original", () => {
+    // The 5MB MAX_PHOTO_BYTES applies to the file someone picks, in the
+    // browser. What reaches S3 is downscaled, so the cap here is tighter.
+    expect(
+      photoUploadSchema.safeParse({
+        ...base,
+        personId: id,
+        renditions: {
+          thumb: { contentLength: 20 * 1024 },
+          full: { contentLength: MAX_PHOTO_BYTES },
+        },
+      }).success
+    ).toBe(false);
+  });
+
+  it("only accepts the types the browser can encode to", () => {
     expect(
       photoUploadSchema.safeParse({ ...base, personId: id, contentType: "image/gif" }).success
     ).toBe(false);
+    // A PNG is a valid *input* but is never what gets uploaded.
+    expect(
+      photoUploadSchema.safeParse({ ...base, personId: id, contentType: "image/png" }).success
+    ).toBe(false);
+  });
+});
+
+describe("photoAttachSchema", () => {
+  const prefix = "photos/6f2a2d94-1a5f-4c26-9e0e-2f3a4b5c6d7e/person/abc/01ABC/";
+
+  it("takes a rendition prefix or a null to clear", () => {
+    expect(photoAttachSchema.safeParse({ photoKey: prefix }).success).toBe(true);
+    expect(photoAttachSchema.safeParse({ photoKey: null }).success).toBe(true);
+  });
+
+  it("rejects a key that is not a prefix", () => {
+    // A bare object key would make photoVariantKeys treat it as a legacy
+    // single original, silently storing a photo with no thumbnail.
+    expect(photoAttachSchema.safeParse({ photoKey: `${prefix}thumb` }).success).toBe(false);
+  });
+
+  it("wants both dimensions or neither", () => {
+    expect(
+      photoAttachSchema.safeParse({ photoKey: prefix, photoWidth: 1200, photoHeight: 800 }).success
+    ).toBe(true);
+    expect(photoAttachSchema.safeParse({ photoKey: prefix, photoWidth: 1200 }).success).toBe(false);
   });
 });

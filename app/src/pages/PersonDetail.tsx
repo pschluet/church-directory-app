@@ -91,9 +91,10 @@ export function PersonDetail() {
             <PhotoUpload
               stacked
               owner={{ personId: person.id }}
-              photoUrl={person.photoUrl}
+              thumbUrl={person.thumbUrl}
+              fullUrl={person.fullUrl}
               person={person}
-              onUploaded={async (photoKey) => {
+              onUploaded={async ({ photoKey }) => {
                 setPerson(
                   await api<PersonDto>(`/persons/${person.id}/photo`, {
                     method: "PUT",
@@ -111,7 +112,7 @@ export function PersonDetail() {
               }}
             />
           ) : (
-            <Avatar photoUrl={person.photoUrl} person={person} size="lg" />
+            <Avatar thumbUrl={person.thumbUrl} fullUrl={person.fullUrl} person={person} size="lg" />
           )}
         </div>
 

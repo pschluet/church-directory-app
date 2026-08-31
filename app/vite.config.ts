@@ -23,6 +23,13 @@ export default defineConfig(({ mode }) => {
           target: env.VITE_DEV_API_PROXY_TARGET ?? "http://localhost:3000",
           changeOrigin: true,
         },
+        // Deployed, /photos/* is a CloudFront behaviour onto the private photos
+        // bucket. Locally the Hono server serves the same paths off disk, so
+        // the API hands out identical URLs either way.
+        "/photos": {
+          target: env.VITE_DEV_API_PROXY_TARGET ?? "http://localhost:3000",
+          changeOrigin: true,
+        },
       },
     },
   };

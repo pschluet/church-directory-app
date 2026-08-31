@@ -28,6 +28,20 @@ export interface ChurchDirectoryStackProps extends StackProps {
   readonly hostedZoneName: string;
   /** Must be an ISSUED cert in us-east-1 covering domainName. */
   readonly certificateArn: string;
+  /**
+   * The RSA keypair CloudFront uses to gate photo reads.
+   *
+   * Generated once, out of band, by scripts/create-photo-key.sh -- CDK cannot
+   * create a keypair, and a private key in the template would be readable by
+   * anyone who can describe the stack. The public half is committed (it is
+   * public by definition); the private half arrives from a GitHub Actions
+   * secret through CDK context and lands in a Lambda environment variable,
+   * which the runtime decrypts with no network call. That last part matters:
+   * this VPC has no route to Secrets Manager or SSM (see the networking
+   * comment below), so the usual homes for a secret are unreachable.
+   */
+  readonly photoPublicKeyPem: string;
+  readonly photoPrivateKeyPem: string;
 }
 
 /**
@@ -44,7 +58,15 @@ export class ChurchDirectoryStack extends Stack {
   constructor(scope: Construct, id: string, props: ChurchDirectoryStackProps) {
     super(scope, id, props);
 
-    const { superAdminEmail, domainName, hostedZoneId, hostedZoneName, certificateArn } = props;
+    const {
+      superAdminEmail,
+      domainName,
+      hostedZoneId,
+      hostedZoneName,
+      certificateArn,
+      photoPublicKeyPem,
+      photoPrivateKeyPem,
+    } = props;
 
     // -------------------------------------------------------------------
     // Networking
@@ -170,8 +192,10 @@ export class ChurchDirectoryStack extends Stack {
       cors: [
         {
           // Browsers PUT straight to S3 with a presigned URL, so the bucket
-          // itself needs to allow the SPA's origin.
-          allowedMethods: [s3.HttpMethods.PUT, s3.HttpMethods.GET],
+          // itself needs to allow the SPA's origin. GET is deliberately absent:
+          // reads go through CloudFront on the site's own origin, so they are
+          // not cross-origin at all.
+          allowedMethods: [s3.HttpMethods.PUT],
           allowedOrigins: [`https://${domainName}`, "http://localhost:5173"],
           allowedHeaders: ["*"],
           exposedHeaders: ["ETag"],
@@ -186,6 +210,28 @@ export class ChurchDirectoryStack extends Stack {
       blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
       encryption: s3.BucketEncryption.S3_MANAGED,
       enforceSSL: true,
+    });
+
+    // -------------------------------------------------------------------
+    // Photo delivery
+    //
+    // The photos bucket is private and is not a website. CloudFront reaches it
+    // with an Origin Access Control, and the /photos/* behaviour is restricted
+    // to viewers holding a signature from this key group -- the cookies
+    // api/src/photo-cookies.ts issues on GET /me.
+    //
+    // The alternative, a presigned GET per object, is what this replaces: the
+    // signature changes on every response, so the URL changes, so the browser
+    // cache never hits and a directory page re-downloads every face. These
+    // paths are permanent and cacheable at the edge instead.
+    // -------------------------------------------------------------------
+    const photoPublicKey = new cloudfront.PublicKey(this, "PhotoPublicKey", {
+      encodedKey: photoPublicKeyPem,
+      comment: "Signs church directory photo cookies",
+    });
+    const photoKeyGroup = new cloudfront.KeyGroup(this, "PhotoKeyGroup", {
+      items: [photoPublicKey],
+      comment: "Trusted signers for /photos/*",
     });
 
     // -------------------------------------------------------------------
@@ -278,6 +324,11 @@ export class ChurchDirectoryStack extends Stack {
         USER_POOL_CLIENT_ID: userPoolClient.userPoolClientId,
         SITE_URL: `https://${domainName}`,
         FROM_EMAIL: `no-reply@${hostedZoneName}`,
+        // Encrypted at rest with the AWS-managed Lambda key and decrypted by
+        // the runtime, so reading it costs no network call -- which is the only
+        // way a secret can work in this VPC. See the props comment.
+        CLOUDFRONT_PRIVATE_KEY: photoPrivateKeyPem,
+        CLOUDFRONT_KEY_PAIR_ID: photoPublicKey.publicKeyId,
       },
     });
 
@@ -466,6 +517,17 @@ function handler(event) {
           originRequestPolicy: cloudfront.OriginRequestPolicy.ALL_VIEWER_EXCEPT_HOST_HEADER,
           allowedMethods: cloudfront.AllowedMethods.ALLOW_ALL,
           // Deliberately no function here: /api/* must pass through untouched.
+        },
+        "/photos/*": {
+          origin: origins.S3BucketOrigin.withOriginAccessControl(photosBucket),
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          // Every rendition is written under a ULID that is never reused, so
+          // the bytes at a path never change and this can cache hard. It is
+          // also why no deploy needs to invalidate /photos/*.
+          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+          trustedKeyGroups: [photoKeyGroup],
+          // Deliberately no function here either: the SPA fallback would
+          // rewrite an extensionless rendition path to /index.html.
         },
       },
     });

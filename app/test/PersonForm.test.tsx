@@ -34,6 +34,8 @@ function summary(overrides: { id: string; firstName: string }): PersonSummaryDto
     country: null,
     patronSaint: null,
     photoUrl: null,
+    thumbUrl: null,
+    fullUrl: null,
     canEdit: true,
     ...overrides,
   } as unknown as PersonSummaryDto;

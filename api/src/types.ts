@@ -116,7 +116,15 @@ export interface PersonSummaryDto {
   postalCode: string | null;
   country: string | null;
   patronSaint: string | null;
+  /**
+   * @deprecated Use `thumbUrl`/`fullUrl`. Kept for one release because the SPA
+   * is published after the API, so an older bundle may still be live.
+   */
   photoUrl: string | null;
+  /** The small square rendition, for avatars and cards. */
+  thumbUrl: string | null;
+  /** The large rendition, requested only when the full-screen view opens. */
+  fullUrl: string | null;
   /** Whether the caller is allowed to edit this person. */
   canEdit: boolean;
 }
@@ -167,7 +175,17 @@ export interface FamilyDto {
   id: string;
   organizationId: string;
   name: string;
+  /** @deprecated Use `thumbUrl`/`fullUrl`; see PersonSummaryDto.photoUrl. */
   photoUrl: string | null;
+  thumbUrl: string | null;
+  fullUrl: string | null;
+  /**
+   * The intrinsic size of the family photo. A family crop is free-form, so the
+   * SPA needs these to reserve the box before the image paints. Null for photos
+   * that predate cropping.
+   */
+  photoWidth: number | null;
+  photoHeight: number | null;
   members: PersonSummaryDto[];
   pendingJoinRequests: JoinRequestDto[];
   canEdit: boolean;
@@ -382,13 +400,46 @@ export interface MeDto {
 // ---------------------------------------------------------------------------
 // Photo uploads
 // ---------------------------------------------------------------------------
+/** What the file picker accepts. Uploaded bytes are always PHOTO_UPLOAD_TYPE. */
 export const PHOTO_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+
+/** The ceiling on the file someone picks, checked in the browser before decoding. */
 export const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+
+/**
+ * The ceiling on each rendition the browser produces. Much smaller than
+ * MAX_PHOTO_BYTES: these are downscaled WebP, so anything approaching this is a
+ * bug or an attempt to use a presigned URL for something else.
+ */
+export const MAX_RENDITION_BYTES = 2 * 1024 * 1024;
+
+/**
+ * Every photo is stored twice.
+ *
+ * `thumb` is what avatars and directory cards load -- the whole point of the
+ * split, since a card renders at 56px and used to download the untouched
+ * original. `full` is only fetched when someone opens the full-screen view.
+ */
+export const PHOTO_RENDITIONS = ["thumb", "full"] as const;
+export type PhotoRendition = (typeof PHOTO_RENDITIONS)[number];
+
+/**
+ * The browser crops and downscales before uploading, so it always sends WebP
+ * (or JPEG on the rare engine whose canvas cannot encode WebP) whatever the
+ * user picked. The rendition filenames carry the extension, so the content type
+ * is not part of the request.
+ */
+export const PHOTO_UPLOAD_TYPES = ["image/webp", "image/jpeg"] as const;
+export type PhotoUploadType = (typeof PHOTO_UPLOAD_TYPES)[number];
+
+const renditionSizeSchema = z.object({
+  contentLength: z.number().int().positive().max(MAX_RENDITION_BYTES),
+});
 
 export const photoUploadSchema = z
   .object({
-    contentType: z.enum(PHOTO_CONTENT_TYPES),
-    contentLength: z.number().int().positive().max(MAX_PHOTO_BYTES),
+    contentType: z.enum(PHOTO_UPLOAD_TYPES),
+    renditions: z.object({ thumb: renditionSizeSchema, full: renditionSizeSchema }),
     personId: uuidSchema.optional(),
     familyId: uuidSchema.optional(),
   })
@@ -398,9 +449,35 @@ export const photoUploadSchema = z
 export type PhotoUpload = z.infer<typeof photoUploadSchema>;
 
 export interface PhotoUploadDto {
-  uploadUrl: string;
+  /**
+   * The prefix both renditions live under, ending in "/". This is what gets
+   * stored in `photo_key` and handed back to the attach endpoint.
+   */
   photoKey: string;
+  uploadUrls: Record<PhotoRendition, string>;
 }
+
+/**
+ * Attaching an already-uploaded photo, or clearing one with a null key.
+ *
+ * Dimensions are only meaningful for a family, whose crop is free-form; the
+ * person endpoint ignores them.
+ */
+export const photoAttachSchema = z
+  .object({
+    photoKey: z.string().min(1).max(500).nullable(),
+    photoWidth: z.number().int().positive().max(20000).nullable().optional(),
+    photoHeight: z.number().int().positive().max(20000).nullable().optional(),
+  })
+  .refine((v) => v.photoKey === null || v.photoKey.endsWith("/"), {
+    message: "A photo key must be the rendition prefix, ending in /",
+    path: ["photoKey"],
+  })
+  .refine((v) => Boolean(v.photoWidth) === Boolean(v.photoHeight), {
+    message: "Provide both photoWidth and photoHeight, or neither",
+    path: ["photoWidth"],
+  });
+export type PhotoAttach = z.infer<typeof photoAttachSchema>;
 
 // ---------------------------------------------------------------------------
 // Shared helpers -- used by both the API and the SPA.
