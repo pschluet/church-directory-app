@@ -4,6 +4,14 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#b42d23" />
+    <!--
+      Declared explicitly, and not left to the browser's implicit /favicon.ico
+      guess: the SPA writes the search box into the query string, so Chrome saw
+      a new document URL on every keystroke and re-requested the icon each
+      time. Naming it here is also what lets the SVG win where it is supported.
+    -->
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="icon" href="/favicon.ico" sizes="32x32" />
     <meta name="description" content="Parish directory" />
     <title>Parish Directory</title>
   </head>

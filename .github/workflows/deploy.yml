@@ -144,22 +144,29 @@ jobs:
           SITE_BUCKET=$(jq -r ".[\"${STACK_NAME}\"].SiteBucketName" outputs.json)
 
           # Hashed assets can be cached hard; index.html must not be, or a
-          # deploy would not reach anyone until their cache expired.
+          # deploy would not reach anyone until their cache expired. The
+          # favicons sit in between: their names are fixed, so "immutable"
+          # would pin a stale icon in every browser for a year, but they change
+          # about never, so a day is plenty.
           aws s3 sync ../app/dist "s3://$SITE_BUCKET" --delete \
-            --exclude index.html --cache-control "public,max-age=31536000,immutable"
+            --exclude index.html --exclude "favicon.*" \
+            --cache-control "public,max-age=31536000,immutable"
           aws s3 cp ../app/dist/index.html "s3://$SITE_BUCKET/index.html" \
             --cache-control "no-cache,must-revalidate"
+          aws s3 sync ../app/dist "s3://$SITE_BUCKET" --exclude "*" \
+            --include "favicon.*" --cache-control "public,max-age=86400"
 
       - name: Invalidate the CloudFront cache
         working-directory: infra
         run: |
           DISTRIBUTION_ID=$(jq -r ".[\"${STACK_NAME}\"].DistributionId" outputs.json)
-          # Only index.html. Assets are content-hashed, and photo renditions
-          # live under a ULID that is never reused -- invalidating /* would
-          # evict every parish's faces from the edge on every deploy, which is
-          # the caching this feature exists to get.
+          # Only index.html and the favicons, whose names are fixed and which
+          # the edge is told to hold for a day. Assets are content-hashed, and
+          # photo renditions live under a ULID that is never reused --
+          # invalidating /* would evict every parish's faces from the edge on
+          # every deploy, which is the caching this feature exists to get.
           aws cloudfront create-invalidation --distribution-id "$DISTRIBUTION_ID" \
-            --paths "/" "/index.html"
+            --paths "/" "/index.html" "/favicon.ico" "/favicon.svg"
 
       - name: Summary
         working-directory: infra

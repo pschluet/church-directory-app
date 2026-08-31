@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="Parish Directory">
+  <!--
+    A three-bar Orthodox cross in the parish red (#b42d23, the primary colour
+    token in app/src/theme.css): upright, short titulus, long main bar, and a
+    footrest slanted so the viewer's left end rides high. The background is
+    left transparent so the mark sits on whatever the browser paints its tab
+    strip.
+
+    Proportions are taken from a conventional drawing of the cross, scaled to a
+    32-unit grid: bars at 0.40 and 0.70 of the height, centred at 0.14 and 0.35
+    down the upright, footrest at 0.80 down and 40 degrees off horizontal. Three
+    departures from it, all for legibility at favicon sizes: the strokes are 2
+    units where a faithful scaling gives 1.8, since a sub-pixel upright turns
+    grey; the long edges of every bar land on whole units, because a bar
+    straddling a pixel boundary renders blurred at 32px; and the footrest is
+    2.2, since a diagonal at the same nominal weight as its neighbours reads
+    lighter than them.
+
+    favicon.ico is the same geometry rasterised for clients that ignore SVG
+    icons, so a change here needs the .ico regenerated to match.
+  -->
+  <g fill="#b42d23">
+    <rect x="15" y="1" width="2" height="30"/>
+    <rect x="10" y="4" width="12" height="2"/>
+    <rect x="5.5" y="10" width="21" height="2"/>
+    <rect x="10.15" y="23.9" width="11.7" height="2.2" transform="rotate(40 16 25)"/>
+  </g>
+</svg>
