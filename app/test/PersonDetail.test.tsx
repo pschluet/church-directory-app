@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { Route, Routes } from "react-router";
+import { renderWithProviders } from "./utils";
 import type { MeDto, PersonDto, SpecialDateDto } from "@shared";
 import { PersonDetail } from "../src/pages/PersonDetail";
 
@@ -75,12 +76,11 @@ function renderPage(specialDates: SpecialDateDto[]) {
     if (path === "/persons/person-1") return Promise.resolve(buildPerson(specialDates));
     return Promise.resolve({ people: [], families: [] });
   });
-  return render(
-    <MemoryRouter initialEntries={["/people/person-1"]}>
-      <Routes>
-        <Route path="/people/:id" element={<PersonDetail />} />
-      </Routes>
-    </MemoryRouter>
+  return renderWithProviders(
+    <Routes>
+      <Route path="/people/:id" element={<PersonDetail />} />
+    </Routes>,
+    { initialEntries: ["/people/person-1"] }
   );
 }
 

@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { act, render, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation, useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
+import { renderWithProviders } from "./utils";
 import type { PersonSummaryDto } from "@shared";
 import { Directory } from "../src/pages/Directory";
 
@@ -73,12 +74,13 @@ function BackButton() {
 }
 
 function renderDirectory(path = "/") {
-  return render(
-    <MemoryRouter initialEntries={[path]}>
+  return renderWithProviders(
+    <>
       <Directory />
       <LocationProbe />
       <BackButton />
-    </MemoryRouter>
+    </>,
+    { initialEntries: [path] }
   );
 }
 
@@ -138,6 +140,9 @@ describe("Directory", () => {
     await vi.advanceTimersByTimeAsync(250);
     await waitFor(() => expect(calls("/directory/search")).toHaveLength(1));
     expect(api).toHaveBeenCalledWith("/directory/search", {
+      // React Query hands the query function an abort signal, which api()
+      // forwards to fetch.
+      signal: expect.any(AbortSignal),
       query: { q: "smith", accountHoldersOnly: undefined },
     });
   });

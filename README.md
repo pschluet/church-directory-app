@@ -13,6 +13,11 @@ Accounts are invite-only, created by a parish administrator.
 - **Frontend:** React 19 + Vite SPA (`app/`), Tailwind v4, on a private S3 bucket behind
   CloudFront. Themed after [allsaintsorthodox.org](https://allsaintsorthodox.org) — the
   same liturgical red (`#b42d23`), gold (`#b88c51`) and Karla typeface.
+- **Client cache:** TanStack Query, in memory only. Nothing is persisted to disk, because
+  the alternative is the parish's phone numbers and addresses sitting in `localStorage` on
+  whatever phone last signed in. Every org-scoped key is namespaced by organization id in
+  `app/src/lib/queryKeys.ts`: `api()` appends `?orgId=` from `localStorage` itself, so a
+  key that left it out would serve one parish's directory to another.
 - **Auth:** Cognito user pool (Essentials tier), email-OTP passwordless sign-in. Self
   sign-up is disabled; administrators invite people and the API sends the invitation
   through SES. Cognito's own invitation is suppressed, because a custom Cognito template
@@ -107,7 +112,7 @@ codes arrive in your actual inbox.
 ```sh
 npm run ci:check                        # Biome lint + format
 npm run typecheck --workspaces
-npm test                                # 383 tests across api, app and infra
+npm test                                # 459 tests across api, app and infra
 ```
 
 The API tests run against a real Postgres (`directory_test`, migrated automatically by

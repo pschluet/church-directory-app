@@ -63,10 +63,12 @@ interface RequestOptions {
   query?: Record<string, string | number | undefined | null>;
   /** Set false for the organization list itself, which is not org-scoped. */
   withOrg?: boolean;
+  /** React Query hands one to every query function, which cancels superseded reads. */
+  signal?: AbortSignal;
 }
 
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, query, withOrg = true } = options;
+  const { method = "GET", body, query, withOrg = true, signal } = options;
 
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query ?? {})) {
@@ -78,6 +80,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
   const queryString = params.toString();
   const response = await fetch(`/api${path}${queryString ? `?${queryString}` : ""}`, {
     method,
+    signal,
     headers: {
       ...(await authHeaders()),
       ...(body === undefined ? {} : { "content-type": "application/json" }),

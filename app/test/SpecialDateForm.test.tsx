@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SpecialDateForm } from "../src/components/SpecialDateForm";
+import { renderWithProviders } from "./utils";
 
 const api = vi.fn();
 vi.mock("../src/lib/api", () => ({
@@ -10,9 +11,15 @@ vi.mock("../src/lib/api", () => ({
   uploadPhoto: vi.fn(),
 }));
 
+vi.mock("../src/context/MeContext", () => ({
+  useMe: () => ({ organizationId: "org-1" }),
+}));
+
 function renderForm() {
   api.mockResolvedValue({ people: [] });
-  return render(<SpecialDateForm personId="person-id" onSaved={vi.fn()} onCancel={vi.fn()} />);
+  return renderWithProviders(
+    <SpecialDateForm personId="person-id" onSaved={vi.fn()} onCancel={vi.fn()} />
+  );
 }
 
 /**

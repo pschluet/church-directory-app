@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { SpecialDateOccurrenceDto, UpcomingDatesDto } from "@shared";
 import { api } from "../lib/api";
+import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
 import { MonthCalendar } from "../components/MonthCalendar";
 import { SpecialDateList } from "../components/SpecialDateList";
@@ -30,54 +32,43 @@ export function UpcomingDates() {
   const { organizationId } = useMe();
   const [view, setView] = useState<View>("list");
   const [days, setDays] = useState(7);
-  const [upcoming, setUpcoming] = useState<UpcomingDatesDto | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
 
   const now = new Date();
   const [calendarYear, setCalendarYear] = useState(now.getFullYear());
   const [calendarMonth, setCalendarMonth] = useState(now.getMonth() + 1);
-  const [calendar, setCalendar] = useState<CalendarResponse | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(todayIso());
 
-  const loadUpcoming = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      // `start` is the browser's today, so the window is the user's day rather
-      // than the server's timezone.
-      setUpcoming(
-        await api<UpcomingDatesDto>("/special-dates/upcoming", {
-          query: { start: todayIso(), days },
-        })
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load upcoming dates");
-    } finally {
-      setLoading(false);
-    }
-  }, [days]);
+  // The browser's today, so the window is the user's day rather than the
+  // server's timezone.
+  const start = todayIso();
 
-  const loadCalendar = useCallback(async () => {
-    setError(null);
-    try {
-      setCalendar(
-        await api<CalendarResponse>("/special-dates/calendar", {
-          query: { year: calendarYear, month: calendarMonth },
-        })
-      );
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load the calendar");
-    }
-  }, [calendarYear, calendarMonth]);
+  /*
+   * Each view fetches only while it is the one on screen, but what it fetched
+   * stays in the cache -- so the list/calendar toggle no longer costs a request
+   * every time it is pressed.
+   */
+  const upcomingQuery = useQuery({
+    queryKey: qk.upcomingDates(organizationId, start, days),
+    queryFn: ({ signal }) =>
+      api<UpcomingDatesDto>("/special-dates/upcoming", { signal, query: { start, days } }),
+    enabled: view === "list",
+  });
 
-  useEffect(() => {
-    if (view === "list") void loadUpcoming();
-  }, [view, loadUpcoming, organizationId]);
+  const calendarQuery = useQuery({
+    queryKey: qk.calendar(organizationId, calendarYear, calendarMonth),
+    queryFn: ({ signal }) =>
+      api<CalendarResponse>("/special-dates/calendar", {
+        signal,
+        query: { year: calendarYear, month: calendarMonth },
+      }),
+    enabled: view === "calendar",
+  });
 
-  useEffect(() => {
-    if (view === "calendar") void loadCalendar();
-  }, [view, loadCalendar, organizationId]);
+  const upcoming = upcomingQuery.data ?? null;
+  const calendar = calendarQuery.data ?? null;
+  const loading = view === "list" && upcomingQuery.isPending;
+  const error =
+    (view === "list" ? upcomingQuery.error?.message : calendarQuery.error?.message) ?? null;
 
   const selectedDay = calendar?.days.find((day) => day.date === selectedDate);
 

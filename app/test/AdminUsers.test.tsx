@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
+import { renderWithProviders } from "./utils";
 import type { AppUserDto, JoinRequestDto, MeDto } from "@shared";
 import { AdminUsers } from "../src/pages/AdminUsers";
 
@@ -65,11 +65,7 @@ function mockLoad(joinRequests: JoinRequestDto[]) {
 }
 
 function renderPage() {
-  return render(
-    <MemoryRouter initialEntries={["/admin/users"]}>
-      <AdminUsers />
-    </MemoryRouter>
-  );
+  return renderWithProviders(<AdminUsers />, { initialEntries: ["/admin/users"] });
 }
 
 describe("AdminUsers", () => {

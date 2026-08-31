@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { AppUserDto, FamilySummaryDto, JoinRequestDto, OrganizationDto, Role } from "@shared";
 import { api } from "../lib/api";
+import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
 import {
   Badge,
@@ -32,70 +34,89 @@ const ROLE_LABELS: Record<Role, string> = {
 
 export function AdminUsers() {
   const { me, isSuperAdmin, organizationId, reload: reloadMe } = useMe();
-  const [users, setUsers] = useState<AppUserDto[]>([]);
-  const [families, setFamilies] = useState<FamilySummaryDto[]>([]);
-  const [joinRequests, setJoinRequests] = useState<JoinRequestDto[]>([]);
-  const [organizations, setOrganizations] = useState<{ id: string; name: string }[]>([]);
+  const queryClient = useQueryClient();
   const [moving, setMoving] = useState<AppUserDto | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [inviting, setInviting] = useState(false);
+  // Mutation failures only; the read's own is `usersQuery.error`.
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const [userResult, familyResult, organizationResult, joinRequestResult] = await Promise.all([
-        api<{ users: AppUserDto[] }>("/admin/users"),
-        api<{ families: FamilySummaryDto[] }>("/families").catch(() => ({
-          families: [],
-        })),
-        // Only a super admin may read this, and only they can move anyone
-        // between churches.
-        isSuperAdmin
-          ? api<{ organizations: OrganizationDto[] }>("/organizations", { withOrg: false }).catch(
-              () => ({ organizations: [] })
-            )
-          : Promise.resolve({ organizations: [] }),
-        // For an admin this endpoint returns the whole parish, not just their
-        // own family.
-        api<{ joinRequests: JoinRequestDto[] }>("/families/join-requests/pending").catch(() => ({
-          joinRequests: [],
-        })),
-      ]);
-      setUsers(userResult.users);
-      setFamilies(familyResult.families);
-      setOrganizations(organizationResult.organizations.map((o) => ({ id: o.id, name: o.name })));
-      setJoinRequests(joinRequestResult.joinRequests);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load accounts");
-    } finally {
-      setLoading(false);
-    }
-  }, [isSuperAdmin]);
+  /*
+   * Four requests that used to be one `Promise.all`. Three of them carried a
+   * `.catch(() => fallback)` so that a refusal did not take the page down --
+   * as separate queries that becomes `enabled` plus simply not reading their
+   * error, which says the same thing without swallowing anything into state.
+   *
+   * The organization is in every key, so a super admin switching parish is
+   * administering a different set of people without an effect to say so.
+   */
+  const usersQuery = useQuery({
+    queryKey: qk.adminUsers(organizationId),
+    queryFn: ({ signal }) => api<{ users: AppUserDto[] }>("/admin/users", { signal }),
+  });
 
-  useEffect(() => {
-    void load();
-    // A super admin switching parish is administering a different set of people.
-  }, [load, organizationId]);
+  const familiesQuery = useQuery({
+    queryKey: qk.families(organizationId),
+    queryFn: ({ signal }) => api<{ families: FamilySummaryDto[] }>("/families", { signal }),
+  });
+
+  // Only a super admin may read this, and only they can move anyone between
+  // churches.
+  const organizationsQuery = useQuery({
+    queryKey: qk.organizations(),
+    queryFn: ({ signal }) =>
+      api<{ organizations: OrganizationDto[] }>("/organizations", { withOrg: false, signal }),
+    enabled: isSuperAdmin,
+  });
+
+  // For an admin this endpoint returns the whole parish, not just their own
+  // family.
+  const joinRequestsQuery = useQuery({
+    queryKey: qk.pendingJoinRequests(organizationId),
+    queryFn: ({ signal }) =>
+      api<{ joinRequests: JoinRequestDto[] }>("/families/join-requests/pending", { signal }),
+  });
+
+  const users = usersQuery.data?.users ?? [];
+  const families = familiesQuery.data?.families ?? [];
+  const joinRequests = joinRequestsQuery.data?.joinRequests ?? [];
+  const organizations = useMemo(
+    () => (organizationsQuery.data?.organizations ?? []).map((o) => ({ id: o.id, name: o.name })),
+    [organizationsQuery.data]
+  );
+
+  // Only the accounts list gates the page, exactly as it did when it was the
+  // one call in the Promise.all without a catch around it.
+  const loading = usersQuery.isPending;
+  const error = actionError ?? usersQuery.error?.message ?? null;
+
+  // Everything an account write can reach: the accounts themselves, the
+  // families and join requests under them, and the directory cards that carry
+  // a person's family and role.
+  const reload = async () => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: qk.adminUsers(organizationId) }),
+      queryClient.invalidateQueries({ queryKey: qk.families(organizationId) }),
+      queryClient.invalidateQueries({ queryKey: qk.directoryRoot(organizationId) }),
+    ]);
+  };
 
   async function decide(request: JoinRequestDto, decision: "approve" | "deny"): Promise<void> {
     try {
       await api(`/families/join-requests/${request.id}/${decision}`, { method: "POST" });
-      await load();
+      await reload();
       // An admin can be approving their own request.
       if (request.personId === me?.appUser.personId) await reloadMe();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not decide that request");
+      setActionError(err instanceof Error ? err.message : "Could not decide that request");
     }
   }
 
   async function update(user: AppUserDto, body: Record<string, unknown>): Promise<void> {
     try {
       await api(`/admin/users/${user.id}`, { method: "PATCH", body });
-      await load();
+      await reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not update that account");
+      setActionError(err instanceof Error ? err.message : "Could not update that account");
     }
   }
 
@@ -107,7 +128,7 @@ export function AdminUsers() {
         actions={<Button onClick={() => setInviting(true)}>Invite someone</Button>}
       />
 
-      {error && <ErrorNotice message={error} onRetry={() => void load()} />}
+      {error && <ErrorNotice message={error} onRetry={() => void usersQuery.refetch()} />}
 
       {joinRequests.length > 0 && (
         <section className="mb-6 rounded-lg border border-accent/40 bg-accent/5 p-4">
@@ -229,7 +250,7 @@ export function AdminUsers() {
           onClose={() => setInviting(false)}
           onInvited={async () => {
             setInviting(false);
-            await load();
+            await reload();
           }}
         />
       )}
@@ -241,7 +262,7 @@ export function AdminUsers() {
           onClose={() => setMoving(null)}
           onMoved={async () => {
             setMoving(null);
-            await load();
+            await reload();
           }}
         />
       )}

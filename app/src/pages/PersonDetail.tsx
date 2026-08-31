@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useParams } from "react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FamilyDto, FamilySummaryDto, PersonDto } from "@shared";
 import { api } from "../lib/api";
+import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
 import { PersonForm } from "../components/PersonForm";
@@ -26,52 +28,81 @@ import {
  */
 export function PersonDetail() {
   const { id } = useParams<{ id: string }>();
-  const { isAdmin } = useMe();
-  const [person, setPerson] = useState<PersonDto | null>(null);
-  const [family, setFamily] = useState<FamilyDto | null>(null);
-  const [families, setFamilies] = useState<FamilySummaryDto[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { isAdmin, organizationId } = useMe();
+  const queryClient = useQueryClient();
   const [editing, setEditing] = useState(false);
   const [addingDate, setAddingDate] = useState(false);
   const [editingDateId, setEditingDateId] = useState<string | null>(null);
 
-  const load = useCallback(async () => {
-    if (!id) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const loaded = await api<PersonDto>(`/persons/${id}`);
-      setPerson(loaded);
-      // The family is needed for the inheritance pickers. The anniversary
-      // partner is not fetched here any more -- SpecialDateForm's picker
-      // searches the directory as you type.
-      const [familyResult, familyListResult] = await Promise.all([
-        loaded.familyId
-          ? api<FamilyDto>(`/families/${loaded.familyId}`).catch(() => null)
-          : Promise.resolve(null),
-        // Only an admin may move someone between families, so only they need
-        // a list to choose from.
-        isAdmin
-          ? api<{ families: FamilySummaryDto[] }>("/families").catch(() => ({ families: [] }))
-          : Promise.resolve({ families: [] }),
-      ]);
-      setFamily(familyResult);
-      setFamilies(familyListResult.families);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load that person");
-    } finally {
-      setLoading(false);
-    }
-  }, [id, isAdmin]);
+  const personQuery = useQuery({
+    queryKey: qk.person(organizationId, id ?? ""),
+    queryFn: ({ signal }) => api<PersonDto>(`/persons/${id}`, { signal }),
+    enabled: Boolean(id),
+  });
+  const person = personQuery.data ?? null;
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  /*
+   * Both of these used to hang off the person fetch inside a Promise.all, each
+   * with a `.catch(() => fallback)` so that a refusal did not take the page
+   * down with it. As their own queries they keep that: `enabled` decides
+   * whether to ask at all, and their errors are simply not read.
+   *
+   * The family is needed for the inheritance pickers. The anniversary partner
+   * is not fetched here any more -- SpecialDateForm's picker searches the
+   * directory as you type.
+   */
+  const familyQuery = useQuery({
+    queryKey: qk.family(organizationId, person?.familyId ?? ""),
+    queryFn: ({ signal }) => api<FamilyDto>(`/families/${person?.familyId}`, { signal }),
+    enabled: Boolean(person?.familyId),
+  });
+  const family = familyQuery.data ?? null;
 
-  if (loading) return <Spinner label="Loading" />;
-  if (error) return <ErrorNotice message={error} onRetry={() => void load()} />;
+  // Only an admin may move someone between families, so only they need a list
+  // to choose from.
+  const familiesQuery = useQuery({
+    queryKey: qk.families(organizationId),
+    queryFn: ({ signal }) => api<{ families: FamilySummaryDto[] }>("/families", { signal }),
+    enabled: isAdmin,
+  });
+  const families = familiesQuery.data?.families ?? [];
+
+  const reload = async () => {
+    await queryClient.invalidateQueries({ queryKey: qk.person(organizationId, id ?? "") });
+  };
+
+  // A date belongs to the person, but it is also what Special Dates counts.
+  const reloadDates = async () => {
+    await Promise.all([
+      reload(),
+      queryClient.invalidateQueries({ queryKey: qk.specialDates(organizationId) }),
+    ]);
+  };
+
+  /*
+   * `PATCH /persons/:id` and `PUT /persons/:id/photo` both hand back the whole
+   * record, so it goes straight into the cache -- refetching what the server
+   * has already said would be a round trip for nothing. The directory still
+   * has to be told, because a rename or a new photo shows on the cards there.
+   */
+  const applyPerson = (updated: PersonDto): void => {
+    queryClient.setQueryData(qk.person(organizationId, updated.id), updated);
+    void queryClient.invalidateQueries({ queryKey: qk.directoryRoot(organizationId) });
+  };
+
+  if (personQuery.isPending) return <Spinner label="Loading" />;
+  if (personQuery.error) {
+    return (
+      <ErrorNotice message={personQuery.error.message} onRetry={() => void personQuery.refetch()} />
+    );
+  }
   if (!person) return null;
+
+  const savePhoto = async (photoKey: string | null): Promise<void> => {
+    applyPerson(
+      await api<PersonDto>(`/persons/${person.id}/photo`, { method: "PUT", body: { photoKey } })
+    );
+  };
 
   const name = fullName(person);
   const address = formatMultilineAddress(person);
@@ -91,20 +122,10 @@ export function PersonDetail() {
               fullUrl={person.fullUrl}
               person={person}
               onUploaded={async ({ photoKey }) => {
-                setPerson(
-                  await api<PersonDto>(`/persons/${person.id}/photo`, {
-                    method: "PUT",
-                    body: { photoKey },
-                  })
-                );
+                await savePhoto(photoKey);
               }}
               onRemove={async () => {
-                setPerson(
-                  await api<PersonDto>(`/persons/${person.id}/photo`, {
-                    method: "PUT",
-                    body: { photoKey: null },
-                  })
-                );
+                await savePhoto(null);
               }}
             />
           ) : (
@@ -239,7 +260,7 @@ export function PersonDetail() {
                         className="font-bold text-primary hover:text-accent"
                         onClick={async () => {
                           await api(`/special-dates/${date.id}`, { method: "DELETE" });
-                          await load();
+                          await reloadDates();
                         }}
                       >
                         Remove
@@ -261,10 +282,14 @@ export function PersonDetail() {
             families={isAdmin ? families : undefined}
             onCancel={() => setEditing(false)}
             onSaved={(updated) => {
-              setPerson(updated);
+              applyPerson(updated);
               setEditing(false);
-              // A move changes which relatives the inheritance pickers offer.
-              if (updated.familyId !== person.familyId) void load();
+              // A move changes which relatives the inheritance pickers offer,
+              // and which family lists them.
+              if (updated.familyId !== person.familyId) {
+                void reload();
+                void queryClient.invalidateQueries({ queryKey: qk.families(organizationId) });
+              }
             }}
           />
         </Modal>
@@ -288,7 +313,7 @@ export function PersonDetail() {
             onSaved={async () => {
               setAddingDate(false);
               setEditingDateId(null);
-              await load();
+              await reloadDates();
             }}
           />
         </Modal>

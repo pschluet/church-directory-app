@@ -1,7 +1,9 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
+import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
 import type { PersonSummaryDto } from "@shared";
 import { api } from "../lib/api";
+import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
 import { PersonCard } from "../components/PersonCard";
 import { SearchField } from "../components/SearchField";
@@ -17,6 +19,9 @@ interface Page {
   people: PersonSummaryDto[];
   nextCursor: Cursor | null;
 }
+
+/** Stable identity while the first page is still in flight, for PersonGrid's memo. */
+const NO_PEOPLE: PersonSummaryDto[] = [];
 
 /** Long enough that typing a name is one request, short enough to feel live. */
 const DEBOUNCE_MS = 250;
@@ -52,17 +57,6 @@ export function Directory() {
   // been committed to the URL, and is what the results on screen correspond to.
   const [input, setInput] = useState(query);
 
-  const [people, setPeople] = useState<PersonSummaryDto[]>([]);
-  const [cursor, setCursor] = useState<Cursor | null>(null);
-  const [browseLoading, setBrowseLoading] = useState(true);
-  const [loadingMore, setLoadingMore] = useState(false);
-  const [browseError, setBrowseError] = useState<string | null>(null);
-
-  // null is "not searching"; an empty array is "searched, and nobody matched".
-  const [results, setResults] = useState<PersonSummaryDto[] | null>(null);
-  const [searchLoading, setSearchLoading] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
-
   /*
    * Merged into whatever is already in the query string rather than replacing
    * it, so ticking the box mid-search keeps the search.
@@ -81,68 +75,40 @@ export function Directory() {
   }
 
   /*
-   * The same guard the search below uses, and for a reason the checkbox
-   * introduces: "Show more" disables its own button while it is in flight but
-   * not the checkbox, so toggling mid-page would otherwise append rows from the
-   * old filter onto the freshly reloaded list and leave a cursor from the wrong
-   * set behind. It covers switching organization mid-page too, which had the
-   * same hole.
+   * Keyset pagination, accumulated by the cache rather than by hand.
+   *
+   * The filter and the organization are in the key, so ticking the box or
+   * switching parish mid-page is a different cache entry rather than a race:
+   * there is no way to append rows from the old filter onto the new list, or to
+   * carry a cursor over from the wrong set. That used to need a request
+   * counter, and the counter is what this replaces.
+   *
+   * The flatten is in `select` and not in the body on purpose. `PersonGrid`
+   * below is memoized against array identity, and a `flatMap` written in render
+   * would hand it a new array every keystroke and quietly defeat that; `select`
+   * is memoized against the pages it was given.
    */
-  const browseRef = useRef(0);
+  const browse = useInfiniteQuery({
+    queryKey: qk.directory(organizationId, accountHoldersOnly),
+    queryFn: ({ pageParam, signal }) =>
+      api<Page>("/directory", {
+        signal,
+        query: {
+          limit: 50,
+          cursorLastName: pageParam?.lastName ?? undefined,
+          cursorFirstName: pageParam?.firstName,
+          cursorId: pageParam?.id,
+          // `undefined` rather than `false` when off: the serializer drops it, so
+          // the param is simply absent, and `query` takes no booleans.
+          accountHoldersOnly: accountHoldersOnly ? "true" : undefined,
+        },
+      }),
+    initialPageParam: null as Cursor | null,
+    getNextPageParam: (last: Page) => last.nextCursor,
+    select: (data) => data.pages.flatMap((page) => page.people),
+  });
 
-  const load = useCallback(
-    async (from: Cursor | null) => {
-      browseRef.current += 1;
-      const requestId = browseRef.current;
-
-      let page: Page;
-      try {
-        // `undefined` rather than `false` when off: the serializer drops it, so
-        // the param is simply absent, and `query` takes no booleans.
-        page = await api<Page>("/directory", {
-          query: {
-            limit: 50,
-            cursorLastName: from?.lastName ?? undefined,
-            cursorFirstName: from?.firstName,
-            cursorId: from?.id,
-            accountHoldersOnly: accountHoldersOnly ? "true" : undefined,
-          },
-        });
-      } catch (err) {
-        // Superseded, so the request that replaced this one owns the screen --
-        // including reporting its own failure. Staying quiet here leaves the
-        // catch blocks in reload and loadMore as the only source of a message.
-        if (browseRef.current !== requestId) return;
-        throw err;
-      }
-
-      if (browseRef.current !== requestId) return;
-      setPeople((prev) => (from ? [...prev, ...page.people] : page.people));
-      setCursor(page.nextCursor);
-    },
-    [accountHoldersOnly]
-  );
-
-  const reload = useCallback(async () => {
-    setBrowseLoading(true);
-    setBrowseError(null);
-    try {
-      await load(null);
-    } catch (err) {
-      setBrowseError(err instanceof Error ? err.message : "Could not load the directory");
-    } finally {
-      setBrowseLoading(false);
-    }
-  }, [load]);
-
-  // Re-run when a super admin switches organization, and when the checkbox
-  // moves -- `load` is rebuilt with the flag, so this reloads from no cursor,
-  // which is also what resets the pages already accumulated. This loads even
-  // while a search is on screen: one page of 50 is a cheap price for clearing
-  // the box being instant.
-  useEffect(() => {
-    void reload();
-  }, [reload, organizationId]);
+  const people = browse.data ?? NO_PEOPLE;
 
   /*
    * Typing goes into the URL, debounced, so a search can be shared or
@@ -189,60 +155,34 @@ export function Directory() {
 
   /*
    * Results follow the URL, so there is no debounce here -- the URL already is
-   * the debounced value. The counter guards against a slow earlier response
-   * landing after a fast later one and overwriting it.
+   * the debounced value, and the query key is what makes a slow earlier
+   * response unable to overwrite a fast later one.
    */
-  const requestRef = useRef(0);
-  useEffect(() => {
-    requestRef.current += 1;
-    const requestId = requestRef.current;
-
-    if (query === "") {
-      setResults(null);
-      setSearchLoading(false);
-      setSearchError(null);
-      return;
-    }
-
-    setSearchLoading(true);
-    setSearchError(null);
-    api<{ people: PersonSummaryDto[] }>("/directory/search", {
-      query: { q: query, accountHoldersOnly: accountHoldersOnly ? "true" : undefined },
-    })
-      .then((data) => {
-        if (requestRef.current !== requestId) return;
-        setResults(data.people);
-      })
-      .catch((err: unknown) => {
-        if (requestRef.current !== requestId) return;
-        setResults(null);
-        setSearchError(err instanceof Error ? err.message : "The search failed");
-      })
-      .finally(() => {
-        if (requestRef.current === requestId) setSearchLoading(false);
-      });
-  }, [query, organizationId, accountHoldersOnly]);
-
-  async function loadMore(): Promise<void> {
-    if (!cursor) return;
-    setLoadingMore(true);
-    try {
-      await load(cursor);
-    } catch (err) {
-      setBrowseError(err instanceof Error ? err.message : "Could not load more people");
-    } finally {
-      setLoadingMore(false);
-    }
-  }
-
   const searching = query !== "";
+  const search = useQuery({
+    queryKey: qk.directorySearch(organizationId, query, accountHoldersOnly),
+    queryFn: ({ signal }) =>
+      api<{ people: PersonSummaryDto[] }>("/directory/search", {
+        signal,
+        query: { q: query, accountHoldersOnly: accountHoldersOnly ? "true" : undefined },
+      }),
+    enabled: searching,
+  });
+
+  // `undefined` is "nothing to show yet"; an empty array is "searched, and
+  // nobody matched".
+  const results = searching ? (search.data?.people ?? null) : null;
+  const searchLoading = searching && search.isPending;
+  const searchError = searching && search.error ? search.error.message : null;
+
+  const browseError = browse.error ? browse.error.message : null;
 
   const subtitle = useMemo(() => {
     if (searching) {
       if (searchLoading || results === null) return undefined;
       return `${results.length} ${results.length === 1 ? "match" : "matches"}`;
     }
-    if (browseLoading) return undefined;
+    if (browse.isPending) return undefined;
     // Names what is being counted, so a number shrinking under the filter is
     // never left unexplained.
     const noun = accountHoldersOnly
@@ -253,7 +193,7 @@ export function Directory() {
         ? "person"
         : "people";
     return `${people.length} ${noun}, by last name`;
-  }, [searching, searchLoading, results, browseLoading, people.length, accountHoldersOnly]);
+  }, [searching, searchLoading, results, browse.isPending, people.length, accountHoldersOnly]);
 
   return (
     <>
@@ -317,9 +257,11 @@ export function Directory() {
         </>
       ) : (
         <>
-          {browseError && <ErrorNotice message={browseError} onRetry={() => void reload()} />}
+          {browseError && (
+            <ErrorNotice message={browseError} onRetry={() => void browse.refetch()} />
+          )}
 
-          {browseLoading ? (
+          {browse.isPending ? (
             <Spinner label="Loading the directory" />
           ) : people.length === 0 ? (
             // "Nobody here yet" would be a lie when the checkbox is what
@@ -342,14 +284,14 @@ export function Directory() {
             <>
               <PersonGrid people={people} />
 
-              {cursor && (
+              {browse.hasNextPage && (
                 <div className="mt-6 flex justify-center">
                   <Button
                     variant="secondary"
-                    onClick={() => void loadMore()}
-                    disabled={loadingMore}
+                    onClick={() => void browse.fetchNextPage()}
+                    disabled={browse.isFetchingNextPage}
                   >
-                    {loadingMore ? "Loading…" : "Show more"}
+                    {browse.isFetchingNextPage ? "Loading…" : "Show more"}
                   </Button>
                 </div>
               )}
@@ -368,7 +310,8 @@ export function Directory() {
  * the URL and the fetch catch up, and PersonCard's own memo only skips each
  * card's body -- the <li>/<PersonCard> elements around it would still be rebuilt,
  * a few hundred of them, since browsing accumulates every page it has loaded.
- * The arrays are held in state, so their identity is stable and this bails out.
+ * Both arrays come from the query cache, so their identity is stable and this
+ * bails out.
  */
 const PersonGrid = memo(function PersonGrid({ people }: { people: PersonSummaryDto[] }) {
   return (

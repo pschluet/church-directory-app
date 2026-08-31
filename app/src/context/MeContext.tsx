@@ -1,7 +1,9 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { createContext, useCallback, useContext, useEffect, useMemo } from "react";
 import type { ReactNode } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { MeDto } from "@shared";
 import { api, ApiError, getActiveOrganizationId, setActiveOrganizationId } from "../lib/api";
+import { qk } from "../lib/queryKeys";
 
 /**
  * Who the signed-in person is, as far as the directory is concerned.
@@ -10,6 +12,10 @@ import { api, ApiError, getActiveOrganizationId, setActiveOrganizationId } from 
  * they live in Postgres -- a Cognito group cannot express "which organization
  * is this admin scoped to". Everything in the UI that depends on permissions
  * reads from here.
+ *
+ * The cache holds the answer; this context stays because `organizationId` is
+ * the scope every other query is keyed by, and because the shape below is what
+ * the rest of the app already speaks.
  */
 
 interface MeContextValue {
@@ -27,44 +33,47 @@ interface MeContextValue {
 
 const MeContext = createContext<MeContextValue | null>(null);
 
-export function MeProvider({ children }: { children: ReactNode }) {
-  const [me, setMe] = useState<MeDto | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const reload = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      setMe(await api<MeDto>("/me"));
-    } catch (err) {
-      /*
-       * The organization a super admin was last viewing is remembered in
-       * localStorage and sent on every request. If that church is later deleted
-       * -- or the id simply belongs to another environment's database -- the API
-       * rightly refuses it, and the stored value then breaks every page with no
-       * way for the user to clear it. Drop it and try once more.
-       */
-      if (err instanceof ApiError && err.status === 404 && getActiveOrganizationId()) {
-        setActiveOrganizationId(null);
-        try {
-          setMe(await api<MeDto>("/me"));
-          setError(null);
-          return;
-        } catch {
-          // Fall through to the message below.
-        }
+async function fetchMe(signal: AbortSignal): Promise<MeDto> {
+  try {
+    return await api<MeDto>("/me", { signal });
+  } catch (err) {
+    /*
+     * The organization a super admin was last viewing is remembered in
+     * localStorage and sent on every request. If that church is later deleted
+     * -- or the id simply belongs to another environment's database -- the API
+     * rightly refuses it, and the stored value then breaks every page with no
+     * way for the user to clear it. Drop it and try once more.
+     */
+    if (err instanceof ApiError && err.status === 404 && getActiveOrganizationId()) {
+      setActiveOrganizationId(null);
+      try {
+        return await api<MeDto>("/me", { signal });
+      } catch {
+        // Fall through: the original refusal is the more useful message.
       }
-      setError(err instanceof Error ? err.message : "Could not load your account");
-      setMe(null);
-    } finally {
-      setLoading(false);
     }
-  }, []);
+    throw err;
+  }
+}
 
-  useEffect(() => {
-    void reload();
-  }, [reload]);
+export function MeProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
+
+  const query = useQuery({
+    queryKey: qk.me(),
+    queryFn: ({ signal }) => fetchMe(signal),
+    // Who you are and what you may do changes far less often than the
+    // directory does.
+    staleTime: 60_000,
+  });
+
+  const me = query.data ?? null;
+
+  // Through the client rather than `query.refetch`, which is rebuilt on every
+  // render and would make this -- and the context value around it -- unstable.
+  const reload = useCallback(async () => {
+    await queryClient.refetchQueries({ queryKey: qk.me() });
+  }, [queryClient]);
 
   /*
    * A super admin has no organization of their own, so on first sign-in there
@@ -81,30 +90,37 @@ export function MeProvider({ children }: { children: ReactNode }) {
     const first = me.availableOrganizations[0];
     if (!stored && first) {
       setActiveOrganizationId(first.id);
-      void reload();
+      void queryClient.invalidateQueries({ queryKey: qk.me() });
     }
-  }, [me, reload]);
+  }, [me, queryClient]);
 
   const switchOrganization = useCallback(
     async (organizationId: string) => {
+      /*
+       * Load-bearing, and the reason this is not a bare setter. `api()` reads
+       * the organization out of localStorage at the moment it builds the
+       * request, so anything already in flight would come back holding the new
+       * parish's rows and be written under the old parish's key.
+       */
+      await queryClient.cancelQueries();
       setActiveOrganizationId(organizationId);
-      await reload();
+      await queryClient.refetchQueries({ queryKey: qk.me() });
     },
-    [reload]
+    [queryClient]
   );
 
   const value = useMemo<MeContextValue>(
     () => ({
       me,
-      loading,
-      error,
+      loading: query.isPending,
+      error: query.error ? (query.error.message ?? "Could not load your account") : null,
       reload,
       isAdmin: me?.appUser.role === "ADMIN" || me?.appUser.role === "SUPER_ADMIN",
       isSuperAdmin: me?.appUser.role === "SUPER_ADMIN",
       organizationId: me?.organization?.id ?? null,
       switchOrganization,
     }),
-    [me, loading, error, reload, switchOrganization]
+    [me, query.isPending, query.error, reload, switchOrganization]
   );
 
   return <MeContext.Provider value={value}>{children}</MeContext.Provider>;

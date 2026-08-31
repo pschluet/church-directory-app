@@ -1,8 +1,9 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PersonLookupDto } from "@shared";
 import { PersonPicker, type PickedPerson } from "../src/components/PersonPicker";
+import { renderWithProviders } from "./utils";
 
 const api = vi.fn();
 vi.mock("../src/lib/api", () => ({
@@ -11,12 +12,16 @@ vi.mock("../src/lib/api", () => ({
   uploadPhoto: vi.fn(),
 }));
 
+vi.mock("../src/context/MeContext", () => ({
+  useMe: () => ({ organizationId: "org-1" }),
+}));
+
 const MARIA: PersonLookupDto = { id: "maria-id", name: "Maria Schlueter", familyName: "Schlueter" };
 const MARIO: PersonLookupDto = { id: "mario-id", name: "Mario Popov", familyName: "Popov" };
 
 function renderPicker(value: PickedPerson | null = null) {
   const onChange = vi.fn();
-  render(
+  renderWithProviders(
     <PersonPicker
       label="Married to"
       value={value}
@@ -53,6 +58,9 @@ describe("PersonPicker", () => {
     vi.advanceTimersByTime(250);
     await waitFor(() => expect(api).toHaveBeenCalledTimes(1));
     expect(api).toHaveBeenCalledWith("/directory/lookup", {
+      // React Query hands the query function an abort signal, which api()
+      // forwards to fetch.
+      signal: expect.any(AbortSignal),
       query: { q: "mar", exclude: "person-id" },
     });
 

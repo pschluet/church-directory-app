@@ -8,6 +8,7 @@ import {
   signOut as amplifySignOut,
 } from "aws-amplify/auth";
 import { Hub } from "aws-amplify/utils";
+import { useQueryClient } from "@tanstack/react-query";
 import { DEV_AUTH } from "../lib/api";
 
 /**
@@ -57,6 +58,7 @@ function messageFor(err: unknown): string {
 }
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const [status, setStatus] = useState<AuthStatus>(DEV_AUTH ? "signedIn" : "loading");
   const [email, setEmail] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -136,7 +138,10 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await amplifySignOut();
     setStatus("signedOut");
     setEmail(null);
-  }, []);
+    // Otherwise the next person to sign in on this tab reads the last one's
+    // directory straight out of memory before their own /me lands.
+    queryClient.clear();
+  }, [queryClient]);
 
   const value = useMemo(
     () => ({ status, email, error, busy, requestCode, submitCode, restart, signOut }),

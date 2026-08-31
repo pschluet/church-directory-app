@@ -1,7 +1,8 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { Route, Routes } from "react-router";
+import { renderWithProviders } from "./utils";
 import type { FamilyDto, MeDto, PersonSummaryDto } from "@shared";
 import { FamilyDetail } from "../src/pages/FamilyDetail";
 
@@ -75,12 +76,11 @@ function buildFamily(overrides: Partial<FamilyDto> = {}): FamilyDto {
 }
 
 function renderPage() {
-  return render(
-    <MemoryRouter initialEntries={["/families/fam-1"]}>
-      <Routes>
-        <Route path="/families/:id" element={<FamilyDetail />} />
-      </Routes>
-    </MemoryRouter>
+  return renderWithProviders(
+    <Routes>
+      <Route path="/families/:id" element={<FamilyDetail />} />
+    </Routes>,
+    { initialEntries: ["/families/fam-1"] }
   );
 }
 

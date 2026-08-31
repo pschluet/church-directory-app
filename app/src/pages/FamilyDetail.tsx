@@ -1,7 +1,9 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { useParams } from "react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FamilyDto, PersonDto, PersonSummaryDto } from "@shared";
 import { api } from "../lib/api";
+import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
 import { PersonCard } from "../components/PersonCard";
 import { PhotoUpload } from "../components/PhotoUpload";
@@ -27,10 +29,8 @@ import {
  */
 export function FamilyDetail() {
   const { id } = useParams<{ id: string }>();
-  const { me, reload: reloadMe } = useMe();
-  const [family, setFamily] = useState<FamilyDto | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const { me, organizationId, reload: reloadMe } = useMe();
+  const queryClient = useQueryClient();
   const [addingMember, setAddingMember] = useState(false);
   const [newFirstName, setNewFirstName] = useState("");
   const [newLastName, setNewLastName] = useState("");
@@ -39,33 +39,37 @@ export function FamilyDetail() {
   const [name, setName] = useState("");
   const [removing, setRemoving] = useState<PersonSummaryDto | null>(null);
   const [addingExisting, setAddingExisting] = useState(false);
+  /*
+   * Only ever set by a mutation. The read's own failure is `familyQuery.error`,
+   * and keeping the two apart is what lets the page below stay on screen when a
+   * write goes wrong -- see the branch under this.
+   */
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const myPersonId = me?.appUser.personId ?? null;
 
-  const load = useCallback(async () => {
-    if (!id) return;
-    setLoading(true);
-    setError(null);
-    try {
-      const loaded = await api<FamilyDto>(`/families/${id}`);
-      setFamily(loaded);
-      setName(loaded.name);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load that family");
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
+  const familyQuery = useQuery({
+    queryKey: qk.family(organizationId, id ?? ""),
+    queryFn: ({ signal }) => api<FamilyDto>(`/families/${id}`, { signal }),
+    enabled: Boolean(id),
+  });
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const family = familyQuery.data ?? null;
+  const error = actionError ?? familyQuery.error?.message ?? null;
+
+  // Members, the family list that counts them, and the join requests admins
+  // see all hang off the same prefix.
+  const reload = async () => {
+    await queryClient.invalidateQueries({ queryKey: qk.families(organizationId) });
+  };
 
   // Deliberately not an early return on `error`: a failed mutation must not
   // replace the whole page with a notice and lose the family being worked on.
-  if (loading) return <Spinner label="Loading family" />;
+  if (familyQuery.isPending) return <Spinner label="Loading family" />;
   if (!family) {
-    return error ? <ErrorNotice message={error} onRetry={() => void load()} /> : null;
+    return error ? (
+      <ErrorNotice message={error} onRetry={() => void familyQuery.refetch()} />
+    ) : null;
   }
 
   async function addMember(): Promise<void> {
@@ -78,9 +82,9 @@ export function FamilyDetail() {
       setAddingMember(false);
       setNewFirstName("");
       setNewLastName("");
-      await load();
+      await reload();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not add that person");
+      setActionError(err instanceof Error ? err.message : "Could not add that person");
     } finally {
       setBusy(false);
     }
@@ -88,22 +92,22 @@ export function FamilyDetail() {
 
   async function decide(requestId: string, decision: "approve" | "deny"): Promise<void> {
     await api(`/families/join-requests/${requestId}/${decision}`, { method: "POST" });
-    await load();
+    await reload();
     // Approving someone may have been us, which changes our own family.
     await reloadMe();
   }
 
   async function removeMember(member: PersonSummaryDto): Promise<void> {
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       await api(`/families/${family!.id}/members/${member.id}`, { method: "DELETE" });
       setRemoving(null);
-      await load();
+      await reload();
       // Leaving changes what the caller may edit, here and everywhere else.
       if (member.id === myPersonId) await reloadMe();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not remove them");
+      setActionError(err instanceof Error ? err.message : "Could not remove them");
     } finally {
       setBusy(false);
     }
@@ -113,10 +117,10 @@ export function FamilyDetail() {
     setBusy(true);
     try {
       await api(`/families/${family!.id}/join-requests`, { method: "POST" });
-      await load();
+      await reload();
       await reloadMe();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not send that request");
+      setActionError(err instanceof Error ? err.message : "Could not send that request");
     } finally {
       setBusy(false);
     }
@@ -137,7 +141,13 @@ export function FamilyDetail() {
                 <Button variant="secondary" onClick={() => setAddingExisting(true)}>
                   Add an existing person
                 </Button>
-                <Button variant="ghost" onClick={() => setRenaming(true)}>
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    setName(family.name);
+                    setRenaming(true);
+                  }}
+                >
                   Rename
                 </Button>
               </>
@@ -170,14 +180,14 @@ export function FamilyDetail() {
                 method: "PUT",
                 body: { photoKey, photoWidth: width, photoHeight: height },
               });
-              await load();
+              await reload();
             }}
             onRemove={async () => {
               await api(`/families/${family.id}/photo`, {
                 method: "PUT",
                 body: { photoKey: null },
               });
-              await load();
+              await reload();
             }}
           />
         ) : (
@@ -291,7 +301,7 @@ export function FamilyDetail() {
               try {
                 await api(`/families/${family.id}`, { method: "PATCH", body: { name } });
                 setRenaming(false);
-                await load();
+                await reload();
               } finally {
                 setBusy(false);
               }
@@ -351,7 +361,7 @@ export function FamilyDetail() {
           onClose={() => setAddingExisting(false)}
           onAdded={async () => {
             setAddingExisting(false);
-            await load();
+            await reload();
           }}
         />
       )}
@@ -375,33 +385,32 @@ function AddExistingMemberModal({
   onClose: () => void;
   onAdded: () => Promise<void>;
 }) {
-  const [candidates, setCandidates] = useState<{ id: string; name: string }[] | null>(null);
+  const { organizationId } = useMe();
   const [personId, setPersonId] = useState("");
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  useEffect(() => {
-    void (async () => {
-      try {
-        const { candidates: loaded } = await api<{ candidates: { id: string; name: string }[] }>(
-          `/families/${familyId}/candidates`
-        );
-        setCandidates(loaded);
-      } catch (err) {
-        setError(err instanceof Error ? err.message : "Could not load people");
-        setCandidates([]);
-      }
-    })();
-  }, [familyId]);
+  const candidatesQuery = useQuery({
+    queryKey: qk.familyCandidates(organizationId, familyId),
+    queryFn: ({ signal }) =>
+      api<{ candidates: { id: string; name: string }[] }>(`/families/${familyId}/candidates`, {
+        signal,
+      }),
+  });
+
+  // A failure here still shows the modal's empty state, as it did before, with
+  // the reason above it.
+  const candidates = candidatesQuery.isPending ? null : (candidatesQuery.data?.candidates ?? []);
+  const error = actionError ?? candidatesQuery.error?.message ?? null;
 
   async function submit(): Promise<void> {
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       await api(`/families/${familyId}/members`, { method: "POST", body: { personId } });
       await onAdded();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not add them");
+      setActionError(err instanceof Error ? err.message : "Could not add them");
     } finally {
       setBusy(false);
     }

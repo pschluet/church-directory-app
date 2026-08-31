@@ -1,8 +1,10 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useNavigate } from "react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FamilySummaryDto } from "@shared";
 import { familyWriteSchema } from "@shared";
 import { api } from "../lib/api";
+import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
 import {
   Badge,
@@ -28,46 +30,40 @@ import {
 export function Families() {
   const { me, isAdmin, organizationId, reload: reloadMe } = useMe();
   const navigate = useNavigate();
-  const [families, setFamilies] = useState<FamilySummaryDto[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmMove, setConfirmMove] = useState<FamilySummaryDto | null>(null);
+  // Kept apart from the query's own error: a request that fails must not
+  // replace the list with a notice.
+  const [actionError, setActionError] = useState<string | null>(null);
+
+  // The organization is in the key, so a super admin switching parish is
+  // looking at a different set of families without anything having to say so.
+  const familiesQuery = useQuery({
+    queryKey: qk.families(organizationId),
+    queryFn: ({ signal }) => api<{ families: FamilySummaryDto[] }>("/families", { signal }),
+  });
+
+  const families = familiesQuery.data?.families ?? [];
+  const loading = familiesQuery.isPending;
+  const error = actionError ?? familiesQuery.error?.message ?? null;
 
   const myPersonId = me?.appUser.personId ?? null;
   const myFamilyId = me?.person?.familyId ?? null;
   const myFamilyName = families.find((f) => f.id === myFamilyId)?.name ?? null;
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      const { families: loaded } = await api<{ families: FamilySummaryDto[] }>("/families");
-      setFamilies(loaded);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load families");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
-  useEffect(() => {
-    void load();
-    // A super admin switching parish is looking at a different set of families.
-  }, [load, organizationId]);
-
   async function requestToJoin(family: FamilySummaryDto): Promise<void> {
     setBusyId(family.id);
-    setError(null);
+    setActionError(null);
     try {
       await api(`/families/${family.id}/join-requests`, { method: "POST" });
       setConfirmMove(null);
-      await load();
+      await queryClient.invalidateQueries({ queryKey: qk.families(organizationId) });
       // An admin's request is approved immediately, so their own family changed.
       await reloadMe();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not send that request");
+      setActionError(err instanceof Error ? err.message : "Could not send that request");
     } finally {
       setBusyId(null);
     }
@@ -105,7 +101,7 @@ export function Families() {
         }
       />
 
-      {error && <ErrorNotice message={error} onRetry={() => void load()} />}
+      {error && <ErrorNotice message={error} onRetry={() => void familiesQuery.refetch()} />}
 
       {!myPersonId && (
         <ErrorNotice message="Your directory record is missing, so you cannot join a family. Ask a parish administrator to look into it." />
@@ -173,7 +169,7 @@ export function Families() {
               navigate(`/families/${created.id}`);
             } else {
               // Stay put so several can be set up in a row.
-              await load();
+              await queryClient.invalidateQueries({ queryKey: qk.families(organizationId) });
             }
           }}
         />

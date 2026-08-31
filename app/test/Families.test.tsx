@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
+import { renderWithProviders } from "./utils";
 import type { FamilySummaryDto, MeDto } from "@shared";
 import { Families } from "../src/pages/Families";
 
@@ -62,11 +62,7 @@ const HADDAD = family({
 const NASSIF = family({ id: "fam-2", name: "Nassif" });
 
 function renderPage() {
-  return render(
-    <MemoryRouter initialEntries={["/families"]}>
-      <Families />
-    </MemoryRouter>
-  );
+  return renderWithProviders(<Families />, { initialEntries: ["/families"] });
 }
 
 describe("Families", () => {

@@ -1,6 +1,9 @@
 import { useEffect, useId, useRef, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import type { PersonLookupDto } from "@shared";
 import { api } from "../lib/api";
+import { qk } from "../lib/queryKeys";
+import { useMe } from "../context/MeContext";
 import { Field, inputClass } from "./ui";
 
 /**
@@ -25,6 +28,8 @@ export interface PickedPerson {
 /** Long enough that typing a name is one request, short enough to feel live. */
 const DEBOUNCE_MS = 250;
 
+const NO_RESULTS: PersonLookupDto[] = [];
+
 export function PersonPicker({
   label,
   hint,
@@ -41,10 +46,9 @@ export function PersonPicker({
   excludePersonId?: string;
   placeholder?: string;
 }) {
+  const { organizationId } = useMe();
   const [query, setQuery] = useState(value?.name ?? "");
-  const [results, setResults] = useState<PersonLookupDto[]>([]);
   const [open, setOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
 
   const containerRef = useRef<HTMLDivElement>(null);
@@ -52,32 +56,43 @@ export function PersonPicker({
   const listId = useId();
   const optionId = (index: number) => `${listId}-option-${index}`;
 
-  // Debounced, like the directory's search box. The counter guards against a slow earlier
-  // response landing after a fast later one and overwriting it.
-  const requestRef = useRef(0);
+  /*
+   * Debounced, like the directory's search box, but only as far as the term the
+   * query is keyed on -- a slow earlier response can no longer land after a
+   * fast later one, because the two are separate cache entries. That is what
+   * the request counter here used to be for.
+   */
+  // `null` until the first pause after opening, which is what keeps the list
+  // from asking for anything the moment the box is focused.
+  const [term, setTerm] = useState<string | null>(null);
   useEffect(() => {
-    if (!open) return;
-    requestRef.current += 1;
-    const requestId = requestRef.current;
-    const timer = setTimeout(() => {
-      setLoading(true);
-      api<{ people: PersonLookupDto[] }>("/directory/lookup", {
-        query: { q: query.trim(), exclude: excludePersonId },
-      })
-        .then((data) => {
-          if (requestRef.current !== requestId) return;
-          setResults(data.people);
-          setActiveIndex(0);
-        })
-        .catch(() => {
-          if (requestRef.current === requestId) setResults([]);
-        })
-        .finally(() => {
-          if (requestRef.current === requestId) setLoading(false);
-        });
-    }, DEBOUNCE_MS);
+    if (!open) {
+      setTerm(null);
+      return;
+    }
+    const timer = setTimeout(() => setTerm(query.trim()), DEBOUNCE_MS);
     return () => clearTimeout(timer);
-  }, [query, open, excludePersonId]);
+  }, [query, open]);
+
+  const lookup = useQuery({
+    queryKey: qk.directoryLookup(organizationId, term ?? "", excludePersonId),
+    queryFn: ({ signal }) =>
+      api<{ people: PersonLookupDto[] }>("/directory/lookup", {
+        signal,
+        query: { q: term ?? "", exclude: excludePersonId },
+      }),
+    enabled: open && term !== null,
+  });
+
+  // A failed lookup shows an empty list rather than an error: this is a
+  // typeahead inside a form, and there is nowhere sensible to put a notice.
+  const results = lookup.data?.people ?? NO_RESULTS;
+  const loading = open && lookup.isPending;
+
+  // Whatever is on top of a fresh list is the one Enter picks.
+  useEffect(() => {
+    setActiveIndex(0);
+  }, [lookup.data]);
 
   useEffect(() => {
     if (!open) return;

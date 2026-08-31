@@ -1,6 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { OrganizationDto } from "@shared";
 import { api } from "../lib/api";
+import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
 import {
   Button,
@@ -19,30 +21,20 @@ import {
  */
 export function AdminOrganizations() {
   const { switchOrganization, organizationId, reload: reloadMe } = useMe();
-  const [organizations, setOrganizations] = useState<OrganizationDto[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const queryClient = useQueryClient();
   const [editing, setEditing] = useState<OrganizationDto | "new" | null>(null);
 
-  const load = useCallback(async () => {
-    setLoading(true);
-    setError(null);
-    try {
-      // Not organization-scoped: this is the list you choose from.
-      const result = await api<{ organizations: OrganizationDto[] }>("/organizations", {
-        withOrg: false,
-      });
-      setOrganizations(result.organizations);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not load churches");
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  // Not organization-scoped, in the request or in the key: this is the list you
+  // choose from.
+  const organizationsQuery = useQuery({
+    queryKey: qk.organizations(),
+    queryFn: ({ signal }) =>
+      api<{ organizations: OrganizationDto[] }>("/organizations", { withOrg: false, signal }),
+  });
 
-  useEffect(() => {
-    void load();
-  }, [load]);
+  const organizations = organizationsQuery.data?.organizations ?? [];
+  const loading = organizationsQuery.isPending;
+  const error = organizationsQuery.error?.message ?? null;
 
   return (
     <>
@@ -52,7 +44,7 @@ export function AdminOrganizations() {
         actions={<Button onClick={() => setEditing("new")}>Add a church</Button>}
       />
 
-      {error && <ErrorNotice message={error} onRetry={() => void load()} />}
+      {error && <ErrorNotice message={error} onRetry={() => void organizationsQuery.refetch()} />}
 
       {loading ? (
         <Spinner label="Loading churches" />
@@ -111,7 +103,7 @@ export function AdminOrganizations() {
           onClose={() => setEditing(null)}
           onSaved={async () => {
             setEditing(null);
-            await load();
+            await queryClient.invalidateQueries({ queryKey: qk.organizations() });
             await reloadMe();
           }}
         />
