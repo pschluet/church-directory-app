@@ -37,22 +37,33 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
   );
 }
 
+/**
+ * `actions` sits to the right of the title and bottom-aligns with the subtitle.
+ * `filters` gets a row of its own underneath, aligned back to the left under
+ * the title -- a filter belongs with the thing it narrows, and putting it in
+ * `actions` instead would push whatever is up there out of line.
+ */
 export function PageHeading({
   title,
   subtitle,
   actions,
+  filters,
 }: {
   title: string;
   subtitle?: ReactNode;
   actions?: ReactNode;
+  filters?: ReactNode;
 }) {
   return (
-    <header className="mb-6 flex flex-col gap-3 md:mb-8 md:flex-row md:items-end md:justify-between">
-      <div>
-        <h1 className="text-2xl font-bold text-ink md:text-3xl">{title}</h1>
-        {subtitle && <p className="mt-1 text-ink-muted">{subtitle}</p>}
+    <header className="mb-6 md:mb-8">
+      <div className="flex flex-col gap-3 md:flex-row md:items-end md:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-ink md:text-3xl">{title}</h1>
+          {subtitle && <p className="mt-1 text-ink-muted">{subtitle}</p>}
+        </div>
+        {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
       </div>
-      {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
+      {filters && <div className="mt-3 flex flex-wrap gap-4">{filters}</div>}
     </header>
   );
 }

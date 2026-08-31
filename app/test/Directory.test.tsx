@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, useLocation } from "react-router";
+import { MemoryRouter, useLocation, useNavigate } from "react-router";
 import type { PersonSummaryDto } from "@shared";
 import { Directory } from "../src/pages/Directory";
 
@@ -15,13 +15,18 @@ vi.mock("../src/context/MeContext", () => ({
   useMe: () => ({ organizationId: "org-1" }),
 }));
 
-function person(id: string, firstName: string, lastName: string): PersonSummaryDto {
+function person(
+  id: string,
+  firstName: string,
+  lastName: string,
+  appUserId: string | null = null
+): PersonSummaryDto {
   return {
     id,
     organizationId: "org-1",
     familyId: null,
     familyName: null,
-    appUserId: null,
+    appUserId,
     firstName,
     lastName,
     email: null,
@@ -41,13 +46,30 @@ function person(id: string, firstName: string, lastName: string): PersonSummaryD
   };
 }
 
+// Anna and John have no account, Boris does, which is what the filter sorts on.
 const ANNA = person("anna-id", "Anna", "Ivanova");
-const BORIS = person("boris-id", "Boris", "Petrov");
+const BORIS = person("boris-id", "Boris", "Petrov", "au-boris");
 const SMITH = person("smith-id", "John", "Smith");
+
+interface Query {
+  q?: string;
+  cursorId?: string;
+  accountHoldersOnly?: string;
+}
 
 /** Lets a test read the query string the page has written. */
 function LocationProbe() {
   return <span data-testid="search">{useLocation().search}</span>;
+}
+
+/** MemoryRouter keeps its own stack, so window.history cannot drive it. */
+function BackButton() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => navigate(-1)}>
+      go back
+    </button>
+  );
 }
 
 function renderDirectory(path = "/") {
@@ -55,23 +77,33 @@ function renderDirectory(path = "/") {
     <MemoryRouter initialEntries={[path]}>
       <Directory />
       <LocationProbe />
+      <BackButton />
     </MemoryRouter>
   );
 }
 
 const box = () => screen.getByRole("searchbox", { name: /search the directory/i });
+const filterBox = () => screen.getByRole("checkbox", { name: /show account holders only/i });
 const calls = (path: string) => api.mock.calls.filter(([called]) => called === path);
+/** The query the page sent on the nth request to `path`. */
+const queryOf = (path: string, index: number): Query =>
+  (calls(path)[index]?.[1] as { query?: Query } | undefined)?.query ?? {};
 
 describe("Directory", () => {
   beforeEach(() => {
     api.mockReset();
-    api.mockImplementation((path: string, options?: { query?: { q?: string } }) => {
+    api.mockImplementation((path: string, options?: { query?: Query }) => {
+      const holdersOnly = options?.query?.accountHoldersOnly === "true";
       if (path === "/directory") {
-        return Promise.resolve({ people: [ANNA, BORIS], nextCursor: null });
+        return Promise.resolve({
+          people: holdersOnly ? [BORIS] : [ANNA, BORIS],
+          nextCursor: null,
+        });
       }
       if (path === "/directory/search") {
         const q = options?.query?.q ?? "";
-        return Promise.resolve({ people: q === "smith" ? [SMITH] : [] });
+        if (q !== "smith") return Promise.resolve({ people: [] });
+        return Promise.resolve({ people: holdersOnly ? [] : [SMITH] });
       }
       throw new Error(`unexpected path ${path}`);
     });
@@ -105,7 +137,9 @@ describe("Directory", () => {
 
     await vi.advanceTimersByTimeAsync(250);
     await waitFor(() => expect(calls("/directory/search")).toHaveLength(1));
-    expect(api).toHaveBeenCalledWith("/directory/search", { query: { q: "smith" } });
+    expect(api).toHaveBeenCalledWith("/directory/search", {
+      query: { q: "smith", accountHoldersOnly: undefined },
+    });
   });
 
   it("replaces the browse list with the results and puts the query in the URL", async () => {
@@ -164,7 +198,7 @@ describe("Directory", () => {
 
   it("ignores a slow earlier response that lands after a faster later one", async () => {
     let settleStale: ((value: { people: PersonSummaryDto[] }) => void) | undefined;
-    api.mockImplementation((path: string, options?: { query?: { q?: string } }) => {
+    api.mockImplementation((path: string, options?: { query?: Query }) => {
       if (path === "/directory") {
         return Promise.resolve({ people: [ANNA, BORIS], nextCursor: null });
       }
@@ -195,5 +229,192 @@ describe("Directory", () => {
 
     expect(screen.getByText("John Smith")).toBeInTheDocument();
     expect(screen.queryByText("Anna Ivanova")).not.toBeInTheDocument();
+  });
+
+  describe("the account holders filter", () => {
+    it("is off to begin with, and asks for everyone", async () => {
+      renderDirectory();
+
+      expect(await screen.findByText("Anna Ivanova")).toBeInTheDocument();
+      expect(filterBox()).not.toBeChecked();
+      expect(queryOf("/directory", 0).accountHoldersOnly).toBeUndefined();
+    });
+
+    it("drops the people without an account when it is ticked", async () => {
+      renderDirectory();
+      await screen.findByText("Anna Ivanova");
+
+      await user().click(filterBox());
+
+      expect(await screen.findByText("1 account holder, by last name")).toBeInTheDocument();
+      expect(screen.getByText("Boris Petrov")).toBeInTheDocument();
+      expect(screen.queryByText("Anna Ivanova")).not.toBeInTheDocument();
+
+      // One extra request, carrying the flag -- the filtering is the server's.
+      expect(calls("/directory")).toHaveLength(2);
+      expect(queryOf("/directory", 1).accountHoldersOnly).toBe("true");
+    });
+
+    it("brings them back when it is unticked", async () => {
+      renderDirectory();
+      await screen.findByText("Anna Ivanova");
+
+      await user().click(filterBox());
+      await screen.findByText("1 account holder, by last name");
+
+      await user().click(filterBox());
+
+      expect(await screen.findByText("Anna Ivanova")).toBeInTheDocument();
+      expect(screen.getByText("2 people, by last name")).toBeInTheDocument();
+      expect(queryOf("/directory", 2).accountHoldersOnly).toBeUndefined();
+    });
+
+    it("starts filtered when the URL says so, without an unfiltered first pass", async () => {
+      renderDirectory("/?accountHoldersOnly=true");
+
+      expect(await screen.findByText("Boris Petrov")).toBeInTheDocument();
+      expect(filterBox()).toBeChecked();
+      expect(screen.queryByText("Anna Ivanova")).not.toBeInTheDocument();
+      // One request, already filtered: no unfiltered flash to correct.
+      expect(calls("/directory")).toHaveLength(1);
+      expect(queryOf("/directory", 0).accountHoldersOnly).toBe("true");
+    });
+
+    it("writes itself into the URL, and takes itself back out", async () => {
+      renderDirectory();
+      await screen.findByText("Anna Ivanova");
+
+      await user().click(filterBox());
+      await screen.findByText("1 account holder, by last name");
+      expect(screen.getByTestId("search")).toHaveTextContent("?accountHoldersOnly=true");
+
+      await user().click(filterBox());
+      await screen.findByText("2 people, by last name");
+      expect(screen.getByTestId("search")).toHaveTextContent("");
+    });
+
+    /*
+     * The debounced write used to hand setParams a whole new object, which
+     * replaced the query string outright. With the filter living there too, that
+     * would have switched it off again on the next keystroke.
+     */
+    it("survives typing a search, and the search survives it", async () => {
+      renderDirectory("/?accountHoldersOnly=true");
+      await screen.findByText("Boris Petrov");
+
+      await user().type(box(), "smith");
+      await vi.advanceTimersByTimeAsync(250);
+
+      await waitFor(() => expect(calls("/directory/search")).toHaveLength(1));
+      expect(queryOf("/directory/search", 0).accountHoldersOnly).toBe("true");
+      expect(filterBox()).toBeChecked();
+
+      const url = screen.getByTestId("search").textContent ?? "";
+      expect(url).toContain("q=smith");
+      expect(url).toContain("accountHoldersOnly=true");
+    });
+
+    it("keeps the search when it is ticked mid-search", async () => {
+      renderDirectory("/?q=smith");
+      await screen.findByText("John Smith");
+
+      await user().click(filterBox());
+      await waitFor(() => expect(calls("/directory/search")).toHaveLength(2));
+
+      expect(queryOf("/directory/search", 1).q).toBe("smith");
+      expect(box()).toHaveValue("smith");
+      expect(screen.getByTestId("search").textContent).toContain("q=smith");
+    });
+
+    it("leaves a history entry, so the back button undoes it", async () => {
+      renderDirectory();
+      await screen.findByText("Anna Ivanova");
+
+      await user().click(filterBox());
+      await screen.findByText("1 account holder, by last name");
+
+      await user().click(screen.getByRole("button", { name: /go back/i }));
+
+      expect(await screen.findByText("Anna Ivanova")).toBeInTheDocument();
+      expect(filterBox()).not.toBeChecked();
+    });
+
+    it("narrows a search as well as the browse list", async () => {
+      renderDirectory("/?q=smith");
+      await screen.findByText("John Smith");
+
+      await user().click(filterBox());
+
+      await waitFor(() => expect(calls("/directory/search")).toHaveLength(2));
+      expect(queryOf("/directory/search", 1).accountHoldersOnly).toBe("true");
+      expect(screen.queryByText("John Smith")).not.toBeInTheDocument();
+      expect(
+        await screen.findByText(/only account holders are being searched/i)
+      ).toBeInTheDocument();
+
+      // And a way back out that does not require finding the checkbox again.
+      await user().click(screen.getByRole("button", { name: /search everyone/i }));
+      expect(await screen.findByText("John Smith")).toBeInTheDocument();
+      expect(filterBox()).not.toBeChecked();
+    });
+
+    it("blames itself, not an empty directory, when it leaves nobody", async () => {
+      api.mockImplementation((path: string, options?: { query?: Query }) => {
+        if (path !== "/directory") throw new Error(`unexpected path ${path}`);
+        const holdersOnly = options?.query?.accountHoldersOnly === "true";
+        return Promise.resolve({ people: holdersOnly ? [] : [ANNA], nextCursor: null });
+      });
+
+      renderDirectory();
+      await screen.findByText("Anna Ivanova");
+
+      await user().click(filterBox());
+
+      expect(await screen.findByText("No account holders")).toBeInTheDocument();
+      expect(screen.queryByText("Nobody here yet")).not.toBeInTheDocument();
+
+      await user().click(screen.getByRole("button", { name: /show everyone/i }));
+
+      expect(await screen.findByText("Anna Ivanova")).toBeInTheDocument();
+      expect(filterBox()).not.toBeChecked();
+    });
+
+    it("does not let a page of the old filter land on the new list", async () => {
+      let settleStale: ((value: unknown) => void) | undefined;
+      api.mockImplementation((path: string, options?: { query?: Query }) => {
+        if (path !== "/directory") throw new Error(`unexpected path ${path}`);
+        // "Show more" is held open until after the toggle has been answered.
+        if (options?.query?.cursorId) {
+          return new Promise((resolve) => {
+            settleStale = resolve;
+          });
+        }
+        const holdersOnly = options?.query?.accountHoldersOnly === "true";
+        return Promise.resolve({
+          people: holdersOnly ? [BORIS] : [ANNA],
+          nextCursor: holdersOnly
+            ? null
+            : { lastName: "Ivanova", firstName: "Anna", id: "anna-id" },
+        });
+      });
+
+      renderDirectory();
+      await screen.findByText("Anna Ivanova");
+
+      // The button disables itself while the page is in flight; the checkbox
+      // does not, which is how the two requests come to overlap.
+      await user().click(screen.getByRole("button", { name: /show more/i }));
+      await user().click(filterBox());
+      expect(await screen.findByText("1 account holder, by last name")).toBeInTheDocument();
+
+      await act(async () => {
+        settleStale?.({ people: [SMITH], nextCursor: null });
+      });
+
+      // Appending it would have put an account-less person back on a filtered
+      // list, and left a cursor from the wrong set behind.
+      expect(screen.queryByText("John Smith")).not.toBeInTheDocument();
+      expect(screen.getByText("1 account holder, by last name")).toBeInTheDocument();
+    });
   });
 });

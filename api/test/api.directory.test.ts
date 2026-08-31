@@ -199,6 +199,131 @@ describe.skipIf(!hasDb)("directory browse and search", () => {
   });
 
   /**
+   * "Show account holders only" -- the checkbox in the directory heading. The
+   * predicate is `app_user_id is not null`, so createUser rows are in and
+   * createNonUserPerson rows are out.
+   */
+  describe("the account holders filter", () => {
+    const names = (body: any) =>
+      body.people.map((p: any) => `${p.lastName ?? ""} ${p.firstName}`.trim());
+
+    const holder = (firstName: string, lastName: string | null) =>
+      createUser(db(), {
+        organizationId: orgId,
+        familyId,
+        email: `${firstName.toLowerCase()}@test.example`,
+        firstName,
+        lastName,
+      });
+
+    beforeEach(async () => {
+      await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId,
+        firstName: "Boris",
+        lastName: "Popov",
+      });
+    });
+
+    it("leaves out the people who have no account", async () => {
+      const { body } = await as(me).call("GET", "/api/directory?accountHoldersOnly=true");
+      expect(names(body)).toEqual(["Schlueter Paul"]);
+    });
+
+    it("includes them when it is not asked for, so the default is unchanged", async () => {
+      const { body } = await as(me).call("GET", "/api/directory");
+      expect(names(body)).toEqual(["Popov Boris", "Schlueter Paul"]);
+    });
+
+    it("treats anything other than an explicit true as off", async () => {
+      for (const raw of ["", "1", "yes", "false", "TRUE"]) {
+        const { body } = await as(me).call("GET", `/api/directory?accountHoldersOnly=${raw}`);
+        expect(names(body), `?accountHoldersOnly=${raw}`).toContain("Popov Boris");
+      }
+    });
+
+    /*
+     * The filter is interpolated into the same `where` as the keyset comparison,
+     * which hardcodes $2/$3/$4 and takes `limit` as the last placeholder. This
+     * walks every page to prove those numbers still line up and that filtering
+     * happens before the limit+1 probe, so no page is short and nobody is
+     * skipped.
+     */
+    it("pages correctly with the filter on", async () => {
+      await holder("Aaron", "Adams");
+      await holder("Cyril", "Carter");
+      for (const [first, last] of [
+        ["Bella", "Baker"],
+        ["Dora", "Davis"],
+      ]) {
+        await createNonUserPerson(db(), {
+          organizationId: orgId,
+          familyId,
+          firstName: first,
+          lastName: last,
+        });
+      }
+
+      const seen: string[] = [];
+      let query = "/api/directory?limit=1&accountHoldersOnly=true";
+      for (let page = 0; page < 6; page += 1) {
+        const { body } = await as(me).call("GET", query);
+        expect(body.people).toHaveLength(1);
+        seen.push(...names(body));
+        if (!body.nextCursor) break;
+        const { lastName, firstName, id } = body.nextCursor;
+        query =
+          `/api/directory?limit=1&accountHoldersOnly=true` +
+          `&cursorLastName=${encodeURIComponent(lastName ?? "")}` +
+          `&cursorFirstName=${encodeURIComponent(firstName)}&cursorId=${id}`;
+      }
+
+      expect(seen).toEqual(["Adams Aaron", "Carter Cyril", "Schlueter Paul"]);
+    });
+
+    it("still puts an account holder with no last name at the end", async () => {
+      // createUser falls back to "User" for a null surname, and the point of
+      // this test is a real null -- that is the chr(65535) branch of the sort.
+      const nameless = await holder("Nameless", null);
+      await db().query("update persons set last_name = null where id = $1", [nameless.personId]);
+
+      const { body } = await as(me).call("GET", "/api/directory?accountHoldersOnly=true");
+      expect(names(body)).toEqual(["Schlueter Paul", "Nameless"]);
+    });
+
+    it("narrows a search too, rather than only the browse list", async () => {
+      await holder("Vera", "Popov");
+
+      const all = await as(me).call("GET", "/api/directory/search?q=Popov");
+      expect(names(all.body)).toEqual(["Popov Boris", "Popov Vera"]);
+
+      const held = await as(me).call(
+        "GET",
+        "/api/directory/search?q=Popov&accountHoldersOnly=true"
+      );
+      expect(names(held.body)).toEqual(["Popov Vera"]);
+    });
+
+    // Search numbers its ILIKE terms $2..$n; the filter must not disturb them.
+    it("keeps a multi-term search correct with the filter on", async () => {
+      await holder("Vera", "Popov");
+      const { body } = await as(me).call(
+        "GET",
+        "/api/directory/search?q=popov%20vera&accountHoldersOnly=true"
+      );
+      expect(names(body)).toEqual(["Popov Vera"]);
+    });
+
+    it("finds nobody when only people without accounts match", async () => {
+      const { body } = await as(me).call(
+        "GET",
+        "/api/directory/search?q=Popov&accountHoldersOnly=true"
+      );
+      expect(body).toEqual({ people: [], query: "Popov" });
+    });
+  });
+
+  /**
    * The type-ahead picker. The distinction that matters against /search is that
    * this one is names only -- a spouse picker should not offer everyone who
    * happens to share a street.

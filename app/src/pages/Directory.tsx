@@ -21,6 +21,9 @@ interface Page {
 /** Long enough that typing a name is one request, short enough to feel live. */
 const DEBOUNCE_MS = 250;
 
+/** "Show account holders only", carried in the URL beside ?q= -- see below. */
+const ACCOUNT_HOLDERS_PARAM = "accountHoldersOnly";
+
 /**
  * "Scrollable view of the entire directory, sorted by last name", together with
  * the search over it -- one page rather than two, because leaving the directory
@@ -37,6 +40,14 @@ export function Directory() {
   const [params, setParams] = useSearchParams();
   const query = params.get("q") ?? "";
 
+  /*
+   * The filter lives in the URL, like the search, so both halves of "what am I
+   * looking at" travel together in a link and survive a reload. There is no
+   * separate copy of it in state: the URL is the one answer, exactly as it is
+   * for `query`.
+   */
+  const accountHoldersOnly = params.get(ACCOUNT_HOLDERS_PARAM) === "true";
+
   // What the box shows, which has to keep up with typing. `query` is what has
   // been committed to the URL, and is what the results on screen correspond to.
   const [input, setInput] = useState(query);
@@ -52,18 +63,65 @@ export function Directory() {
   const [searchLoading, setSearchLoading] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
 
-  const load = useCallback(async (from: Cursor | null) => {
-    const page = await api<Page>("/directory", {
-      query: {
-        limit: 50,
-        cursorLastName: from?.lastName ?? undefined,
-        cursorFirstName: from?.firstName,
-        cursorId: from?.id,
-      },
+  /*
+   * Merged into whatever is already in the query string rather than replacing
+   * it, so ticking the box mid-search keeps the search.
+   *
+   * A push rather than a replace, unlike the debounced write below: this is one
+   * deliberate click, so making the back button undo it is useful where making
+   * it undo single letters would not be.
+   */
+  function toggleAccountHoldersOnly(next: boolean): void {
+    setParams((prev) => {
+      const updated = new URLSearchParams(prev);
+      if (next) updated.set(ACCOUNT_HOLDERS_PARAM, "true");
+      else updated.delete(ACCOUNT_HOLDERS_PARAM);
+      return updated;
     });
-    setPeople((prev) => (from ? [...prev, ...page.people] : page.people));
-    setCursor(page.nextCursor);
-  }, []);
+  }
+
+  /*
+   * The same guard the search below uses, and for a reason the checkbox
+   * introduces: "Show more" disables its own button while it is in flight but
+   * not the checkbox, so toggling mid-page would otherwise append rows from the
+   * old filter onto the freshly reloaded list and leave a cursor from the wrong
+   * set behind. It covers switching organization mid-page too, which had the
+   * same hole.
+   */
+  const browseRef = useRef(0);
+
+  const load = useCallback(
+    async (from: Cursor | null) => {
+      browseRef.current += 1;
+      const requestId = browseRef.current;
+
+      let page: Page;
+      try {
+        // `undefined` rather than `false` when off: the serializer drops it, so
+        // the param is simply absent, and `query` takes no booleans.
+        page = await api<Page>("/directory", {
+          query: {
+            limit: 50,
+            cursorLastName: from?.lastName ?? undefined,
+            cursorFirstName: from?.firstName,
+            cursorId: from?.id,
+            accountHoldersOnly: accountHoldersOnly ? "true" : undefined,
+          },
+        });
+      } catch (err) {
+        // Superseded, so the request that replaced this one owns the screen --
+        // including reporting its own failure. Staying quiet here leaves the
+        // catch blocks in reload and loadMore as the only source of a message.
+        if (browseRef.current !== requestId) return;
+        throw err;
+      }
+
+      if (browseRef.current !== requestId) return;
+      setPeople((prev) => (from ? [...prev, ...page.people] : page.people));
+      setCursor(page.nextCursor);
+    },
+    [accountHoldersOnly]
+  );
 
   const reload = useCallback(async () => {
     setBrowseLoading(true);
@@ -77,9 +135,11 @@ export function Directory() {
     }
   }, [load]);
 
-  // Re-run when a super admin switches organization. This loads even while a
-  // search is on screen: one page of 50 is a cheap price for clearing the box
-  // being instant.
+  // Re-run when a super admin switches organization, and when the checkbox
+  // moves -- `load` is rebuilt with the flag, so this reloads from no cursor,
+  // which is also what resets the pages already accumulated. This loads even
+  // while a search is on screen: one page of 50 is a cheap price for clearing
+  // the box being instant.
   useEffect(() => {
     void reload();
   }, [reload, organizationId]);
@@ -99,8 +159,22 @@ export function Directory() {
 
     // Clearing the box brings the list straight back instead of making someone
     // wait out a debounce for something already in memory.
+    //
+    // Only `q` is touched: this used to hand `setParams` a whole new object,
+    // which wiped every other param, and the filter beside it would not have
+    // survived a keystroke.
     const timer = setTimeout(
-      () => setParams(trimmed ? { q: trimmed } : {}, { replace: true }),
+      () => {
+        setParams(
+          (prev) => {
+            const updated = new URLSearchParams(prev);
+            if (trimmed) updated.set("q", trimmed);
+            else updated.delete("q");
+            return updated;
+          },
+          { replace: true }
+        );
+      },
       trimmed === "" ? 0 : DEBOUNCE_MS
     );
     return () => clearTimeout(timer);
@@ -132,7 +206,9 @@ export function Directory() {
 
     setSearchLoading(true);
     setSearchError(null);
-    api<{ people: PersonSummaryDto[] }>("/directory/search", { query: { q: query } })
+    api<{ people: PersonSummaryDto[] }>("/directory/search", {
+      query: { q: query, accountHoldersOnly: accountHoldersOnly ? "true" : undefined },
+    })
       .then((data) => {
         if (requestRef.current !== requestId) return;
         setResults(data.people);
@@ -145,7 +221,7 @@ export function Directory() {
       .finally(() => {
         if (requestRef.current === requestId) setSearchLoading(false);
       });
-  }, [query, organizationId]);
+  }, [query, organizationId, accountHoldersOnly]);
 
   async function loadMore(): Promise<void> {
     if (!cursor) return;
@@ -167,8 +243,17 @@ export function Directory() {
       return `${results.length} ${results.length === 1 ? "match" : "matches"}`;
     }
     if (browseLoading) return undefined;
-    return `${people.length} ${people.length === 1 ? "person" : "people"}, by last name`;
-  }, [searching, searchLoading, results, browseLoading, people.length]);
+    // Names what is being counted, so a number shrinking under the filter is
+    // never left unexplained.
+    const noun = accountHoldersOnly
+      ? people.length === 1
+        ? "account holder"
+        : "account holders"
+      : people.length === 1
+        ? "person"
+        : "people";
+    return `${people.length} ${noun}, by last name`;
+  }, [searching, searchLoading, results, browseLoading, people.length, accountHoldersOnly]);
 
   return (
     <>
@@ -176,6 +261,17 @@ export function Directory() {
         title="Directory"
         subtitle={subtitle}
         actions={<SearchField value={input} onChange={setInput} />}
+        filters={
+          <label className="tap-target inline-flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              className="h-4 w-4 accent-primary"
+              checked={accountHoldersOnly}
+              onChange={(event) => toggleAccountHoldersOnly(event.target.checked)}
+            />
+            <span className="whitespace-nowrap text-ink-muted">Show account holders only</span>
+          </label>
+        }
       />
 
       {/*
@@ -187,9 +283,11 @@ export function Directory() {
       */}
       <p role="status" className="sr-only">
         {searching && !searchLoading && results !== null
-          ? results.length === 0
-            ? `Nothing matches ${query}`
-            : `${results.length} ${results.length === 1 ? "match" : "matches"} for ${query}`
+          ? `${
+              results.length === 0
+                ? `Nothing matches ${query}`
+                : `${results.length} ${results.length === 1 ? "match" : "matches"} for ${query}`
+            }${accountHoldersOnly ? " among account holders" : ""}`
           : ""}
       </p>
 
@@ -201,7 +299,17 @@ export function Directory() {
             <Spinner label="Searching" />
           ) : results.length === 0 ? (
             <EmptyState title={`Nothing matches “${query}”`}>
-              <p>Check the spelling, or try a shorter fragment.</p>
+              <p>
+                Check the spelling, or try a shorter fragment.
+                {accountHoldersOnly && " Only account holders are being searched."}
+              </p>
+              {accountHoldersOnly && (
+                <p className="mt-3">
+                  <Button variant="ghost" onClick={() => toggleAccountHoldersOnly(false)}>
+                    Search everyone
+                  </Button>
+                </p>
+              )}
             </EmptyState>
           ) : (
             <PersonGrid people={results} />
@@ -214,9 +322,22 @@ export function Directory() {
           {browseLoading ? (
             <Spinner label="Loading the directory" />
           ) : people.length === 0 ? (
-            <EmptyState title="Nobody here yet">
-              <p>Once an administrator adds people, they will appear here.</p>
-            </EmptyState>
+            // "Nobody here yet" would be a lie when the checkbox is what
+            // emptied the list, so the way out is offered instead.
+            accountHoldersOnly ? (
+              <EmptyState title="No account holders">
+                <p>Nobody in the directory has an app account yet.</p>
+                <p className="mt-3">
+                  <Button variant="ghost" onClick={() => toggleAccountHoldersOnly(false)}>
+                    Show everyone
+                  </Button>
+                </p>
+              </EmptyState>
+            ) : (
+              <EmptyState title="Nobody here yet">
+                <p>Once an administrator adds people, they will appear here.</p>
+              </EmptyState>
+            )
           ) : (
             <>
               <PersonGrid people={people} />

@@ -34,6 +34,27 @@ function parseLimit(raw: string | undefined): number {
   return Math.min(Math.max(Math.trunc(value), 1), MAX_LIMIT);
 }
 
+/** A query string has no booleans; anything but an explicit "true" means off. */
+function parseFlag(raw: string | undefined): boolean {
+  return raw === "true";
+}
+
+/**
+ * "Show account holders only" -- the directory holds family members who have no
+ * account of their own (children, a spouse without a login), and this hides
+ * them.
+ *
+ * `app_user_id is not null` counts an invited-but-never-signed-in or a disabled
+ * user as an account holder. That is deliberate: it is the same condition
+ * behind the "No account" badge on a person card, so the checkbox means exactly
+ * "hide the cards showing that badge" and needs no further explanation.
+ *
+ * Interpolated rather than bound, and empty when off, so it adds nothing to the
+ * `params` array -- both routes below number their placeholders by hand and
+ * would break if this shifted them.
+ */
+const ACCOUNT_HOLDER_FILTER = "and r.app_user_id is not null";
+
 /**
  * "Scrollable view of the entire directory, sorted by last name."
  *
@@ -46,6 +67,7 @@ routes.get("/", async (c) => {
   const db = c.get("db");
   const organizationId = requireOrganizationId(c);
   const limit = parseLimit(c.req.query("limit"));
+  const accountHoldersOnly = parseFlag(c.req.query("accountHoldersOnly"));
 
   const cursorLastName = c.req.query("cursorLastName") ?? null;
   const cursorFirstName = c.req.query("cursorFirstName") ?? null;
@@ -68,6 +90,7 @@ routes.get("/", async (c) => {
        from persons_resolved r
       where r.organization_id = $1
         and r.deleted_at is null
+        ${accountHoldersOnly ? ACCOUNT_HOLDER_FILTER : ""}
         ${keyset}
       ${PERSON_ORDER}
       limit $${params.length}`,
@@ -93,6 +116,7 @@ routes.get("/search", async (c) => {
   const db = c.get("db");
   const organizationId = requireOrganizationId(c);
   const q = (c.req.query("q") ?? "").trim();
+  const accountHoldersOnly = parseFlag(c.req.query("accountHoldersOnly"));
 
   if (q.length === 0) return c.json({ people: [], query: "" });
 
@@ -108,6 +132,7 @@ routes.get("/search", async (c) => {
        from persons_resolved r
       where r.organization_id = $1
         and r.deleted_at is null
+        ${accountHoldersOnly ? ACCOUNT_HOLDER_FILTER : ""}
         and ${conditions}
       ${PERSON_ORDER}
       limit ${MAX_LIMIT}`,
