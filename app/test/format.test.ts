@@ -7,6 +7,7 @@ import {
   initials,
   specialDateDetail,
   specialDateLabel,
+  specialDatePartnerName,
 } from "../src/lib/format";
 
 describe("displayPhone", () => {
@@ -48,6 +49,29 @@ describe("specialDateDetail", () => {
   it("uses the patron saint for a name day", () => {
     expect(specialDateDetail({ type: "FEAST_DAY", patronSaint: "St. Anna" })).toBe("St. Anna");
     expect(specialDateDetail({ type: "FEAST_DAY", patronSaint: null })).toBeNull();
+  });
+});
+
+describe("specialDatePartnerName", () => {
+  const anniversary = {
+    personId: "paul",
+    personName: "Paul Schlueter",
+    relatedPersonId: "sarah",
+    relatedPersonName: "Sarah Schlueter",
+  };
+
+  it("names whoever is not the person whose page it is", () => {
+    expect(specialDatePartnerName(anniversary, "paul")).toBe("Sarah Schlueter");
+    expect(specialDatePartnerName(anniversary, "sarah")).toBe("Paul Schlueter");
+  });
+
+  it("says nothing for a date that links no one", () => {
+    expect(
+      specialDatePartnerName(
+        { ...anniversary, relatedPersonId: null, relatedPersonName: null },
+        "paul"
+      )
+    ).toBeNull();
   });
 });
 

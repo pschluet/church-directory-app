@@ -1,5 +1,5 @@
 import { formatPhone } from "@shared";
-import type { PersonSummaryDto, SpecialDateType } from "@shared";
+import type { PersonSummaryDto, SpecialDateDto, SpecialDateType } from "@shared";
 
 export { formatPhone, fullName, normalizePhone } from "@shared";
 
@@ -86,6 +86,20 @@ export function specialDateDetail(date: {
   if (date.yearCount == null) return null;
   if (date.type === "BIRTHDAY") return `Turning ${date.yearCount}`;
   return `${date.yearCount} ${date.yearCount === 1 ? "year" : "years"} married`;
+}
+
+/**
+ * The other half of a linked date, as seen from one person's page. An
+ * anniversary is stored once and shows on both pages, so whose name to print
+ * depends on whose page it is: Paul's page says "with Sarah", Sarah's "with
+ * Paul".
+ */
+export function specialDatePartnerName(
+  date: Pick<SpecialDateDto, "personId" | "personName" | "relatedPersonId" | "relatedPersonName">,
+  viewedPersonId: string
+): string | null {
+  if (!date.relatedPersonId) return null;
+  return date.relatedPersonId === viewedPersonId ? date.personName : date.relatedPersonName;
 }
 
 /** A single-line address, skipping the parts that are missing. */
