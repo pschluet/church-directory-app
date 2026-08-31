@@ -8,11 +8,12 @@ import { PersonForm } from "../components/PersonForm";
 import { PhoneLink } from "../components/PhoneLink";
 import { PhotoUpload } from "../components/PhotoUpload";
 import { SpecialDateForm } from "../components/SpecialDateForm";
-import { Badge, Button, ErrorNotice, Modal, Spinner } from "../components/ui";
+import { Badge, Button, ErrorNotice, InfoPopover, Modal, Spinner } from "../components/ui";
 import {
   formatMonthDay,
   formatMultilineAddress,
   fullName,
+  showYearCountLabel,
   specialDateDetail,
   specialDateLabel,
   specialDatePartner,
@@ -201,7 +202,23 @@ export function PersonDetail() {
               return (
                 <li key={date.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-3">
                   <span className="font-bold text-ink">{specialDateLabel(date.type)}</span>
-                  <span>{formatMonthDay(date.month, date.day, date.year)}</span>
+                  <span className="inline-flex items-center gap-1.5">
+                    {formatMonthDay(date.month, date.day, date.year)}
+                    {/* A year we can see while `showYearCount` is off means the
+                        API judged us allowed to -- the person themselves, an
+                        admin, or the other half of an anniversary. Everyone else
+                        received `year: null`, so no "is this my page" check is
+                        needed here. */}
+                    {date.year != null && !date.showYearCount && (
+                      <InfoPopover
+                        label={`Why can I see the year of this ${specialDateLabel(date.type).toLowerCase()}?`}
+                        title="Not shown to others"
+                      >
+                        “{showYearCountLabel(date.type)}” is off for this date, so other members see
+                        only the day and month.
+                      </InfoPopover>
+                    )}
+                  </span>
                   {detail && <span className="text-sm font-bold text-accent">{detail}</span>}
                   {partner && (
                     <span className="text-sm text-ink-muted">

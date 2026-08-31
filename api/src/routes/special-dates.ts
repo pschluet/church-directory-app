@@ -57,6 +57,7 @@ async function loadOccurrences(
  * makes the outer limit.
  */
 function groupByDay(
+  caller: AppEnv["Variables"]["caller"],
   window: ReturnType<typeof expandWindow>,
   rows: OccurrenceRow[]
 ): UpcomingDatesDto["days"] {
@@ -71,7 +72,7 @@ function groupByDay(
     const occurrences: SpecialDateOccurrenceDto[] = [];
     for (const key of day.monthDayKeys) {
       for (const row of byKey.get(key) ?? []) {
-        const base = toSpecialDate(row);
+        const base = toSpecialDate(caller, row);
         occurrences.push({
           ...base,
           date: day.iso,
@@ -93,6 +94,7 @@ function groupByDay(
  * and the server's timezone never enters into it.
  */
 routes.get("/upcoming", async (c) => {
+  const caller = c.get("caller");
   const db = c.get("db");
   const organizationId = requireOrganizationId(c);
 
@@ -111,7 +113,7 @@ routes.get("/upcoming", async (c) => {
   const body: UpcomingDatesDto = {
     start: window[0]?.iso ?? start,
     end: window[window.length - 1]?.iso ?? start,
-    days: groupByDay(window, rows),
+    days: groupByDay(caller, window, rows),
   };
   return c.json(body);
 });
@@ -121,6 +123,7 @@ routes.get("/upcoming", async (c) => {
  * SPA renders dots from the counts and the detail list from `dates`.
  */
 routes.get("/calendar", async (c) => {
+  const caller = c.get("caller");
   const db = c.get("db");
   const organizationId = requireOrganizationId(c);
 
@@ -137,7 +140,7 @@ routes.get("/calendar", async (c) => {
   const window = expandMonth(year, month);
   const rows = await loadOccurrences(db, organizationId, allMonthDayKeys(window));
 
-  return c.json({ year, month, days: groupByDay(window, rows) });
+  return c.json({ year, month, days: groupByDay(caller, window, rows) });
 });
 
 // ---------------------------------------------------------------------------
@@ -222,7 +225,7 @@ routes.post("/", async (c) => {
   const row = await one<SpecialDateRow>(db, `${SPECIAL_DATE_SELECT} where sd.id = $1`, [
     created.id,
   ]);
-  return c.json(row ? toSpecialDate(row) : { id: created.id }, 201);
+  return c.json(row ? toSpecialDate(caller, row) : { id: created.id }, 201);
 });
 
 routes.patch("/:id", async (c) => {
@@ -264,7 +267,7 @@ routes.patch("/:id", async (c) => {
   });
 
   const row = await one<SpecialDateRow>(db, `${SPECIAL_DATE_SELECT} where sd.id = $1`, [id]);
-  return c.json(row ? toSpecialDate(row) : { id });
+  return c.json(row ? toSpecialDate(caller, row) : { id });
 });
 
 routes.delete("/:id", async (c) => {

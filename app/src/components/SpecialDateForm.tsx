@@ -7,7 +7,7 @@ import {
   type SpecialDateType,
 } from "@shared";
 import { api } from "../lib/api";
-import { MONTH_NAMES } from "../lib/format";
+import { MONTH_NAMES, showYearCountLabel } from "../lib/format";
 import { Button, Field, inputClass } from "./ui";
 
 /**
@@ -206,9 +206,7 @@ export function SpecialDateForm({
             onChange={(event) => setShowYearCount(event.target.checked)}
           />
           <span>
-            <span className="font-bold text-ink">
-              {type === "BIRTHDAY" ? "Show my age to others" : "Show how many years"}
-            </span>
+            <span className="font-bold text-ink">{showYearCountLabel(type)}</span>
             <span className="block text-sm text-ink-muted">
               {canShowYearCount
                 ? "Off by default. Only the day is shown otherwise."

@@ -158,6 +158,11 @@ export interface SpecialDateRow {
   person_first_name: string;
   person_last_name: string | null;
   person_patron_saint: string | null;
+  // The owning person's access facts, so canSeeSpecialDateYear can decide
+  // without a second query.
+  person_organization_id: string;
+  person_family_id: string | null;
+  person_app_user_id: string | null;
   type: SpecialDateType;
   month: number;
   day: number;
@@ -174,6 +179,9 @@ export const SPECIAL_DATE_SELECT = `
          p.first_name  as person_first_name,
          p.last_name   as person_last_name,
          p.patron_saint as person_patron_saint,
+         p.organization_id as person_organization_id,
+         p.family_id as person_family_id,
+         p.app_user_id as person_app_user_id,
          sd.type,
          sd.month,
          sd.day,
@@ -187,7 +195,33 @@ export const SPECIAL_DATE_SELECT = `
     left join persons_resolved rp on rp.id = sd.related_person_id
 `;
 
-export function toSpecialDate(row: SpecialDateRow): SpecialDateDto {
+/**
+ * Whether the caller may see the year behind a date whose age is hidden.
+ *
+ * "checkbox should allow the person to opt-in to showing age to others" only
+ * means something if the birth year goes with it -- May 4, 1985 is one
+ * subtraction away from the age that was opted out of. So the year is withheld
+ * from the payload rather than from the page: hiding it in the SPA alone leaves
+ * it one devtools panel away.
+ *
+ * Who keeps seeing it is "whoever could already change it", because the edit
+ * form seeds its year input from the value it was given and would otherwise
+ * blank the year on save. Plus the other half of an anniversary: it is stored
+ * once as a single row, and a wedding year is as much the spouse's as the
+ * owner's.
+ */
+export function canSeeSpecialDateYear(caller: Caller, row: SpecialDateRow): boolean {
+  if (row.show_year_count) return true;
+  if (caller.personId !== null && caller.personId === row.related_person_id) return true;
+  return canEditPerson(caller, {
+    id: row.person_id,
+    organizationId: row.person_organization_id,
+    familyId: row.person_family_id,
+    appUserId: row.person_app_user_id,
+  });
+}
+
+export function toSpecialDate(caller: Caller, row: SpecialDateRow): SpecialDateDto {
   return {
     id: row.id,
     personId: row.person_id,
@@ -195,7 +229,7 @@ export function toSpecialDate(row: SpecialDateRow): SpecialDateDto {
     type: row.type,
     month: row.month,
     day: row.day,
-    year: row.year,
+    year: canSeeSpecialDateYear(caller, row) ? row.year : null,
     showYearCount: row.show_year_count,
     relatedPersonId: row.related_person_id,
     relatedPersonName:
@@ -214,6 +248,7 @@ export function toSpecialDate(row: SpecialDateRow): SpecialDateDto {
  */
 export async function loadSpecialDatesFor(
   q: Queryable,
+  caller: Caller,
   personId: string
 ): Promise<SpecialDateDto[]> {
   const { rows } = await q.query<SpecialDateRow>(
@@ -222,7 +257,7 @@ export async function loadSpecialDatesFor(
       order by sd.month, sd.day, sd.type`,
     [personId]
   );
-  return rows.map(toSpecialDate);
+  return rows.map((row) => toSpecialDate(caller, row));
 }
 
 export async function loadPerson(
@@ -244,7 +279,7 @@ export async function loadPerson(
 
   const [sourceNames, specialDates] = await Promise.all([
     loadSourceNames(q, row),
-    loadSpecialDatesFor(q, personId),
+    loadSpecialDatesFor(q, caller, personId),
   ]);
 
   const inheritedFrom: PersonDto["inheritedFrom"] = {};
