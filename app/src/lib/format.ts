@@ -106,14 +106,6 @@ export function specialDatePartner(
   return partner.name ? { id: partner.id, name: partner.name } : null;
 }
 
-/** A single-line address, skipping the parts that are missing. */
-export function formatAddress(person: Partial<PersonSummaryDto>): string | null {
-  const street = [person.addressLine1, person.addressLine2].filter(Boolean).join(", ");
-  const locality = [person.city, person.state].filter(Boolean).join(", ");
-  const line = [street, locality, person.postalCode].filter(Boolean).join(" · ");
-  return line || null;
-}
-
 export function formatMultilineAddress(person: Partial<PersonSummaryDto>): string[] {
   return [
     person.addressLine1,

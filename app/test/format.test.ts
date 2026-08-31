@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   displayPhone,
-  formatAddress,
   formatMonthDay,
   formatMultilineAddress,
   initials,
@@ -99,12 +98,6 @@ describe("addresses", () => {
     postalCode: "60641",
     country: null,
   };
-
-  it("joins a one-line address, skipping what is missing", () => {
-    expect(formatAddress(person)).toBe("4129 W Newport Ave · Chicago, IL · 60641");
-    expect(formatAddress({ city: "Chicago" })).toBe("Chicago");
-    expect(formatAddress({})).toBeNull();
-  });
 
   it("splits a multi-line address without leaving blank lines", () => {
     expect(formatMultilineAddress(person)).toEqual(["4129 W Newport Ave", "Chicago IL 60641"]);
