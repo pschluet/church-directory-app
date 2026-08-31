@@ -151,9 +151,12 @@ export function FamilyDetail() {
         }
       />
 
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start">
+      {/* The photo is the page's centrepiece: centred, with its controls under
+          it rather than off to one side. */}
+      <div className="mb-6 flex flex-col items-center gap-4">
         {family.canEdit ? (
           <PhotoUpload
+            stacked
             owner={{ familyId: family.id }}
             thumbUrl={family.thumbUrl}
             fullUrl={family.fullUrl}

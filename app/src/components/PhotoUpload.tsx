@@ -40,9 +40,10 @@ export function PhotoUpload({
   onUploaded,
   onRemove,
   /**
-   * Keeps the controls under the photo at every width. The person page puts
-   * this in a narrow left column, where letting it spread sideways pushes the
-   * buttons into the details beside it.
+   * Keeps the controls centred under the photo at every width. The person page
+   * puts this in a narrow left column, where letting it spread sideways pushes
+   * the buttons into the details beside it; the family page wants the photo
+   * centred on the page with its buttons below.
    */
   stacked = false,
 }: {
