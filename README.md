@@ -24,9 +24,14 @@ Accounts are invite-only, created by a parish administrator.
 - **Database:** RDS PostgreSQL 17 (`db.t4g.micro`, single-AZ, private), migrated with
   Flyway (`db/migrations`). The API authenticates with **RDS IAM auth** — a locally-signed
   token, so no secret is fetched at runtime.
-- **Photos:** uploaded straight to a private S3 bucket via presigned URLs and read back
-  through presigned GETs, so no image bytes pass through the Lambda and no photo becomes a
-  shareable public URL.
+- **Photos:** cropped and downscaled in the browser, then uploaded straight to a private
+  S3 bucket via presigned URLs, so no image bytes pass through the Lambda. Two renditions
+  are stored per photo -- a thumbnail for cards and avatars, a larger one for the
+  full-screen view -- because a directory card renders at 56px and used to download the
+  untouched original. Reads go through CloudFront with signed cookies rather than presigned
+  GETs: the bucket stays private and no photo becomes a shareable public URL, but the paths
+  are permanent, so the browser cache and the CloudFront edge both work. A presigned GET
+  changes on every response and defeats both.
 - **Retention:** people and photos are kept forever (`RemovalPolicy.RETAIN`; deletes are
   soft).
 - **Roles:** Super Admin, Admin and User, stored in Postgres rather than in Cognito
@@ -102,7 +107,7 @@ codes arrive in your actual inbox.
 ```sh
 npm run ci:check                        # Biome lint + format
 npm run typecheck --workspaces
-npm test                                # 223 tests across api, app and infra
+npm test                                # 383 tests across api, app and infra
 ```
 
 The API tests run against a real Postgres (`directory_test`, migrated automatically by
@@ -172,7 +177,24 @@ normal `git push`.
    Every account after this one is created from the admin screen, which calls
    `AdminCreateUser` and stores the subject immediately.
 
-6. **Create the first parish** from *Churches*, then invite an administrator for it.
+6. **Create the photo signing keypair.** CloudFront gates `/photos/*` on a trusted key
+   group, and neither half of the keypair can be synthesised by CDK -- a private key in the
+   template would be readable by anyone who can describe the stack.
+
+   ```sh
+   ./scripts/create-photo-key.sh
+   ```
+
+   Commit the public key it writes to `infra/photo-public-key.pem`, and store the private
+   key as the `CLOUDFRONT_PRIVATE_KEY` repository secret. The deploy passes it to CDK,
+   which puts it in a Lambda environment variable -- encrypted at rest and decrypted by the
+   runtime with no network call, which is the only way a secret works in this VPC (see
+   *Why there is no NAT gateway*: Secrets Manager and SSM are both unreachable).
+
+   Re-running the script rotates the key. Deploy afterwards; browsers holding an old cookie
+   get a 403 on photos until their next `GET /me`, which is one page load.
+
+7. **Create the first parish** from *Churches*, then invite an administrator for it.
 
 ## CI/CD
 

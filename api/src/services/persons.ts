@@ -1,6 +1,6 @@
 import { one, type Queryable } from "../db";
 import type { Caller } from "../auth";
-import { presignDownloads } from "../photos";
+import { photoUrls } from "../photos";
 import { canEditPerson } from "./access";
 import { INHERIT_COLUMN } from "./inheritance";
 import {
@@ -75,23 +75,19 @@ export const PERSON_COLUMNS = `
 
 /**
  * Browse is "sorted by last name". People with no last name sort last rather
- * than first, and the family photo stands in when someone has no photo of
- * their own.
+ * than first. Someone with no photo of their own falls back to their initials
+ * in the UI, not to the family photo.
  */
 export const PERSON_ORDER = `
   order by r.last_name asc nulls last, r.first_name asc, r.id asc
 `;
 
-export async function toSummaries(caller: Caller, rows: PersonRow[]): Promise<PersonSummaryDto[]> {
-  const photos = await presignDownloads(rows.map((r) => r.photo_key));
-  return rows.map((row) => toSummary(caller, row, photos));
+export function toSummaries(caller: Caller, rows: PersonRow[]): PersonSummaryDto[] {
+  return rows.map((row) => toSummary(caller, row));
 }
 
-export function toSummary(
-  caller: Caller,
-  row: PersonRow,
-  photos: Map<string, string>
-): PersonSummaryDto {
+export function toSummary(caller: Caller, row: PersonRow): PersonSummaryDto {
+  const { thumbUrl, fullUrl } = photoUrls(row.photo_key);
   return {
     id: row.id,
     organizationId: row.organization_id,
@@ -110,7 +106,11 @@ export function toSummary(
     postalCode: row.postal_code,
     country: row.country,
     patronSaint: row.patron_saint,
-    photoUrl: row.photo_key ? (photos.get(row.photo_key) ?? null) : null,
+    // photoUrl is deprecated; it mirrors the thumbnail so a still-cached older
+    // SPA bundle keeps rendering avatars until it is replaced.
+    photoUrl: thumbUrl,
+    thumbUrl,
+    fullUrl,
     canEdit: canEditPerson(caller, {
       id: row.id,
       organizationId: row.organization_id,
@@ -242,8 +242,7 @@ export async function loadPerson(
   );
   if (!row) return null;
 
-  const [photos, sourceNames, specialDates] = await Promise.all([
-    presignDownloads([row.photo_key]),
+  const [sourceNames, specialDates] = await Promise.all([
     loadSourceNames(q, row),
     loadSpecialDatesFor(q, personId),
   ]);
@@ -258,7 +257,7 @@ export async function loadPerson(
     };
   }
 
-  return { ...toSummary(caller, row, photos), inheritedFrom, specialDates };
+  return { ...toSummary(caller, row), inheritedFrom, specialDates };
 }
 
 /** Columns on `persons` that a PersonWrite may set, and their payload keys. */

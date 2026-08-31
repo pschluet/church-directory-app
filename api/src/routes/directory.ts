@@ -68,7 +68,7 @@ routes.get("/", async (c) => {
   const last = page[page.length - 1];
 
   return c.json({
-    people: await toSummaries(caller, page),
+    people: toSummaries(caller, page),
     nextCursor:
       hasMore && last
         ? { lastName: last.last_name, firstName: last.first_name, id: last.id }
@@ -103,7 +103,7 @@ routes.get("/search", async (c) => {
     params
   );
 
-  return c.json({ people: await toSummaries(caller, rows), query: q });
+  return c.json({ people: toSummaries(caller, rows), query: q });
 });
 
 export function escapeLike(input: string): string {

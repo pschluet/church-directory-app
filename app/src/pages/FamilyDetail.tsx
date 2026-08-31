@@ -5,7 +5,7 @@ import { api } from "../lib/api";
 import { useMe } from "../context/MeContext";
 import { PersonCard } from "../components/PersonCard";
 import { PhotoUpload } from "../components/PhotoUpload";
-import { Avatar } from "../components/Avatar";
+import { FamilyPhoto } from "../components/FamilyPhoto";
 import {
   Button,
   ConfirmDialog,
@@ -151,14 +151,22 @@ export function FamilyDetail() {
         }
       />
 
-      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-center">
+      <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start">
         {family.canEdit ? (
           <PhotoUpload
             owner={{ familyId: family.id }}
-            photoUrl={family.photoUrl}
+            thumbUrl={family.thumbUrl}
+            fullUrl={family.fullUrl}
+            photoWidth={family.photoWidth}
+            photoHeight={family.photoHeight}
             person={{ firstName: family.name, lastName: null }}
-            onUploaded={async (photoKey) => {
-              await api(`/families/${family.id}/photo`, { method: "PUT", body: { photoKey } });
+            onUploaded={async ({ photoKey, width, height }) => {
+              // The crop is free-form here, so its dimensions go with the key:
+              // they are what lets the photo's box be reserved before it loads.
+              await api(`/families/${family.id}/photo`, {
+                method: "PUT",
+                body: { photoKey, photoWidth: width, photoHeight: height },
+              });
               await load();
             }}
             onRemove={async () => {
@@ -170,11 +178,13 @@ export function FamilyDetail() {
             }}
           />
         ) : (
-          family.photoUrl && (
-            <Avatar
-              photoUrl={family.photoUrl}
-              person={{ firstName: family.name, lastName: null }}
-              size="lg"
+          family.thumbUrl && (
+            <FamilyPhoto
+              thumbUrl={family.thumbUrl}
+              fullUrl={family.fullUrl}
+              width={family.photoWidth}
+              height={family.photoHeight}
+              familyName={family.name}
             />
           )
         )}

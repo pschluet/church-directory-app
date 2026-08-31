@@ -1,4 +1,6 @@
 import { fetchAuthSession } from "aws-amplify/auth";
+import { PHOTO_RENDITIONS, type PhotoUploadDto } from "@shared";
+import type { Renditions } from "./images";
 
 /**
  * The one place that talks to the API.
@@ -100,28 +102,43 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
 }
 
 /**
- * Uploads a photo: ask the API for a presigned URL, PUT the bytes straight to
- * S3, then tell the API which key to attach. The bytes never pass through the
- * Lambda.
+ * Uploads a cropped photo: ask the API to presign one URL per rendition, PUT the
+ * bytes straight to S3, then hand the key back so the caller can attach it. The
+ * bytes never pass through the Lambda.
+ *
+ * The cache-control header is signed into the presigned URL, so it has to be
+ * sent verbatim or S3 rejects the PUT. It is safe to make these immutable
+ * because every upload gets a fresh ULID prefix -- nothing is ever overwritten.
  */
 export async function uploadPhoto(
   owner: { personId: string } | { familyId: string },
-  file: File
+  renditions: Renditions
 ): Promise<string> {
-  const { uploadUrl, photoKey } = await api<{ uploadUrl: string; photoKey: string }>(
-    "/uploads/photo",
-    {
-      method: "POST",
-      body: { contentType: file.type, contentLength: file.size, ...owner },
-    }
-  );
-
-  const put = await fetch(uploadUrl, {
-    method: "PUT",
-    headers: { "content-type": file.type },
-    body: file,
+  const { photoKey, uploadUrls } = await api<PhotoUploadDto>("/uploads/photo", {
+    method: "POST",
+    body: {
+      contentType: renditions.contentType,
+      renditions: {
+        thumb: { contentLength: renditions.blobs.thumb.size },
+        full: { contentLength: renditions.blobs.full.size },
+      },
+      ...owner,
+    },
   });
-  if (!put.ok) throw new ApiError(put.status, "The photo could not be uploaded");
+
+  await Promise.all(
+    PHOTO_RENDITIONS.map(async (rendition) => {
+      const put = await fetch(uploadUrls[rendition], {
+        method: "PUT",
+        headers: {
+          "content-type": renditions.contentType,
+          "cache-control": "public, max-age=31536000, immutable",
+        },
+        body: renditions.blobs[rendition],
+      });
+      if (!put.ok) throw new ApiError(put.status, "The photo could not be uploaded");
+    })
+  );
 
   return photoKey;
 }

@@ -3,16 +3,18 @@ import { HTTPException } from "hono/http-exception";
 import { requireOrganizationId, type AppEnv } from "../auth";
 import { one } from "../db";
 import { assertCanEditFamily, assertCanEditPerson } from "../services/access";
-import { buildPhotoKey, presignUpload } from "../photos";
+import { buildPhotoKey, presignUploads } from "../photos";
 import { photoUploadSchema, type PhotoUploadDto } from "../types";
 
 /**
  * Presigned photo uploads.
  *
- * The browser PUTs the image bytes straight to S3, so nothing large ever
- * passes through the Lambda. Permission is checked here, before a URL is
- * handed out, and the returned key is scoped to the organization and the owner
- * so the follow-up `PUT /persons/:id/photo` can verify the two agree.
+ * The browser crops and downscales, then PUTs the bytes straight to S3, so
+ * nothing large ever passes through the Lambda. Two renditions go up per photo
+ * -- a thumbnail for cards and avatars, a larger one for the full-screen view --
+ * so a URL is handed back for each. Permission is checked here, before any URL
+ * is issued, and the returned key is scoped to the organization and the owner so
+ * the follow-up `PUT /persons/:id/photo` can verify the two agree.
  */
 const routes = new Hono<AppEnv>();
 
@@ -56,10 +58,13 @@ routes.post("/photo", async (c) => {
   }
 
   const owner = payload.personId ? { personId: payload.personId } : { familyId: payload.familyId! };
-  const photoKey = buildPhotoKey(organizationId, owner, payload.contentType);
-  const uploadUrl = await presignUpload(photoKey, payload.contentType, payload.contentLength);
+  const photoKey = buildPhotoKey(organizationId, owner);
+  const uploadUrls = await presignUploads(photoKey, payload.contentType, {
+    thumb: payload.renditions.thumb.contentLength,
+    full: payload.renditions.full.contentLength,
+  });
 
-  const body: PhotoUploadDto = { uploadUrl, photoKey };
+  const body: PhotoUploadDto = { photoKey, uploadUrls };
   return c.json(body);
 });
 

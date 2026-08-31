@@ -9,6 +9,22 @@ import cdkJson from "../cdk.json";
  * properties whose failure mode is silent -- a runtime hang, a surprise bill, or
  * data exposed -- rather than a synth error someone would notice immediately.
  */
+/**
+ * A throwaway RSA public key. CDK validates the PEM header at synth time, so
+ * this cannot be a placeholder string -- but it never signs anything, and the
+ * real one is committed at infra/photo-public-key.pem.
+ */
+const TEST_PHOTO_PUBLIC_KEY = `-----BEGIN PUBLIC KEY-----
+MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtM0L1PlHA54wtY2qT+Cd
+qzfZ4PZ+GP1zQfcn7H6Hu5TVUoZdAulSkmxvqij/gU6Dx8lKWXRnlQ/ONGs3pCzk
+Bw+3mK+Bvz6XaI3EX7/lo3wA8sG1IFfWSZSkz5KOEcbb7gIQ8tMYY1Hv1TWgopex
+bHIjSbc1ukUZmvxiFlVajV/EXmxiOHjMXJ2qiXLjRZmgnOyfwtQ1c9WYW+xxuLnQ
+U6C7ZDRzA5VlJ2TnWIT6MyYser8vrKH4LiwqDAcqhnimD0j+Ngy4PEM50xnRPk5x
+ujcfBwNvey1+RlwnJjI38cth3lUBXGV/bS9BFEkRMZlmgMrzylx2n7KdFxHLlTeB
+ewIDAQAB
+-----END PUBLIC KEY-----
+`;
+
 describe("ChurchDirectoryStack", () => {
   let template: Template;
 
@@ -25,6 +41,8 @@ describe("ChurchDirectoryStack", () => {
       hostedZoneId: "Z000TESTZONE",
       hostedZoneName: "example.com",
       certificateArn: "arn:aws:acm:us-east-1:123456789012:certificate/test",
+      photoPublicKeyPem: TEST_PHOTO_PUBLIC_KEY,
+      photoPrivateKeyPem: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
     });
     cdk.Tags.of(app).add("Project", "all-saints");
     template = Template.fromStack(stack);
@@ -260,6 +278,37 @@ describe("ChurchDirectoryStack", () => {
       expect(config.DistributionConfig.CustomErrorResponses).toBeUndefined();
     });
 
+    it("serves photos from the private bucket, gated on a trusted key group", () => {
+      // Without the key group the /photos/* behaviour would make every photo in
+      // every parish readable by anyone who knew a URL -- and the bucket is
+      // private precisely so that cannot happen.
+      const distributions = template.findResources("AWS::CloudFront::Distribution");
+      const config = Object.values(distributions)[0]!.Properties as {
+        DistributionConfig: {
+          CacheBehaviors: {
+            PathPattern: string;
+            TrustedKeyGroups?: unknown[];
+            CachePolicyId?: string;
+            FunctionAssociations?: unknown[];
+          }[];
+        };
+      };
+      const photos = config.DistributionConfig.CacheBehaviors.find(
+        (b) => b.PathPattern === "/photos/*"
+      );
+
+      expect(photos).toBeDefined();
+      expect(photos?.TrustedKeyGroups).toHaveLength(1);
+      // The managed CachingOptimized policy. Renditions live under a ULID that
+      // is never reused, so the bytes at a path never change.
+      expect(photos?.CachePolicyId).toBe("658327ea-f89d-4fab-a63d-7e88639e58f6");
+      // The SPA fallback would rewrite an extensionless rendition path -- which
+      // is every photo path -- to /index.html.
+      expect(photos?.FunctionAssociations).toBeUndefined();
+      template.resourceCountIs("AWS::CloudFront::KeyGroup", 1);
+      template.resourceCountIs("AWS::CloudFront::PublicKey", 1);
+    });
+
     it("never caches the API", () => {
       const distributions = template.findResources("AWS::CloudFront::Distribution");
       const config = Object.values(distributions)[0]!.Properties as {
@@ -274,6 +323,23 @@ describe("ChurchDirectoryStack", () => {
   });
 
   describe("buckets", () => {
+    it("does not allow cross-origin GETs on the photos bucket", () => {
+      // Reads go through CloudFront on the site's own origin, so they are not
+      // cross-origin at all. A GET rule here would be a second, unsigned way to
+      // reach a photo, bypassing the key group entirely.
+      const buckets = template.findResources("AWS::S3::Bucket");
+      const withCors = Object.values(buckets).filter(
+        (b) => (b.Properties as { CorsConfiguration?: unknown }).CorsConfiguration
+      );
+      expect(withCors).toHaveLength(1);
+      const rules = (
+        withCors[0]!.Properties as {
+          CorsConfiguration: { CorsRules: { AllowedMethods: string[] }[] };
+        }
+      ).CorsConfiguration.CorsRules;
+      expect(rules.flatMap((r) => r.AllowedMethods)).toEqual(["PUT"]);
+    });
+
     it("keeps photos forever and blocks all public access", () => {
       template.hasResource("AWS::S3::Bucket", {
         DeletionPolicy: "Retain",

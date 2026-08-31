@@ -23,6 +23,8 @@ const candidates = [
     country: null,
     patronSaint: null,
     photoUrl: null,
+    thumbUrl: null,
+    fullUrl: null,
     canEdit: false,
   },
 ];

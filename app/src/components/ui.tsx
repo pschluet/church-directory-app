@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import type { ReactNode } from "react";
 
 /**
@@ -113,15 +114,42 @@ export function Field({
 export const inputClass =
   "w-full rounded-md border border-line bg-surface px-3 py-2 text-ink placeholder:text-ink-muted/60 focus:border-accent focus:outline-none";
 
+/**
+ * Closes on Escape and stops the page behind from scrolling.
+ *
+ * Shared by Modal and PhotoLightbox: on a phone the scrim covers the viewport,
+ * so without the lock a scroll gesture that misses the dialog moves the page
+ * underneath it instead.
+ */
+export function useDismissable(onClose: () => void): void {
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKeyDown);
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [onClose]);
+}
+
 export function Modal({
   title,
   onClose,
   children,
+  /** For a dialog that needs the width, such as the photo cropper. */
+  wide = false,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
+  wide?: boolean;
 }) {
+  useDismissable(onClose);
+
   return (
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 md:items-center md:p-6"
@@ -133,7 +161,11 @@ export function Modal({
       }}
     >
       {/* Full-height sheet on a phone, centred dialog from md up. */}
-      <div className="max-h-[92vh] w-full overflow-y-auto rounded-t-xl bg-surface p-5 shadow-xl md:max-w-2xl md:rounded-xl md:p-6">
+      <div
+        className={`max-h-[92vh] w-full overflow-y-auto rounded-t-xl bg-surface p-5 shadow-xl md:rounded-xl md:p-6 ${
+          wide ? "md:max-w-4xl" : "md:max-w-2xl"
+        }`}
+      >
         <div className="mb-4 flex items-start justify-between gap-4">
           <h2 className="text-xl font-bold text-ink">{title}</h2>
           <button

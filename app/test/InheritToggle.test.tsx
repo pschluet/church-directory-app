@@ -24,6 +24,8 @@ function person(id: string, firstName: string, lastName: string | null): PersonS
     country: null,
     patronSaint: null,
     photoUrl: null,
+    thumbUrl: null,
+    fullUrl: null,
     canEdit: true,
   };
 }
