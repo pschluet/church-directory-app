@@ -22,7 +22,10 @@ Object.defineProperty(window, "matchMedia", {
   }),
 });
 
+// `configurable` matters as well as `writable`: userEvent.setup() installs its
+// own clipboard stub, and cannot replace a property that is pinned down.
 Object.defineProperty(navigator, "clipboard", {
   writable: true,
+  configurable: true,
   value: { writeText: vi.fn().mockResolvedValue(undefined) },
 });

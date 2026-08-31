@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { requireOrganizationId, type AppEnv } from "../auth";
 import { PERSON_COLUMNS, PERSON_ORDER, toSummaries, type PersonRow } from "../services/persons";
+import { fullName, uuidSchema, type PersonLookupDto } from "../types";
 
 /**
  * Browsing and searching the directory.
@@ -16,6 +17,16 @@ const routes = new Hono<AppEnv>();
 
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 200;
+
+/** A dropdown nobody scrolls, so the picker's ceiling is far lower than browse's. */
+const DEFAULT_LOOKUP_LIMIT = 20;
+const MAX_LOOKUP_LIMIT = 50;
+
+function parseLookupLimit(raw: string | undefined): number {
+  const value = Number(raw ?? DEFAULT_LOOKUP_LIMIT);
+  if (!Number.isFinite(value)) return DEFAULT_LOOKUP_LIMIT;
+  return Math.min(Math.max(Math.trunc(value), 1), MAX_LOOKUP_LIMIT);
+}
 
 function parseLimit(raw: string | undefined): number {
   const value = Number(raw ?? DEFAULT_LIMIT);
@@ -104,6 +115,74 @@ routes.get("/search", async (c) => {
   );
 
   return c.json({ people: toSummaries(caller, rows), query: q });
+});
+
+/**
+ * The type-ahead picker behind "Married to", and anywhere else one person has
+ * to be chosen out of the parish.
+ *
+ * Separate from `/search` on purpose. That one matches "anything in any data
+ * field", which is right for the search page and wrong here: typing "Newport"
+ * into a spouse picker should not offer everyone who lives on that street. So
+ * this matches names only, returns a slim row rather than the whole resolved
+ * record, and caps hard -- a dropdown nobody scrolls past 20 rows of.
+ *
+ * It reads `persons_resolved` rather than `persons` because `last_name` is
+ * inheritable: a child who takes the family surname has a null of their own
+ * and would otherwise be unfindable by it.
+ */
+routes.get("/lookup", async (c) => {
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const q = (c.req.query("q") ?? "").trim();
+  const limit = parseLookupLimit(c.req.query("limit"));
+
+  const excludeRaw = c.req.query("exclude");
+  const exclude = excludeRaw ? uuidSchema.safeParse(excludeRaw) : null;
+
+  const params: unknown[] = [organizationId];
+  const conditions: string[] = [];
+
+  if (exclude?.success) {
+    params.push(exclude.data);
+    conditions.push(`r.id <> $${params.length}::uuid`);
+  }
+
+  // Every term must match, so "mar sch" narrows the way it does on the search
+  // page. An empty q falls through with no name condition, which leaves the
+  // first page showing -- the one thing a plain <select> did well was let you
+  // browse before you knew what you were looking for.
+  for (const term of q.split(/\s+/).filter(Boolean).slice(0, 8)) {
+    params.push(`%${escapeLike(term)}%`);
+    conditions.push(
+      `(coalesce(r.first_name, '') || ' ' || coalesce(r.last_name, '')) ilike $${params.length}`
+    );
+  }
+
+  params.push(limit);
+
+  const { rows } = await db.query<{
+    id: string;
+    first_name: string;
+    last_name: string | null;
+    family_name: string | null;
+  }>(
+    `select r.id, r.first_name, r.last_name, r.family_name
+       from persons_resolved r
+      where r.organization_id = $1
+        and r.deleted_at is null
+        ${conditions.map((condition) => `and ${condition}`).join("\n        ")}
+      ${PERSON_ORDER}
+      limit $${params.length}`,
+    params
+  );
+
+  const people: PersonLookupDto[] = rows.map((row) => ({
+    id: row.id,
+    name: fullName({ firstName: row.first_name, lastName: row.last_name }),
+    familyName: row.family_name,
+  }));
+  return c.json({ people });
 });
 
 export function escapeLike(input: string): string {

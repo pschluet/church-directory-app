@@ -130,6 +130,19 @@ export interface PersonSummaryDto {
 }
 
 /**
+ * One row of a type-ahead picker. Deliberately not a PersonSummaryDto: a
+ * picker needs a name to show and an id to store, and sending the whole
+ * resolved record per keystroke would be the slow part.
+ *
+ * `familyName` is carried so two people with the same name can be told apart.
+ */
+export interface PersonLookupDto {
+  id: string;
+  name: string;
+  familyName: string | null;
+}
+
+/**
  * The person detail view. `inheritedFrom` and `specialDates` are only loaded
  * here rather than on every row of a directory listing, so a summary is never
  * an object with a deceptively empty `specialDates: []`.

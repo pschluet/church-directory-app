@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link, useParams } from "react-router";
-import type { FamilyDto, FamilySummaryDto, PersonDto, PersonSummaryDto } from "@shared";
+import type { FamilyDto, FamilySummaryDto, PersonDto } from "@shared";
 import { api } from "../lib/api";
 import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
@@ -30,7 +30,6 @@ export function PersonDetail() {
   const [person, setPerson] = useState<PersonDto | null>(null);
   const [family, setFamily] = useState<FamilyDto | null>(null);
   const [families, setFamilies] = useState<FamilySummaryDto[]>([]);
-  const [directory, setDirectory] = useState<PersonSummaryDto[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
@@ -44,17 +43,13 @@ export function PersonDetail() {
     try {
       const loaded = await api<PersonDto>(`/persons/${id}`);
       setPerson(loaded);
-      // The family is needed for the inheritance pickers; the directory for
-      // choosing the other half of an anniversary.
-      const [familyResult, directoryResult, familyListResult] = await Promise.all([
+      // The family is needed for the inheritance pickers. The anniversary
+      // partner is not fetched here any more -- SpecialDateForm's picker
+      // searches the directory as you type.
+      const [familyResult, familyListResult] = await Promise.all([
         loaded.familyId
           ? api<FamilyDto>(`/families/${loaded.familyId}`).catch(() => null)
           : Promise.resolve(null),
-        loaded.canEdit
-          ? api<{ people: PersonSummaryDto[] }>("/directory", { query: { limit: 200 } }).catch(
-              () => ({ people: [] })
-            )
-          : Promise.resolve({ people: [] }),
         // Only an admin may move someone between families, so only they need
         // a list to choose from.
         isAdmin
@@ -62,7 +57,6 @@ export function PersonDetail() {
           : Promise.resolve({ families: [] }),
       ]);
       setFamily(familyResult);
-      setDirectory(directoryResult.people);
       setFamilies(familyListResult.families);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not load that person");
@@ -287,7 +281,6 @@ export function PersonDetail() {
           <SpecialDateForm
             personId={person.id}
             existing={editingDate}
-            candidates={directory}
             onCancel={() => {
               setAddingDate(false);
               setEditingDateId(null);
