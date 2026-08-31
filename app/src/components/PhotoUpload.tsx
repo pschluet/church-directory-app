@@ -70,8 +70,10 @@ export function PhotoUpload({
       setError("Choose a JPEG, PNG or WebP image.");
       return;
     }
-    // Still worth checking the picked file: a 40MP original has to be decoded
-    // before it can be cropped, and that is what would run a phone out of memory.
+    // The decode is the only part of this that scales with the original: Safari
+    // cannot decode straight to a smaller bitmap, so the whole photo has to fit
+    // in memory before MAX_WORKING_PIXELS can bound anything. Everything after
+    // that point is working-copy sized.
     if (file.size > MAX_PHOTO_BYTES) {
       setError(`That image is too large — the limit is ${MAX_PHOTO_BYTES / 1024 / 1024} MB.`);
       return;

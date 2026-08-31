@@ -106,6 +106,26 @@ describe("PhotoUpload", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  it("accepts a photo well past the old 5MB limit", async () => {
+    // The reported bug. Nothing about the upload cares how big the original is
+    // any more -- it is cropped and downscaled locally and never leaves the
+    // browser -- so the only ceiling is what the decode can hold.
+    render(
+      <PhotoUpload
+        owner={{ personId: "p1" }}
+        thumbUrl={null}
+        fullUrl={null}
+        person={PERSON}
+        onUploaded={vi.fn()}
+      />
+    );
+
+    await userEvent.upload(fileInput(), pick("big.jpg", "image/jpeg", 12 * 1024 * 1024));
+
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
   it("still rejects an oversized original, which has to be decoded to be cropped", async () => {
     render(
       <PhotoUpload
