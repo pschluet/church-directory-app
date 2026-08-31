@@ -23,6 +23,29 @@ export interface CropRect extends Size {
   y: number;
 }
 
+/**
+ * The largest canvas iOS Safari will accept.
+ *
+ * Above this it does not throw -- it hands back a blank canvas, so the photo
+ * saves black with no error anywhere. Anything sized from a source photo has to
+ * stay under it. See MAX_WORKING_PIXELS.
+ */
+export const MAX_CANVAS_PIXELS = 16_777_216;
+
+/**
+ * The pixel budget for the working copy every crop is taken from.
+ *
+ * Half the iOS ceiling, so there is room for the browser's own allocations, and
+ * 32MB of canvas. Sized against RENDITION_LIMITS rather than picked round: a 3:2
+ * photo becomes 3464x2309, and the largest rendition is the family `full` at
+ * 1600px, so any crop covering roughly 46% of the frame or more still fills it
+ * exactly. Tighter crops get softer, which is true of cropping in general.
+ *
+ * Raising this trades memory for sharpness on tight crops. It must stay below
+ * MAX_CANVAS_PIXELS.
+ */
+export const MAX_WORKING_PIXELS = 8_000_000;
+
 /** The long edge each rendition is allowed, per owner kind. */
 export const RENDITION_LIMITS: Record<"person" | "family", Record<PhotoRendition, number>> = {
   // Square, and shown at 144px at most -- 320 covers that at 2x with headroom.
@@ -49,6 +72,25 @@ export function fitWithin(size: Size, max: number): Size {
   return {
     width: Math.max(1, Math.round(size.width * scale)),
     height: Math.max(1, Math.round(size.height * scale)),
+  };
+}
+
+/**
+ * Scales a size down to fit within a total pixel count, preserving aspect ratio.
+ *
+ * Area rather than long edge, because what matters is memory and the canvas
+ * ceiling -- both of which scale with width times height. A panorama is wide but
+ * cheap; capping its long edge would shrink it far more than necessary.
+ */
+export function fitWithinPixels(size: Size, maxPixels: number): Size {
+  const pixels = size.width * size.height;
+  if (pixels <= maxPixels) {
+    return { width: Math.round(size.width), height: Math.round(size.height) };
+  }
+  const scale = Math.sqrt(maxPixels / pixels);
+  return {
+    width: Math.max(1, Math.floor(size.width * scale)),
+    height: Math.max(1, Math.floor(size.height * scale)),
   };
 }
 
@@ -102,20 +144,73 @@ export function encodeType(): "image/webp" | "image/jpeg" {
   return cachedType;
 }
 
-/**
- * Decodes a file with its EXIF orientation already applied.
- *
- * This has to happen before the crop UI sees the image, not after. A browser
- * rotates an <img> according to EXIF when it renders it, but `drawImage` of the
- * same element does not reliably do the same -- so a phone photo would be
- * cropped in one orientation and saved in another. Normalising up front means
- * every coordinate afterwards is in one space.
- */
-export async function decodeOriented(file: File): Promise<ImageBitmap> {
-  return createImageBitmap(file, { imageOrientation: "from-image" });
+/** The bounded copy of a photo that the crop UI and the final render share. */
+export interface WorkingImage {
+  canvas: HTMLCanvasElement;
+  width: number;
+  height: number;
 }
 
-function drawTo(source: ImageBitmap, crop: CropRect, out: Size): HTMLCanvasElement {
+/**
+ * Decodes a photo, orients it, and downscales it to a bounded working copy.
+ *
+ * Two things are being solved at once.
+ *
+ * Orientation has to be normalised before the crop UI sees the image, not after.
+ * A browser rotates an <img> according to EXIF when it renders it, but
+ * `drawImage` of the same element does not reliably do the same -- so a phone
+ * photo would be cropped in one orientation and saved in another. Normalising up
+ * front means every coordinate afterwards is in one space.
+ *
+ * Size has to be bounded because the decoded original can be enormous: a 48MP
+ * phone photo is around 195MB of RGBA, and a canvas that size is nearly 3x over
+ * the limit iOS Safari silently returns a blank canvas above. So the full-size
+ * bitmap is never drawn anywhere near a canvas -- it is downscaled in a single
+ * drawImage into a canvas already inside MAX_WORKING_PIXELS, then released.
+ *
+ * The decode itself cannot be made cheaper: createImageBitmap's resizeWidth /
+ * resizeHeight / resizeQuality options would let the browser decode straight to
+ * a smaller bitmap, but Safari implements none of them. That is why the caller
+ * still needs a byte ceiling on the file someone picks.
+ */
+export async function loadWorkingImage(file: File): Promise<WorkingImage> {
+  const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+  try {
+    const out = fitWithinPixels({ width: bitmap.width, height: bitmap.height }, MAX_WORKING_PIXELS);
+
+    const canvas = document.createElement("canvas");
+    canvas.width = out.width;
+    canvas.height = out.height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Could not process that image");
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    // One step, straight from the decoded bitmap to the working size. Drawing at
+    // full size first is what used to blow past the iOS canvas limit.
+    ctx.drawImage(bitmap, 0, 0, bitmap.width, bitmap.height, 0, 0, out.width, out.height);
+
+    return { canvas, width: out.width, height: out.height };
+  } finally {
+    // Release the large allocation promptly, and even if the draw threw.
+    bitmap.close();
+  }
+}
+
+/**
+ * A displayable copy of the working image, for the crop UI's <img>.
+ *
+ * Encoded rather than handed the original file, because the original still
+ * carries its EXIF orientation: the browser would apply it to the <img> on top
+ * of the rotation already baked into the working canvas, and the crop would be
+ * framed against a differently-oriented image than the one drawn. Encoded as
+ * WebP rather than canvas.toBlob()'s default PNG, which for a large photo is a
+ * lossless re-encode of the whole thing.
+ */
+export function workingPreviewBlob(working: WorkingImage): Promise<Blob> {
+  return toBlob(working.canvas, encodeType(), 0.92);
+}
+
+function drawTo(source: CanvasImageSource, crop: CropRect, out: Size): HTMLCanvasElement {
   const canvas = document.createElement("canvas");
   canvas.width = out.width;
   canvas.height = out.height;
@@ -152,7 +247,7 @@ export interface Renditions {
  * from a stepped resize is not worth a second decode.
  */
 export async function renderRenditions(
-  source: ImageBitmap,
+  source: WorkingImage,
   rawCrop: CropRect,
   owner: "person" | "family"
 ): Promise<Renditions> {
@@ -163,7 +258,7 @@ export async function renderRenditions(
     PHOTO_RENDITIONS.map(async (rendition) => {
       const out = renditionSize(crop, owner, rendition);
       const blob = await toBlob(
-        drawTo(source, crop, out),
+        drawTo(source.canvas, crop, out),
         contentType,
         RENDITION_QUALITY[rendition]
       );

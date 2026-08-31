@@ -1,7 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import ReactCrop, { centerCrop, makeAspectCrop, type Crop, type PixelCrop } from "react-image-crop";
 import "react-image-crop/dist/ReactCrop.css";
-import { decodeOriented, renderRenditions, type Renditions } from "../lib/images";
+import {
+  loadWorkingImage,
+  renderRenditions,
+  workingPreviewBlob,
+  type Renditions,
+  type WorkingImage,
+} from "../lib/images";
 import { Button, Modal, Spinner } from "./ui";
 
 /**
@@ -12,10 +18,13 @@ import { Button, Modal, Spinner } from "./ui";
  * crop is free-form: the family photo is displayed whole, not as a circle, so
  * whatever rectangle suits the group is the right one.
  *
- * The file is decoded once with its EXIF orientation applied and the result is
- * what both this preview and the final render use. Handing the raw file to an
- * <img> and then drawing the same element to a canvas does not agree on
- * orientation, so a phone photo would save rotated away from what was framed.
+ * The file is decoded once into a bounded working copy -- oriented, and capped at
+ * MAX_WORKING_PIXELS -- and that copy is what both this preview and the final
+ * render use. Two reasons it is not the raw file: handing that to an <img> and
+ * then drawing the same element to a canvas does not agree on orientation, so a
+ * phone photo would save rotated away from what was framed; and a canvas the size
+ * of a modern phone photo is over the limit iOS Safari silently returns blank
+ * above, which would save the photo black.
  */
 export function PhotoCropper({
   file,
@@ -28,7 +37,7 @@ export function PhotoCropper({
   onCancel: () => void;
   onCropped: (renditions: Renditions) => Promise<void> | void;
 }) {
-  const [bitmap, setBitmap] = useState<ImageBitmap | null>(null);
+  const [working, setWorking] = useState<WorkingImage | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [crop, setCrop] = useState<Crop>();
   const [pixelCrop, setPixelCrop] = useState<PixelCrop>();
@@ -45,20 +54,19 @@ export function PhotoCropper({
 
     void (async () => {
       try {
-        const decoded = await decodeOriented(file);
-        // Re-encode the oriented bitmap so the <img> below and the final draw
-        // share one coordinate space.
-        const canvas = document.createElement("canvas");
-        canvas.width = decoded.width;
-        canvas.height = decoded.height;
-        canvas.getContext("2d")?.drawImage(decoded, 0, 0);
-        const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve));
-        if (cancelled || !blob) return;
+        const loaded = await loadWorkingImage(file);
+        const blob = await workingPreviewBlob(loaded);
+        if (cancelled) return;
         url = URL.createObjectURL(blob);
-        setBitmap(decoded);
+        setWorking(loaded);
         setPreviewUrl(url);
       } catch {
-        if (!cancelled) setError("That image could not be read. Try another one.");
+        // The decode is the one step a large file can still legitimately fail:
+        // Safari cannot decode straight to a smaller bitmap, so the whole photo
+        // has to fit in memory first. Say so rather than blaming the file.
+        if (!cancelled) {
+          setError("Your device could not process a photo that large. Try a smaller copy.");
+        }
       }
     })();
 
@@ -81,16 +89,18 @@ export function PhotoCropper({
   );
 
   async function confirm(): Promise<void> {
-    if (!bitmap || !pixelCrop || !imgRef.current) return;
+    if (!working || !pixelCrop || !imgRef.current) return;
     setBusy(true);
     setError(null);
     try {
       // react-image-crop reports against the rendered <img>, which is scaled to
-      // fit the dialog; convert to the bitmap's own pixels before drawing.
-      const scaleX = bitmap.width / imgRef.current.width;
-      const scaleY = bitmap.height / imgRef.current.height;
+      // fit the dialog. The preview was encoded from the working copy, so this
+      // converts into the working copy's pixels -- the same space the crop is
+      // drawn from.
+      const scaleX = working.width / imgRef.current.width;
+      const scaleY = working.height / imgRef.current.height;
       const renditions = await renderRenditions(
-        bitmap,
+        working,
         {
           x: pixelCrop.x * scaleX,
           y: pixelCrop.y * scaleY,
@@ -150,7 +160,7 @@ export function PhotoCropper({
           <Button
             type="button"
             onClick={() => void confirm()}
-            disabled={busy || !pixelCrop || !bitmap}
+            disabled={busy || !pixelCrop || !working}
           >
             {busy ? "Saving…" : "Save photo"}
           </Button>

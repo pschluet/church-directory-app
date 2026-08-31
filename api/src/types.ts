@@ -403,8 +403,22 @@ export interface MeDto {
 /** What the file picker accepts. Uploaded bytes are always PHOTO_UPLOAD_TYPE. */
 export const PHOTO_CONTENT_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
 
-/** The ceiling on the file someone picks, checked in the browser before decoding. */
-export const MAX_PHOTO_BYTES = 5 * 1024 * 1024;
+/**
+ * The ceiling on the file someone picks.
+ *
+ * Purely a browser-side bound, despite living here: the original is cropped and
+ * downscaled locally and never reaches S3, so the server never sees a file this
+ * size. What it protects is the decode, which has to hold the whole image in
+ * memory -- roughly width x height x 4 bytes -- because Safari does not
+ * implement createImageBitmap's resize options and so cannot decode straight to
+ * something smaller.
+ *
+ * 25MB at the 0.3-0.5 bytes per pixel a JPEG runs admits every realistic phone
+ * photo, including 48MP iPhone and 50MP Android shots, while keeping the
+ * worst-case decode near 250MB. Past the decode, size is bounded by
+ * MAX_WORKING_PIXELS in app/src/lib/images.ts.
+ */
+export const MAX_PHOTO_BYTES = 25 * 1024 * 1024;
 
 /**
  * The ceiling on each rendition the browser produces. Much smaller than
