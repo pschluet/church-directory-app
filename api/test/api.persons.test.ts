@@ -264,5 +264,37 @@ describe.skipIf(!hasDb)("people and attribute inheritance", () => {
       expect(status).toBe(400);
       expect(body.error).toMatch(/disable the account/i);
     });
+
+    it("refuses someone outside the family", async () => {
+      const child = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId,
+        firstName: "Anna",
+      });
+      const stranger = await createUser(db(), {
+        organizationId: orgId,
+        familyId: otherFamilyId,
+        email: "stranger@test.example",
+      });
+
+      expect((await as(stranger).call("DELETE", `/api/persons/${child}`)).status).toBe(403);
+      expect((await as(parent).call("GET", `/api/persons/${child}`)).status).toBe(200);
+    });
+
+    it("lets an admin delete someone in a family they are not in", async () => {
+      const child = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId,
+        firstName: "Anna",
+      });
+      const admin = await createUser(db(), {
+        organizationId: orgId,
+        role: "ADMIN",
+        familyId: otherFamilyId,
+        email: "admin@test.example",
+      });
+
+      expect((await as(admin).call("DELETE", `/api/persons/${child}`)).status).toBe(204);
+    });
   });
 });

@@ -135,4 +135,29 @@ describe("PersonPicker", () => {
     expect(onChange).toHaveBeenCalledWith(null);
     expect(box()).toHaveValue("");
   });
+
+  // The merge forms need one side of the account divide each: the surviving
+  // record can only be an account holder, the duplicate only someone without.
+  it("passes an account filter through to the lookup", async () => {
+    const onChange = vi.fn();
+    renderWithProviders(
+      <PersonPicker
+        label="The duplicate record"
+        value={null}
+        onChange={onChange}
+        excludePersonId="person-id"
+        accounts="none"
+      />
+    );
+
+    await user().type(screen.getByRole("combobox", { name: /the duplicate record/i }), "mar");
+    vi.advanceTimersByTime(250);
+
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("/directory/lookup", {
+        signal: expect.anything(),
+        query: { q: "mar", exclude: "person-id", accounts: "none" },
+      })
+    );
+  });
 });

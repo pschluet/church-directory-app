@@ -1,9 +1,9 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, afterEach, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
 import { renderWithProviders } from "./utils";
-import type { MeDto, PersonDto, SpecialDateDto } from "@shared";
+import type { MergeRequestDto, MeDto, PersonDto, SpecialDateDto } from "@shared";
 import { PersonDetail } from "../src/pages/PersonDetail";
 
 const api = vi.fn();
@@ -13,17 +13,27 @@ vi.mock("../src/lib/api", () => ({
   uploadPhoto: vi.fn(),
 }));
 
+/** Mutable, so a case can change whose record is on screen without re-mocking. */
+const meState = { personId: "person-1" as string | null, isAdmin: false };
+const reloadMe = vi.fn().mockResolvedValue(undefined);
+
 vi.mock("../src/context/MeContext", () => ({
   useMe: () => ({
-    me: { appUser: { personId: "person-1" }, person: null } as unknown as MeDto,
+    me: { appUser: { personId: meState.personId }, person: null } as unknown as MeDto,
     loading: false,
     error: null,
-    reload: vi.fn(),
-    isAdmin: false,
+    reload: reloadMe,
+    isAdmin: meState.isAdmin,
     isSuperAdmin: false,
     organizationId: "org-1",
     switchOrganization: vi.fn(),
   }),
+}));
+
+const navigate = vi.fn();
+vi.mock("react-router", async () => ({
+  ...(await vi.importActual<typeof import("react-router")>("react-router")),
+  useNavigate: () => navigate,
 }));
 
 function birthday(overrides: Partial<SpecialDateDto> = {}): SpecialDateDto {
@@ -89,6 +99,8 @@ const infoButton = () => screen.queryByRole("button", { name: /why can i see the
 describe("PersonDetail special dates", () => {
   beforeEach(() => {
     api.mockReset();
+    meState.personId = "person-1";
+    meState.isAdmin = false;
   });
 
   it("explains a year that others do not get to see", async () => {
@@ -141,5 +153,225 @@ describe("PersonDetail special dates", () => {
     renderPage([birthday({ showYearCount: true })]);
     expect(await screen.findByText("May 4, 1985")).toBeInTheDocument();
     expect(infoButton()).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Merging, and deleting an account-less person
+// ---------------------------------------------------------------------------
+function person(overrides: Partial<PersonDto> = {}): PersonDto {
+  return { ...buildPerson([]), ...overrides };
+}
+
+function mergeRequest(overrides: Partial<MergeRequestDto> = {}): MergeRequestDto {
+  return {
+    id: "merge-1",
+    accountPersonId: "person-1",
+    accountPersonName: "Layla Haddad",
+    duplicatePersonId: "dup-1",
+    duplicatePersonName: "Layla H",
+    duplicateFamilyId: "family-1",
+    duplicateFamilyName: "Haddad",
+    requestedByPersonId: "cousin-1",
+    requestedByPersonName: "Sami Nassif",
+    status: "PENDING",
+    requestedAt: "2026-08-01T10:00:00.000Z",
+    decidedAt: null,
+    canDecide: true,
+    ...overrides,
+  };
+}
+
+function render(subject: PersonDto, mergeRequests: MergeRequestDto[] = []) {
+  api.mockImplementation((path: string, options?: { method?: string }) => {
+    if (options?.method) return Promise.resolve({ status: "PENDING", id: "merge-new" });
+    if (path === `/persons/${subject.id}`) return Promise.resolve(subject);
+    if (path === "/merges/pending") return Promise.resolve({ mergeRequests });
+    return Promise.resolve({ people: [], families: [] });
+  });
+  return renderWithProviders(
+    <Routes>
+      <Route path="/people/:id" element={<PersonDetail />} />
+    </Routes>,
+    { initialEntries: [`/people/${subject.id}`] }
+  );
+}
+
+const button = (name: RegExp) => screen.queryByRole("button", { name });
+
+describe("PersonDetail merging and deleting", () => {
+  beforeEach(() => {
+    api.mockReset();
+    navigate.mockReset();
+    reloadMe.mockClear();
+    meState.personId = "person-1";
+    meState.isAdmin = false;
+  });
+
+  it("offers to absorb a duplicate on your own record, and no delete", async () => {
+    render(person({ canEdit: true }));
+
+    expect(
+      await screen.findByRole("button", { name: /merge a duplicate into my record/i })
+    ).toBeInTheDocument();
+    // You cannot delete a record that has an account -- the API refuses it too.
+    expect(button(/delete this person/i)).not.toBeInTheDocument();
+  });
+
+  it("offers merge and delete on an account-less relative", async () => {
+    render(person({ id: "person-1", appUserId: null, canEdit: true, familyId: "family-1" }));
+    meState.personId = "someone-else";
+
+    expect(
+      await screen.findByRole("button", { name: /merge into an account holder/i })
+    ).toBeInTheDocument();
+    expect(button(/delete this person/i)).toBeInTheDocument();
+  });
+
+  it("offers neither on someone you cannot edit", async () => {
+    meState.personId = "someone-else";
+    render(person({ appUserId: null, canEdit: false }));
+
+    await screen.findByText("Layla Haddad");
+    expect(button(/merge/i)).not.toBeInTheDocument();
+    expect(button(/delete this person/i)).not.toBeInTheDocument();
+  });
+
+  it("stands down while a merge is already pending", async () => {
+    render(person({ canEdit: true }), [mergeRequest({ canDecide: false })]);
+
+    expect(await screen.findByText(/waiting to be approved/i)).toBeInTheDocument();
+    expect(button(/merge a duplicate/i)).not.toBeInTheDocument();
+  });
+
+  it("sends nothing until the delete is confirmed", async () => {
+    meState.personId = "someone-else";
+    render(person({ appUserId: null, canEdit: true, familyId: "family-1" }));
+
+    await userEvent.click(await screen.findByRole("button", { name: /delete this person/i }));
+    expect(api).not.toHaveBeenCalledWith("/persons/person-1", { method: "DELETE" });
+
+    await userEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("/persons/person-1", { method: "DELETE" })
+    );
+    // The record is gone, so staying here would fetch a 404.
+    await waitFor(() =>
+      expect(navigate).toHaveBeenCalledWith("/families/family-1", { replace: true })
+    );
+  });
+
+  it("approves a merge waiting on the caller and reloads them", async () => {
+    render(person({ canEdit: true }), [mergeRequest()]);
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("/merges/merge-1/approve", { method: "POST" })
+    );
+    // A merge can move the caller's own family.
+    await waitFor(() => expect(reloadMe).toHaveBeenCalled());
+  });
+
+  /*
+   * The direction of the payload is the subtle part: the person on screen is
+   * the account holder in one mode and the duplicate in the other, so the two
+   * ids swap places. Getting it backwards would 400 on the API's
+   * "surviving record must be the one with an account" check, which is a poor
+   * way to find out.
+   */
+  describe("sending the request", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const pick = async (comboboxName: RegExp, name: string) => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await user.type(screen.getByRole("combobox", { name: comboboxName }), "lay");
+      vi.advanceTimersByTime(250);
+      await user.click(await screen.findByRole("option", { name: new RegExp(name, "i") }));
+      await user.click(screen.getByRole("button", { name: /continue/i }));
+      await user.click(screen.getByRole("button", { name: /send request/i }));
+    };
+
+    const withLookup = (subject: PersonDto, found: { id: string; name: string }) => {
+      api.mockImplementation((path: string, options?: { method?: string }) => {
+        if (options?.method) return Promise.resolve({ status: "PENDING", id: "merge-new" });
+        if (path === `/persons/${subject.id}`) return Promise.resolve(subject);
+        if (path === "/merges/pending") return Promise.resolve({ mergeRequests: [] });
+        if (path === "/directory/lookup")
+          return Promise.resolve({ people: [{ ...found, familyName: "Haddad" }] });
+        return Promise.resolve({ people: [], families: [] });
+      });
+      return renderWithProviders(
+        <Routes>
+          <Route path="/people/:id" element={<PersonDetail />} />
+        </Routes>,
+        { initialEntries: [`/people/${subject.id}`] }
+      );
+    };
+
+    it("names the caller as the survivor when absorbing a duplicate", async () => {
+      withLookup(person({ canEdit: true }), { id: "dup-9", name: "Layla H" });
+
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await user.click(
+        await screen.findByRole("button", { name: /merge a duplicate into my record/i })
+      );
+      await pick(/the duplicate record/i, "Layla H");
+
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith("/merges", {
+          method: "POST",
+          body: { accountPersonId: "person-1", duplicatePersonId: "dup-9" },
+        })
+      );
+    });
+
+    it("names the person picked as the survivor when merging a relative", async () => {
+      meState.personId = "someone-else";
+      withLookup(person({ appUserId: null, canEdit: true, familyId: "family-1" }), {
+        id: "holder-9",
+        name: "Layla Haddad",
+      });
+
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await user.click(
+        await screen.findByRole("button", { name: /merge into an account holder/i })
+      );
+      await pick(/the account holder/i, "Layla Haddad");
+
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith("/merges", {
+          method: "POST",
+          // Swapped: the person on screen is the duplicate this time.
+          body: { accountPersonId: "holder-9", duplicatePersonId: "person-1" },
+        })
+      );
+    });
+  });
+
+  it("reports a failed decision without emptying the page", async () => {
+    api.mockImplementation((path: string, options?: { method?: string }) => {
+      if (options?.method === "POST") return Promise.reject(new Error("Already decided"));
+      if (path === "/persons/person-1") return Promise.resolve(person({ canEdit: true }));
+      if (path === "/merges/pending") return Promise.resolve({ mergeRequests: [mergeRequest()] });
+      return Promise.resolve({ people: [], families: [] });
+    });
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:id" element={<PersonDetail />} />
+      </Routes>,
+      { initialEntries: ["/people/person-1"] }
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("Already decided");
+    // The record is still on screen -- the name appears in the heading and again
+    // in the banner, so count rather than expecting one.
+    expect(screen.getAllByText("Layla Haddad").length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
   });
 });

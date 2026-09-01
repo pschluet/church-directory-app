@@ -141,3 +141,33 @@ export async function setInheritance(
     await db.query(`update persons set ${columns[key]} = $2 where id = $1`, [personId, sourceId]);
   }
 }
+
+/**
+ * A pending merge request, inserted directly.
+ *
+ * `requestedByPersonId` is what decides which of the two routes the request is
+ * on -- pass the account holder's own person id for route B, anyone else's for
+ * route A. See V5__person_merge_requests.sql.
+ */
+export async function createMergeRequest(
+  db: Queryable,
+  options: {
+    organizationId: string;
+    accountPersonId: string;
+    duplicatePersonId: string;
+    requestedByPersonId: string;
+  }
+): Promise<string> {
+  const { rows } = await db.query<{ id: string }>(
+    `insert into person_merge_requests
+       (organization_id, account_person_id, duplicate_person_id, requested_by_person_id)
+     values ($1, $2, $3, $4) returning id`,
+    [
+      options.organizationId,
+      options.accountPersonId,
+      options.duplicatePersonId,
+      options.requestedByPersonId,
+    ]
+  );
+  return rows[0]!.id;
+}

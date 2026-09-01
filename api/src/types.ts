@@ -25,6 +25,13 @@ export const JOIN_REQUEST_STATUSES = ["PENDING", "APPROVED", "DENIED", "CANCELLE
 export const joinRequestStatusSchema = z.enum(JOIN_REQUEST_STATUSES);
 export type JoinRequestStatus = z.infer<typeof joinRequestStatusSchema>;
 
+// A merge request has the same four states as a join request, but they are
+// separate enums on purpose: nothing should be able to pass one where the other
+// is meant, and the two lifecycles are free to diverge.
+export const MERGE_REQUEST_STATUSES = ["PENDING", "APPROVED", "DENIED", "CANCELLED"] as const;
+export const mergeRequestStatusSchema = z.enum(MERGE_REQUEST_STATUSES);
+export type MergeRequestStatus = z.infer<typeof mergeRequestStatusSchema>;
+
 /** The five attributes a family member may inherit from another. */
 export const INHERITABLE_ATTRIBUTES = [
   "email",
@@ -215,6 +222,65 @@ export interface JoinRequestDto {
   status: JoinRequestStatus;
   requestedAt: string;
   decidedAt: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Merging two person records
+//
+// One person can end up with two `persons` rows: one the family created with no
+// account, and one the invite flow created with an account. Merging them is
+// gated by approval from whichever side did not ask -- see
+// V5__person_merge_requests.sql for the two routes in.
+// ---------------------------------------------------------------------------
+export const mergeRequestCreateSchema = z.object({
+  /** The record that survives. Must be the one holding the account. */
+  accountPersonId: uuidSchema,
+  /** The account-less duplicate, soft-deleted when the merge goes through. */
+  duplicatePersonId: uuidSchema,
+});
+export type MergeRequestCreate = z.infer<typeof mergeRequestCreateSchema>;
+
+export interface MergeRequestDto {
+  id: string;
+  accountPersonId: string;
+  accountPersonName: string;
+  duplicatePersonId: string;
+  duplicatePersonName: string;
+  duplicateFamilyId: string | null;
+  duplicateFamilyName: string | null;
+  requestedByPersonId: string;
+  requestedByPersonName: string;
+  status: MergeRequestStatus;
+  requestedAt: string;
+  decidedAt: string | null;
+  /**
+   * Whether *this* caller may approve or deny it. Carried on the row so one
+   * endpoint serves both the banner (which shows the ones they can act on) and
+   * the merge buttons (which hide themselves when anything is already pending).
+   */
+  canDecide: boolean;
+}
+
+/**
+ * What a merge did, including what it had to throw away.
+ *
+ * The discarded counts exist for the same reason as
+ * `OrganizationMoveDto.removedAnniversaries`: the schema allows one birthday
+ * and one feast day per person and one anniversary per couple, so when both
+ * records carry one, the duplicate's copy cannot survive. Losing it quietly
+ * would be worse than saying so.
+ */
+export interface PersonMergeResultDto {
+  /** The surviving person -- the account holder. */
+  personId: string;
+  /** The duplicate, now soft-deleted. */
+  mergedPersonId: string;
+  familyId: string | null;
+  /** True when the survivor moved into the duplicate's family. */
+  movedFamily: boolean;
+  discardedBirthdays: number;
+  discardedFeastDays: number;
+  discardedAnniversaries: number;
 }
 
 // ---------------------------------------------------------------------------

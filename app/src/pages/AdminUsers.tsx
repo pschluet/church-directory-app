@@ -1,7 +1,14 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { AppUserDto, FamilySummaryDto, JoinRequestDto, OrganizationDto, Role } from "@shared";
+import type {
+  AppUserDto,
+  FamilySummaryDto,
+  JoinRequestDto,
+  MergeRequestDto,
+  OrganizationDto,
+  Role,
+} from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
@@ -76,9 +83,18 @@ export function AdminUsers() {
       api<{ joinRequests: JoinRequestDto[] }>("/families/join-requests/pending", { signal }),
   });
 
+  // Same three-way scope as the join-request list: an admin sees every pending
+  // merge in the parish, which is what makes a stalled one fixable.
+  const mergesQuery = useQuery({
+    queryKey: qk.pendingMerges(organizationId),
+    queryFn: ({ signal }) =>
+      api<{ mergeRequests: MergeRequestDto[] }>("/merges/pending", { signal }),
+  });
+
   const users = usersQuery.data?.users ?? [];
   const families = familiesQuery.data?.families ?? [];
   const joinRequests = joinRequestsQuery.data?.joinRequests ?? [];
+  const mergeRequests = mergesQuery.data?.mergeRequests ?? [];
   const organizations = useMemo(
     () => (organizationsQuery.data?.organizations ?? []).map((o) => ({ id: o.id, name: o.name })),
     [organizationsQuery.data]
@@ -108,6 +124,28 @@ export function AdminUsers() {
       if (request.personId === me?.appUser.personId) await reloadMe();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Could not decide that request");
+    }
+  }
+
+  /*
+   * A merge moves a person between families and retires a record, so it sweeps
+   * wider than `reload` and always reloads the caller -- an admin can be
+   * approving a merge that changes their own family.
+   */
+  async function decideMerge(
+    mergeRequest: MergeRequestDto,
+    decision: "approve" | "deny"
+  ): Promise<void> {
+    try {
+      await api(`/merges/${mergeRequest.id}/${decision}`, { method: "POST" });
+      await Promise.all([
+        reload(),
+        queryClient.invalidateQueries({ queryKey: qk.persons(organizationId) }),
+        queryClient.invalidateQueries({ queryKey: qk.specialDates(organizationId) }),
+      ]);
+      await reloadMe();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not decide that merge");
     }
   }
 
@@ -145,6 +183,34 @@ export function AdminUsers() {
                 <span className="flex gap-2">
                   <Button onClick={() => void decide(request, "approve")}>Approve</Button>
                   <Button variant="ghost" onClick={() => void decide(request, "deny")}>
+                    Decline
+                  </Button>
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {mergeRequests.length > 0 && (
+        <section className="mb-6 rounded-lg border border-accent/40 bg-accent/5 p-4">
+          <h2 className="mb-3 font-bold text-ink">
+            Pending merge requests ({mergeRequests.length})
+          </h2>
+          <ul className="space-y-2">
+            {mergeRequests.map((request) => (
+              <li
+                key={request.id}
+                className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <span>
+                  {request.duplicatePersonName}
+                  {request.duplicateFamilyName ? ` (${request.duplicateFamilyName} family)` : ""} →{" "}
+                  {request.accountPersonName}
+                </span>
+                <span className="flex gap-2">
+                  <Button onClick={() => void decideMerge(request, "approve")}>Approve</Button>
+                  <Button variant="ghost" onClick={() => void decideMerge(request, "deny")}>
                     Decline
                   </Button>
                 </span>

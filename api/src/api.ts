@@ -10,6 +10,7 @@ import meRoutes from "./routes/me";
 import directoryRoutes from "./routes/directory";
 import personRoutes from "./routes/persons";
 import familyRoutes from "./routes/families";
+import mergeRoutes from "./routes/merges";
 import specialDateRoutes from "./routes/special-dates";
 import uploadRoutes from "./routes/uploads";
 import adminRoutes from "./routes/admin";
@@ -96,6 +97,7 @@ export function createApp(queryable?: Queryable) {
   app.route("/api/directory", directoryRoutes);
   app.route("/api/persons", personRoutes);
   app.route("/api/families", familyRoutes);
+  app.route("/api/merges", mergeRoutes);
   app.route("/api/special-dates", specialDateRoutes);
   app.route("/api/uploads", uploadRoutes);
   app.route("/api/admin", adminRoutes);

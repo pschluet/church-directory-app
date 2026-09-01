@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./utils";
-import type { AppUserDto, JoinRequestDto, MeDto } from "@shared";
+import type { AppUserDto, JoinRequestDto, MeDto, MergeRequestDto } from "@shared";
 import { AdminUsers } from "../src/pages/AdminUsers";
 
 const api = vi.fn();
@@ -54,15 +54,32 @@ const REQUEST: JoinRequestDto = {
   decidedAt: null,
 };
 
-function mockLoad(joinRequests: JoinRequestDto[]) {
+function mockLoad(joinRequests: JoinRequestDto[], mergeRequests: MergeRequestDto[] = []) {
   api.mockImplementation((path: string, options?: { method?: string }) => {
     if (options?.method === "POST") return Promise.resolve({ status: "APPROVED" });
     if (path === "/admin/users") return Promise.resolve({ users: [USER] });
     if (path === "/families") return Promise.resolve({ families: [] });
     if (path === "/families/join-requests/pending") return Promise.resolve({ joinRequests });
+    if (path === "/merges/pending") return Promise.resolve({ mergeRequests });
     return Promise.resolve({ organizations: [] });
   });
 }
+
+const MERGE: MergeRequestDto = {
+  id: "merge-1",
+  accountPersonId: "person-1",
+  accountPersonName: "Layla Haddad",
+  duplicatePersonId: "person-3",
+  duplicatePersonName: "Layla H",
+  duplicateFamilyId: "fam-1",
+  duplicateFamilyName: "Haddad",
+  requestedByPersonId: "person-2",
+  requestedByPersonName: "Sami Nassif",
+  status: "PENDING",
+  requestedAt: "2026-08-01T10:00:00.000Z",
+  decidedAt: null,
+  canDecide: true,
+};
 
 function renderPage() {
   return renderWithProviders(<AdminUsers />, { initialEntries: ["/admin/users"] });
@@ -128,5 +145,34 @@ describe("AdminUsers", () => {
 
     expect(await screen.findByRole("alert")).toHaveTextContent("Already decided");
     expect(screen.getAllByText("layla@example.com").length).toBeGreaterThan(0);
+  });
+
+  it("shows every pending merge in the parish", async () => {
+    mockLoad([], [MERGE]);
+    renderPage();
+
+    expect(await screen.findByText(/pending merge requests \(1\)/i)).toBeInTheDocument();
+    expect(screen.getByText(/Layla H \(Haddad family\) → Layla Haddad/)).toBeInTheDocument();
+  });
+
+  it("approves a merge and reloads the caller", async () => {
+    mockLoad([], [MERGE]);
+    renderPage();
+
+    await userEvent.click(await screen.findByRole("button", { name: "Approve" }));
+    await waitFor(() =>
+      expect(api).toHaveBeenCalledWith("/merges/merge-1/approve", { method: "POST" })
+    );
+    // A merge moves someone between families, which can be the admin's own.
+    await waitFor(() => expect(reload).toHaveBeenCalled());
+  });
+
+  it("stays out of the way when there are no merges", async () => {
+    mockLoad([]);
+    renderPage();
+
+    // Rendered twice -- the mobile card and the table row.
+    await screen.findAllByText("layla@example.com");
+    expect(screen.queryByText(/pending merge requests/i)).not.toBeInTheDocument();
   });
 });

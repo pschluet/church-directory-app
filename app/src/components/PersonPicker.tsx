@@ -36,6 +36,7 @@ export function PersonPicker({
   value,
   onChange,
   excludePersonId,
+  accounts,
   placeholder = "Start typing a name…",
 }: {
   label: string;
@@ -44,6 +45,12 @@ export function PersonPicker({
   onChange: (person: PickedPerson | null) => void;
   /** Whoever the picker is for, so they cannot be picked as their own partner. */
   excludePersonId?: string;
+  /**
+   * Narrows the list to one side of the account divide. The merge forms need
+   * this: only an account holder can be the surviving record, and only someone
+   * without an account can be the duplicate.
+   */
+  accounts?: "only" | "none";
   placeholder?: string;
 }) {
   const { organizationId } = useMe();
@@ -75,11 +82,11 @@ export function PersonPicker({
   }, [query, open]);
 
   const lookup = useQuery({
-    queryKey: qk.directoryLookup(organizationId, term ?? "", excludePersonId),
+    queryKey: qk.directoryLookup(organizationId, term ?? "", excludePersonId, accounts),
     queryFn: ({ signal }) =>
       api<{ people: PersonLookupDto[] }>("/directory/lookup", {
         signal,
-        query: { q: term ?? "", exclude: excludePersonId },
+        query: { q: term ?? "", exclude: excludePersonId, accounts },
       }),
     enabled: open && term !== null,
   });

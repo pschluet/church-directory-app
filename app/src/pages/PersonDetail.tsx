@@ -1,7 +1,7 @@
 import { useState } from "react";
-import { Link, useParams } from "react-router";
+import { Link, useNavigate, useParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { FamilyDto, FamilySummaryDto, PersonDto } from "@shared";
+import type { FamilyDto, FamilySummaryDto, MergeRequestDto, PersonDto } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
@@ -10,7 +10,16 @@ import { PersonForm } from "../components/PersonForm";
 import { PhoneLink } from "../components/PhoneLink";
 import { PhotoUpload } from "../components/PhotoUpload";
 import { SpecialDateForm } from "../components/SpecialDateForm";
-import { Badge, Button, ErrorNotice, InfoPopover, Modal, Spinner } from "../components/ui";
+import { PersonPicker, type PickedPerson } from "../components/PersonPicker";
+import {
+  Badge,
+  Button,
+  ConfirmDialog,
+  ErrorNotice,
+  InfoPopover,
+  Modal,
+  Spinner,
+} from "../components/ui";
 import {
   formatMonthDay,
   formatMultilineAddress,
@@ -28,11 +37,18 @@ import {
  */
 export function PersonDetail() {
   const { id } = useParams<{ id: string }>();
-  const { isAdmin, organizationId } = useMe();
+  const { me, isAdmin, organizationId, reload: reloadMe } = useMe();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
   const [addingDate, setAddingDate] = useState(false);
   const [editingDateId, setEditingDateId] = useState<string | null>(null);
+  const [merging, setMerging] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // Kept apart from the query's own error: a failed action must not replace the
+  // record with a notice.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   const personQuery = useQuery({
     queryKey: qk.person(organizationId, id ?? ""),
@@ -67,6 +83,18 @@ export function PersonDetail() {
   });
   const families = familiesQuery.data?.families ?? [];
 
+  /*
+   * Merge requests the caller is party to. Wider than "waiting on me" on
+   * purpose: the same list also decides whether to offer a merge at all, since
+   * only one can be pending per person.
+   */
+  const mergesQuery = useQuery({
+    queryKey: qk.pendingMerges(organizationId),
+    queryFn: ({ signal }) =>
+      api<{ mergeRequests: MergeRequestDto[] }>("/merges/pending", { signal }),
+  });
+  const merges = mergesQuery.data?.mergeRequests ?? [];
+
   const reload = async () => {
     await queryClient.invalidateQueries({ queryKey: qk.person(organizationId, id ?? "") });
   };
@@ -90,6 +118,39 @@ export function PersonDetail() {
     void queryClient.invalidateQueries({ queryKey: qk.directoryRoot(organizationId) });
   };
 
+  /*
+   * A merge reaches almost everything: the two records, the families they
+   * belong to, the cards in the directory and the dates that moved. `reloadMe`
+   * on top of that, because an approved merge can change the caller's own
+   * family -- either because it was their record that moved, or because someone
+   * joined theirs.
+   */
+  const reloadAfterMerge = async (): Promise<void> => {
+    await Promise.all([
+      queryClient.invalidateQueries({ queryKey: qk.persons(organizationId) }),
+      queryClient.invalidateQueries({ queryKey: qk.families(organizationId) }),
+      queryClient.invalidateQueries({ queryKey: qk.directoryRoot(organizationId) }),
+      queryClient.invalidateQueries({ queryKey: qk.specialDates(organizationId) }),
+    ]);
+    await reloadMe();
+  };
+
+  const decideMerge = async (
+    mergeRequest: MergeRequestDto,
+    decision: "approve" | "deny"
+  ): Promise<void> => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api(`/merges/${mergeRequest.id}/${decision}`, { method: "POST" });
+      await reloadAfterMerge();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not decide that merge");
+    } finally {
+      setBusy(false);
+    }
+  };
+
   if (personQuery.isPending) return <Spinner label="Loading" />;
   if (personQuery.error) {
     return (
@@ -108,8 +169,94 @@ export function PersonDetail() {
   const address = formatMultilineAddress(person);
   const editingDate = person.specialDates.find((date) => date.id === editingDateId);
 
+  const isOwnRecord = person.id === me?.appUser.personId;
+  const hasAccount = person.appUserId !== null;
+  // Only one merge can be pending per person, so an existing one replaces the
+  // offer to start another.
+  const pendingMerge =
+    merges.find((m) => m.accountPersonId === person.id || m.duplicatePersonId === person.id) ??
+    null;
+
+  /*
+   * Two ways in, and which one you get depends on whose record you are looking
+   * at rather than on a choice in the form:
+   *
+   *   your own      -> "this account-less person is also me"
+   *   a relative's  -> "this account holder is really this relative"
+   *
+   * `canEdit` is the server's own rule (canEditPerson), so the button appears
+   * exactly where the request would be allowed.
+   */
+  const canMergeOwn = isOwnRecord && hasAccount;
+  const canMergeRelative = !isOwnRecord && !hasAccount && person.canEdit;
+  const mergeOffer = pendingMerge
+    ? null
+    : canMergeOwn
+      ? ("own" as const)
+      : canMergeRelative
+        ? ("relative" as const)
+        : null;
+
+  const deletePerson = async (): Promise<void> => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api(`/persons/${person.id}`, { method: "DELETE" });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: qk.persons(organizationId) }),
+        queryClient.invalidateQueries({ queryKey: qk.families(organizationId) }),
+        queryClient.invalidateQueries({ queryKey: qk.directoryRoot(organizationId) }),
+        queryClient.invalidateQueries({ queryKey: qk.specialDates(organizationId) }),
+      ]);
+      // Staying here would leave the page fetching a person the API now 404s.
+      void navigate(person.familyId ? `/families/${person.familyId}` : "/", { replace: true });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not delete that person");
+      setBusy(false);
+    }
+  };
+
   return (
     <>
+      {actionError && (
+        <p role="alert" className="mb-4 font-bold text-primary">
+          {actionError}
+        </p>
+      )}
+
+      {pendingMerge?.canDecide && (
+        <section className="mb-6 rounded-lg border border-accent/40 bg-accent/5 p-4">
+          <h2 className="mb-2 font-bold text-ink">Waiting on you</h2>
+          <p className="mb-3 text-ink-muted">
+            {pendingMerge.requestedByPersonName} asked to merge{" "}
+            <strong>{pendingMerge.duplicatePersonName}</strong>
+            {pendingMerge.duplicateFamilyName
+              ? ` of the ${pendingMerge.duplicateFamilyName} family`
+              : ""}{" "}
+            into the record for <strong>{pendingMerge.accountPersonName}</strong>. The account
+            holder's details are kept, and anything only the other record has is added to them.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <Button disabled={busy} onClick={() => void decideMerge(pendingMerge, "approve")}>
+              Approve
+            </Button>
+            <Button
+              variant="ghost"
+              disabled={busy}
+              onClick={() => void decideMerge(pendingMerge, "deny")}
+            >
+              Decline
+            </Button>
+          </div>
+        </section>
+      )}
+
+      {pendingMerge && !pendingMerge.canDecide && (
+        <p className="mb-6 rounded-lg border border-line bg-surface-muted p-4 text-ink-muted">
+          A merge with <strong>{pendingMerge.duplicatePersonName}</strong> is waiting to be
+          approved.
+        </p>
+      )}
       <div className="mb-6 flex flex-col gap-5 md:flex-row md:items-start md:gap-8">
         {/* Fixed-width sidebar from md up, so the photo controls never crowd
             the details beside them. */}
@@ -187,10 +334,22 @@ export function PersonDetail() {
           </dl>
 
           {person.canEdit && (
-            <div className="mt-5">
+            <div className="mt-5 flex flex-wrap gap-2">
               <Button variant="secondary" onClick={() => setEditing(true)}>
                 Edit details
               </Button>
+              {mergeOffer && (
+                <Button variant="secondary" onClick={() => setMerging(true)}>
+                  {mergeOffer === "own"
+                    ? "Merge a duplicate into my record…"
+                    : "Merge into an account holder…"}
+                </Button>
+              )}
+              {!hasAccount && (
+                <Button variant="ghost" onClick={() => setConfirmDelete(true)}>
+                  Delete this person
+                </Button>
+              )}
             </div>
           )}
         </div>
@@ -274,6 +433,32 @@ export function PersonDetail() {
         )}
       </section>
 
+      {merging && mergeOffer && (
+        <MergeModal
+          person={person}
+          mode={mergeOffer}
+          onClose={() => setMerging(false)}
+          onRequested={async () => {
+            setMerging(false);
+            await reloadAfterMerge();
+          }}
+        />
+      )}
+
+      {confirmDelete && (
+        <ConfirmDialog
+          title={`Delete ${name}?`}
+          confirmLabel="Delete"
+          busy={busy}
+          onConfirm={() => void deletePerson()}
+          onClose={() => setConfirmDelete(false)}
+        >
+          {name} will be removed from the directory, along with any special dates recorded for them.
+          Anyone in the family who takes a detail from them — a surname, an address — will go back
+          to their own. This cannot be undone from here.
+        </ConfirmDialog>
+      )}
+
       {editing && (
         <Modal title={`Edit ${name}`} onClose={() => setEditing(false)}>
           <PersonForm
@@ -319,6 +504,115 @@ export function PersonDetail() {
         </Modal>
       )}
     </>
+  );
+}
+
+/**
+ * Picks the other half of a merge and sends the request.
+ *
+ * `mode` is which side of the merge the person on screen is, which is what
+ * decides both halves of the payload and which way the picker has to be
+ * filtered -- the surviving record can only be an account holder, and the
+ * duplicate can only be someone without one.
+ */
+function MergeModal({
+  person,
+  mode,
+  onClose,
+  onRequested,
+}: {
+  person: PersonDto;
+  mode: "own" | "relative";
+  onClose: () => void;
+  onRequested: () => Promise<void>;
+}) {
+  const [other, setOther] = useState<PickedPerson | null>(null);
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const isOwn = mode === "own";
+  const name = fullName(person);
+  const accountName = isOwn ? name : (other?.name ?? "");
+  const duplicateName = isOwn ? (other?.name ?? "") : name;
+
+  async function submit(): Promise<void> {
+    if (!other) {
+      setError("Choose the other record first");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      await api("/merges", {
+        method: "POST",
+        body: {
+          accountPersonId: isOwn ? person.id : other.id,
+          duplicatePersonId: isOwn ? other.id : person.id,
+        },
+      });
+      await onRequested();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not ask for that merge");
+      setBusy(false);
+      setConfirming(false);
+    }
+  }
+
+  if (confirming && other) {
+    return (
+      <ConfirmDialog
+        title="Merge these two records?"
+        confirmLabel="Send request"
+        busy={busy}
+        onConfirm={() => void submit()}
+        onClose={() => setConfirming(false)}
+      >
+        <strong>{duplicateName}</strong> will be folded into the record for{" "}
+        <strong>{accountName}</strong> and removed from the directory.{" "}
+        {accountName ? `${accountName}'s` : "The account holder's"} own details are kept; anything
+        only the other record has is added to them, and they move into that record's family. It
+        takes effect once {isOwn ? "someone in that family approves" : "that person approves"}. This
+        cannot be undone.
+      </ConfirmDialog>
+    );
+  }
+
+  return (
+    <Modal
+      title={isOwn ? "Merge a duplicate into my record" : "Merge into an account holder"}
+      onClose={onClose}
+    >
+      <div className="space-y-4">
+        <PersonPicker
+          label={isOwn ? "The duplicate record" : "The account holder"}
+          hint={
+            isOwn
+              ? "Someone in the directory with no account of their own who is really you."
+              : `Whose account ${name} should be merged into.`
+          }
+          value={other}
+          onChange={setOther}
+          excludePersonId={person.id}
+          accounts={isOwn ? "none" : "only"}
+        />
+
+        {error && (
+          <p role="alert" className="font-bold text-primary">
+            {error}
+          </p>
+        )}
+
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button disabled={busy || !other} onClick={() => setConfirming(true)}>
+            Continue
+          </Button>
+          <Button variant="ghost" disabled={busy} onClick={onClose}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

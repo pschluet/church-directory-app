@@ -173,6 +173,17 @@ routes.get("/lookup", async (c) => {
     conditions.push(`r.id <> $${params.length}::uuid`);
   }
 
+  // Narrows the picker to one side of the account divide, which is what the two
+  // merge forms need: "who am I really?" can only be an account holder, and
+  // "which duplicate is me?" can only be someone without one. Unlike the browse
+  // and search routes above, this one collects its placeholders as it goes, so
+  // this is an ordinary condition rather than an interpolated constant -- and it
+  // binds nothing, because both halves are literal SQL. Anything but these two
+  // values means no filter, the same way parseFlag treats anything but "true".
+  const accounts = c.req.query("accounts");
+  if (accounts === "only") conditions.push("r.app_user_id is not null");
+  else if (accounts === "none") conditions.push("r.app_user_id is null");
+
   // Every term must match, so "mar sch" narrows the way it does on the search
   // page. An empty q falls through with no name condition, which leaves the
   // first page showing -- the one thing a plain <select> did well was let you

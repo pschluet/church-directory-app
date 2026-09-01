@@ -23,8 +23,17 @@ export const qk = {
     [...qk.directoryRoot(orgId), "browse", { accountHoldersOnly }] as const,
   directorySearch: (orgId: string | null, q: string, accountHoldersOnly: boolean) =>
     [...qk.directoryRoot(orgId), "search", { q, accountHoldersOnly }] as const,
-  directoryLookup: (orgId: string | null, q: string, exclude?: string) =>
-    [...qk.directoryRoot(orgId), "lookup", { q, exclude: exclude ?? null }] as const,
+  directoryLookup: (
+    orgId: string | null,
+    q: string,
+    exclude?: string,
+    accounts?: "only" | "none"
+  ) =>
+    [
+      ...qk.directoryRoot(orgId),
+      "lookup",
+      { q, exclude: exclude ?? null, accounts: accounts ?? null },
+    ] as const,
 
   families: (orgId: string | null) => [...qk.org(orgId), "families"] as const,
   family: (orgId: string | null, id: string) => [...qk.families(orgId), id] as const,
@@ -35,6 +44,7 @@ export const qk = {
 
   persons: (orgId: string | null) => [...qk.org(orgId), "persons"] as const,
   person: (orgId: string | null, id: string) => [...qk.persons(orgId), id] as const,
+  pendingMerges: (orgId: string | null) => [...qk.persons(orgId), "merges", "pending"] as const,
 
   adminUsers: (orgId: string | null) => [...qk.org(orgId), "admin", "users"] as const,
 

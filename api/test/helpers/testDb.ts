@@ -45,6 +45,7 @@ const TABLES = [
   "audit_log",
   "special_dates",
   "family_join_requests",
+  "person_merge_requests",
   "persons",
   "families",
   "app_users",

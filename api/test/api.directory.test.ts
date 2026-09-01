@@ -455,5 +455,36 @@ describe.skipIf(!hasDb)("directory browse and search", () => {
         "Paul Schlueter",
       ]);
     });
+
+    // The two merge forms each need one side of the account divide: "who am I
+    // really?" can only be an account holder, "which duplicate is me?" cannot.
+    describe("?accounts", () => {
+      beforeEach(async () => {
+        await createNonUserPerson(db(), {
+          organizationId: orgId,
+          familyId,
+          firstName: "Anna",
+          lastName: "Schlueter",
+        });
+      });
+
+      it("keeps only account holders", async () => {
+        expect(
+          names((await as(me).call("GET", "/api/directory/lookup?accounts=only")).body)
+        ).toEqual(["Paul Schlueter"]);
+      });
+
+      it("keeps only people without an account", async () => {
+        expect(
+          names((await as(me).call("GET", "/api/directory/lookup?accounts=none")).body)
+        ).toEqual(["Anna Schlueter"]);
+      });
+
+      it("ignores a value it does not recognise rather than filtering oddly", async () => {
+        expect(
+          names((await as(me).call("GET", "/api/directory/lookup?accounts=yes")).body).sort()
+        ).toEqual(["Anna Schlueter", "Paul Schlueter"]);
+      });
+    });
   });
 });
