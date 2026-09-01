@@ -1,7 +1,13 @@
 import { useState } from "react";
 import { Link, useNavigate, useParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { FamilyDto, FamilySummaryDto, MergeRequestDto, PersonDto } from "@shared";
+import type {
+  FamilyDto,
+  FamilySummaryDto,
+  MergeRequestDto,
+  PersonDto,
+  PersonMergeResultDto,
+} from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
@@ -124,8 +130,19 @@ export function PersonDetail() {
    * on top of that, because an approved merge can change the caller's own
    * family -- either because it was their record that moved, or because someone
    * joined theirs.
+   *
+   * `result` is present only when the merge actually happened -- an admin needs
+   * no approval, so their request goes through in the same call. When it does,
+   * the record this page is showing may be the one that was just retired, and
+   * invalidating without moving first would refetch it and render "Person not
+   * found" over a merge that in fact succeeded. So follow the survivor, and drop
+   * the dead record from the cache rather than leaving it to 404.
    */
-  const reloadAfterMerge = async (): Promise<void> => {
+  const reloadAfterMerge = async (result?: PersonMergeResultDto | null): Promise<void> => {
+    if (result && result.mergedPersonId === id) {
+      void navigate(`/people/${result.personId}`, { replace: true });
+      queryClient.removeQueries({ queryKey: qk.person(organizationId, result.mergedPersonId) });
+    }
     await Promise.all([
       queryClient.invalidateQueries({ queryKey: qk.persons(organizationId) }),
       queryClient.invalidateQueries({ queryKey: qk.families(organizationId) }),
@@ -142,8 +159,11 @@ export function PersonDetail() {
     setBusy(true);
     setActionError(null);
     try {
-      await api(`/merges/${mergeRequest.id}/${decision}`, { method: "POST" });
-      await reloadAfterMerge();
+      const decided = await api<{ result?: PersonMergeResultDto }>(
+        `/merges/${mergeRequest.id}/${decision}`,
+        { method: "POST" }
+      );
+      await reloadAfterMerge(decided.result ?? null);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Could not decide that merge");
     } finally {
@@ -438,9 +458,10 @@ export function PersonDetail() {
           person={person}
           mode={mergeOffer}
           onClose={() => setMerging(false)}
-          onRequested={async () => {
+          mergesImmediately={isAdmin}
+          onRequested={async (result) => {
             setMerging(false);
-            await reloadAfterMerge();
+            await reloadAfterMerge(result);
           }}
         />
       )}
@@ -518,13 +539,16 @@ export function PersonDetail() {
 function MergeModal({
   person,
   mode,
+  mergesImmediately,
   onClose,
   onRequested,
 }: {
   person: PersonDto;
   mode: "own" | "relative";
+  /** An admin needs no approval, so their request takes effect on submit. */
+  mergesImmediately: boolean;
   onClose: () => void;
-  onRequested: () => Promise<void>;
+  onRequested: (result: PersonMergeResultDto | null) => Promise<void>;
 }) {
   const [other, setOther] = useState<PickedPerson | null>(null);
   const [confirming, setConfirming] = useState(false);
@@ -544,14 +568,16 @@ function MergeModal({
     setBusy(true);
     setError(null);
     try {
-      await api("/merges", {
+      // `result` comes back only when the merge already happened, which is what
+      // tells the page whether the record it is showing still exists.
+      const created = await api<{ result?: PersonMergeResultDto }>("/merges", {
         method: "POST",
         body: {
           accountPersonId: isOwn ? person.id : other.id,
           duplicatePersonId: isOwn ? other.id : person.id,
         },
       });
-      await onRequested();
+      await onRequested(created.result ?? null);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Could not ask for that merge");
       setBusy(false);
@@ -563,7 +589,7 @@ function MergeModal({
     return (
       <ConfirmDialog
         title="Merge these two records?"
-        confirmLabel="Send request"
+        confirmLabel={mergesImmediately ? "Merge now" : "Send request"}
         busy={busy}
         onConfirm={() => void submit()}
         onClose={() => setConfirming(false)}
@@ -571,9 +597,11 @@ function MergeModal({
         <strong>{duplicateName}</strong> will be folded into the record for{" "}
         <strong>{accountName}</strong> and removed from the directory.{" "}
         {accountName ? `${accountName}'s` : "The account holder's"} own details are kept; anything
-        only the other record has is added to them, and they move into that record's family. It
-        takes effect once {isOwn ? "someone in that family approves" : "that person approves"}. This
-        cannot be undone.
+        only the other record has is added to them, and they move into that record's family.{" "}
+        {mergesImmediately
+          ? "As an administrator this takes effect straight away, with nobody to ask."
+          : `It takes effect once ${isOwn ? "someone in that family approves" : "that person approves"}.`}{" "}
+        This cannot be undone.
       </ConfirmDialog>
     );
   }

@@ -296,9 +296,13 @@ describe("PersonDetail merging and deleting", () => {
       await user.click(screen.getByRole("button", { name: /send request/i }));
     };
 
-    const withLookup = (subject: PersonDto, found: { id: string; name: string }) => {
+    const withLookup = (
+      subject: PersonDto,
+      found: { id: string; name: string },
+      postResponse: unknown = { status: "PENDING", id: "merge-new" }
+    ) => {
       api.mockImplementation((path: string, options?: { method?: string }) => {
-        if (options?.method) return Promise.resolve({ status: "PENDING", id: "merge-new" });
+        if (options?.method) return Promise.resolve(postResponse);
         if (path === `/persons/${subject.id}`) return Promise.resolve(subject);
         if (path === "/merges/pending") return Promise.resolve({ mergeRequests: [] });
         if (path === "/directory/lookup")
@@ -373,5 +377,149 @@ describe("PersonDetail merging and deleting", () => {
     // in the banner, so count rather than expecting one.
     expect(screen.getAllByText("Layla Haddad").length).toBeGreaterThan(0);
     expect(screen.getByRole("button", { name: "Approve" })).toBeInTheDocument();
+  });
+
+  /*
+   * An admin needs no approval, so POST /merges does the merge in the same call
+   * and the record this page is showing may be the one just retired. Before,
+   * the invalidation refetched it and painted "Person not found" over a merge
+   * that had in fact succeeded.
+   */
+  describe("when the merge happens immediately", () => {
+    const MERGED = {
+      status: "APPROVED",
+      result: {
+        personId: "survivor-1",
+        mergedPersonId: "person-1",
+        familyId: "family-1",
+        movedFamily: true,
+        discardedBirthdays: 0,
+        discardedFeastDays: 0,
+        discardedAnniversaries: 0,
+      },
+    };
+
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      meState.isAdmin = true;
+      meState.personId = "admin-person";
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const duplicatePage = (postResponse: unknown) => {
+      const subject = person({
+        id: "person-1",
+        appUserId: null,
+        canEdit: true,
+        familyId: "family-1",
+      });
+      api.mockImplementation((path: string, options?: { method?: string }) => {
+        if (options?.method) return Promise.resolve(postResponse);
+        if (path === "/persons/person-1") return Promise.resolve(subject);
+        if (path === "/merges/pending") return Promise.resolve({ mergeRequests: [] });
+        if (path === "/directory/lookup")
+          return Promise.resolve({
+            people: [{ id: "survivor-1", name: "Layla Haddad", familyName: "Haddad" }],
+          });
+        return Promise.resolve({ people: [], families: [] });
+      });
+      return renderWithProviders(
+        <Routes>
+          <Route path="/people/:id" element={<PersonDetail />} />
+        </Routes>,
+        { initialEntries: ["/people/person-1"] }
+      );
+    };
+
+    const askToMerge = async () => {
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await user.click(
+        await screen.findByRole("button", { name: /merge into an account holder/i })
+      );
+      await user.type(screen.getByRole("combobox", { name: /the account holder/i }), "lay");
+      vi.advanceTimersByTime(250);
+      await user.click(await screen.findByRole("option", { name: /layla haddad/i }));
+      await user.click(screen.getByRole("button", { name: /continue/i }));
+      await user.click(screen.getByRole("button", { name: /merge now/i }));
+    };
+
+    it("follows the surviving record instead of 404ing on the retired one", async () => {
+      duplicatePage(MERGED);
+      await askToMerge();
+
+      await waitFor(() =>
+        expect(navigate).toHaveBeenCalledWith("/people/survivor-1", { replace: true })
+      );
+      expect(screen.queryByText(/person not found/i)).not.toBeInTheDocument();
+    });
+
+    it("tells an admin the merge is immediate rather than a request", async () => {
+      duplicatePage(MERGED);
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await user.click(
+        await screen.findByRole("button", { name: /merge into an account holder/i })
+      );
+      await user.type(screen.getByRole("combobox", { name: /the account holder/i }), "lay");
+      vi.advanceTimersByTime(250);
+      await user.click(await screen.findByRole("option", { name: /layla haddad/i }));
+      await user.click(screen.getByRole("button", { name: /continue/i }));
+
+      expect(screen.getByText(/takes effect straight away/i)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: /merge now/i })).toBeInTheDocument();
+    });
+
+    it("stays put when the merge is only a request", async () => {
+      meState.isAdmin = false;
+      duplicatePage({ status: "PENDING", id: "merge-new" });
+
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await user.click(
+        await screen.findByRole("button", { name: /merge into an account holder/i })
+      );
+      await user.type(screen.getByRole("combobox", { name: /the account holder/i }), "lay");
+      vi.advanceTimersByTime(250);
+      await user.click(await screen.findByRole("option", { name: /layla haddad/i }));
+      await user.click(screen.getByRole("button", { name: /continue/i }));
+      await user.click(screen.getByRole("button", { name: /send request/i }));
+
+      await waitFor(() => expect(api).toHaveBeenCalledWith("/merges", expect.anything()));
+      // Nothing has been retired yet, so the page it is on is still valid.
+      expect(navigate).not.toHaveBeenCalled();
+    });
+
+    it("follows the survivor when approving from the retired record's page", async () => {
+      const subject = person({
+        id: "person-1",
+        appUserId: null,
+        canEdit: true,
+        familyId: "family-1",
+      });
+      api.mockImplementation((path: string, options?: { method?: string }) => {
+        if (options?.method) return Promise.resolve(MERGED);
+        if (path === "/persons/person-1") return Promise.resolve(subject);
+        if (path === "/merges/pending")
+          return Promise.resolve({
+            mergeRequests: [
+              mergeRequest({ accountPersonId: "survivor-1", duplicatePersonId: "person-1" }),
+            ],
+          });
+        return Promise.resolve({ people: [], families: [] });
+      });
+      renderWithProviders(
+        <Routes>
+          <Route path="/people/:id" element={<PersonDetail />} />
+        </Routes>,
+        { initialEntries: ["/people/person-1"] }
+      );
+
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await user.click(await screen.findByRole("button", { name: "Approve" }));
+
+      await waitFor(() =>
+        expect(navigate).toHaveBeenCalledWith("/people/survivor-1", { replace: true })
+      );
+    });
   });
 });
