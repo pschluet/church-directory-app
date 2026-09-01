@@ -40,6 +40,8 @@ export interface PersonRow {
   country: string | null;
   patron_saint: string | null;
   photo_key: string | null;
+  /** Position within the family; null until someone sets a custom order. */
+  family_order: number | null;
   inherit_email_from_person_id: string | null;
   inherit_phone_from_person_id: string | null;
   inherit_alt_phone_from_person_id: string | null;
@@ -66,6 +68,7 @@ export const PERSON_COLUMNS = `
   r.country,
   r.patron_saint,
   r.photo_key,
+  r.family_order,
   r.inherit_email_from_person_id,
   r.inherit_phone_from_person_id,
   r.inherit_alt_phone_from_person_id,
@@ -80,6 +83,25 @@ export const PERSON_COLUMNS = `
  */
 export const PERSON_ORDER = `
   order by r.last_name asc nulls last, r.first_name asc, r.id asc
+`;
+
+/**
+ * A family's own order: whatever its members dragged it into, falling back to
+ * PERSON_ORDER's names.
+ *
+ * Deliberately separate from PERSON_ORDER rather than replacing it. Browse
+ * pages through the directory with a keyset cursor on `(last_name, first_name,
+ * id)` -- see directory.ts -- so putting a nullable column at the front of that
+ * sort would break pagination, and family_order means nothing outside a family
+ * anyway.
+ *
+ * `nulls last` is what makes a family nobody has ordered read exactly as it did
+ * before this existed, and what keeps a newly added member at the end rather
+ * than jumping to the front.
+ */
+export const FAMILY_MEMBER_ORDER = `
+  order by r.family_order asc nulls last,
+           r.last_name asc nulls last, r.first_name asc, r.id asc
 `;
 
 export function toSummaries(caller: Caller, rows: PersonRow[]): PersonSummaryDto[] {

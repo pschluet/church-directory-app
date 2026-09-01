@@ -39,6 +39,13 @@ export const qk = {
   family: (orgId: string | null, id: string) => [...qk.families(orgId), id] as const,
   familyCandidates: (orgId: string | null, id: string) =>
     [...qk.family(orgId, id), "candidates"] as const,
+  /**
+   * The family page's year ahead. Nested under the family rather than under
+   * `specialDates` so that adding a member -- which changes whose dates these
+   * are -- invalidates it along with everything else about the family.
+   */
+  familyUpcomingDates: (orgId: string | null, id: string, start: string) =>
+    [...qk.family(orgId, id), "upcoming", { start }] as const,
   pendingJoinRequests: (orgId: string | null) =>
     [...qk.families(orgId), "join-requests", "pending"] as const,
 

@@ -6,6 +6,7 @@ import {
   createFamily,
   createNonUserPerson,
   createOrganization,
+  createSpecialDate,
   createUser,
   type CreatedUser,
 } from "./helpers/fixtures";
@@ -484,6 +485,99 @@ describe.skipIf(!hasDb)("special dates", () => {
       expect((await as(paul).call("DELETE", `/api/special-dates/${created.body.id}`)).status).toBe(
         403
       );
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // The family page's "year ahead" narrows this org-wide list to one household.
+  // -------------------------------------------------------------------------
+  describe("narrowing upcoming dates to one family", () => {
+    const as = (u: CreatedUser) => client(db(), { sub: u.cognitoSub, email: u.email });
+
+    /** A full year from a fixed start, so nothing here depends on the clock. */
+    const yearAhead = (u: CreatedUser, family?: string) =>
+      as(u).call(
+        "GET",
+        `/api/special-dates/upcoming?start=2026-01-01&days=365${family ? `&familyId=${family}` : ""}`
+      );
+
+    const namesIn = (body: any) =>
+      body.days.flatMap((d: any) => d.dates.map((e: any) => e.personName));
+
+    it("keeps a family member's date and drops an outsider's", async () => {
+      await createSpecialDate(db(), {
+        organizationId: orgId,
+        personId: anna,
+        type: "BIRTHDAY",
+        month: 3,
+        day: 9,
+      });
+      const outsider = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: null,
+        firstName: "Elena",
+      });
+      await createSpecialDate(db(), {
+        organizationId: orgId,
+        personId: outsider,
+        type: "BIRTHDAY",
+        month: 3,
+        day: 10,
+      });
+
+      // Org-wide sees both; narrowed to the family sees only Anna.
+      expect(namesIn((await yearAhead(paul)).body)).toEqual(
+        expect.arrayContaining(["Anna Schlueter", "Elena"])
+      );
+      const narrowed = namesIn((await yearAhead(paul, familyId)).body);
+      expect(narrowed).toContain("Anna Schlueter");
+      expect(narrowed).not.toContain("Elena");
+    });
+
+    it("keeps an anniversary whose other half is outside the family", async () => {
+      const outsider = await createUser(db(), {
+        organizationId: orgId,
+        familyId: null,
+        email: "outsider-dates@test.example",
+        firstName: "Elena",
+      });
+      // Stored against the outsider, so only the *related* person is a member.
+      await createSpecialDate(db(), {
+        organizationId: orgId,
+        personId: outsider.personId!,
+        relatedPersonId: paul.personId!,
+        type: "ANNIVERSARY",
+        month: 6,
+        day: 14,
+        year: 2010,
+      });
+
+      const { body } = await yearAhead(paul, familyId);
+      const anniversaries = body.days
+        .flatMap((d: any) => d.dates)
+        .filter((e: any) => e.type === "ANNIVERSARY");
+      expect(anniversaries).toHaveLength(1);
+    });
+
+    it("lands every annual date exactly once across the year", async () => {
+      await createSpecialDate(db(), {
+        organizationId: orgId,
+        personId: anna,
+        type: "BIRTHDAY",
+        month: 1,
+        day: 1,
+      });
+
+      const { body } = await yearAhead(paul, familyId);
+      expect(namesIn(body).filter((n: string) => n === "Anna Schlueter")).toHaveLength(1);
+    });
+
+    it("rejects a familyId that is not a uuid", async () => {
+      const { status } = await as(paul).call(
+        "GET",
+        "/api/special-dates/upcoming?start=2026-01-01&familyId=nope"
+      );
+      expect(status).toBe(400);
     });
   });
 });

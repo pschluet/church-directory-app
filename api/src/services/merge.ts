@@ -180,13 +180,19 @@ export async function mergePersons(
               patron_saint = coalesce(a.patron_saint, d.patron_saint),
               photo_key    = coalesce(a.photo_key, d.photo_key),
               family_id    = $3,
+              -- The survivor takes over the duplicate's seat in the family's
+              -- custom order, because to that family they are the same person.
+              -- Moving into the duplicate's family with the survivor's own
+              -- position would drop them somewhere arbitrary in a list the
+              -- family had arranged by hand.
+              family_order = case when $4 then d.family_order else a.family_order end,
               ${ADDRESS_COLUMNS.map(
                 (c) => `${c} = case when ${SURVIVOR_HAS_ADDRESS} then a.${c} else d.${c} end`
               ).join(",\n              ")},
               ${inheritanceAssignments(familyId, movedFamily)}
          from persons d
         where a.id = $1 and d.id = $2`,
-      [accountPersonId, duplicatePersonId, familyId]
+      [accountPersonId, duplicatePersonId, familyId, movedFamily]
     );
 
     // `first_name` is not-null on both rows, so the survivor's always stands

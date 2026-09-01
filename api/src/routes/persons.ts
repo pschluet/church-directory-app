@@ -162,6 +162,12 @@ routes.patch("/:id", async (c) => {
         [id, ...values]
       );
     }
+    // A position belongs to the family that arranged it, so a move gives it
+    // up. Separate from the write above because `buildWrite` only ever emits
+    // the columns the payload actually carried.
+    if (movingFamily) {
+      await tx.query("update persons set family_order = null where id = $1", [id]);
+    }
     // Landing in a family settles the question everywhere else they asked.
     if (movingFamily) await cancelPendingJoinRequests(tx, id, effectiveFamilyId);
   });

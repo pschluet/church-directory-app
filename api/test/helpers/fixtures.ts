@@ -119,6 +119,43 @@ export async function createNonUserPerson(
   return rows[0]!.id;
 }
 
+/**
+ * A special date, inserted directly.
+ *
+ * `showYearCount` is the opt-in that decides whether an age or a number of
+ * years married is visible at all, so it is the knob most of these tests turn.
+ */
+export async function createSpecialDate(
+  db: Queryable,
+  options: {
+    organizationId: string;
+    personId: string;
+    type: "BIRTHDAY" | "ANNIVERSARY" | "FEAST_DAY";
+    month: number;
+    day: number;
+    year?: number | null;
+    showYearCount?: boolean;
+    relatedPersonId?: string | null;
+  }
+): Promise<string> {
+  const { rows } = await db.query<{ id: string }>(
+    `insert into special_dates
+       (organization_id, person_id, related_person_id, type, month, day, year, show_year_count)
+     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+    [
+      options.organizationId,
+      options.personId,
+      options.relatedPersonId ?? null,
+      options.type,
+      options.month,
+      options.day,
+      options.year ?? null,
+      options.showYearCount ?? false,
+    ]
+  );
+  return rows[0]!.id;
+}
+
 export async function setInheritance(
   db: Queryable,
   personId: string,

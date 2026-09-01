@@ -6,16 +6,25 @@ import { audit } from "../audit";
 import { assertCanEditFamily, canEditFamily } from "../services/access";
 import { clearInheritanceFor } from "../services/inheritance";
 import { cancelPendingJoinRequests } from "../services/membership";
-import { PERSON_COLUMNS, PERSON_ORDER, toSummaries, type PersonRow } from "../services/persons";
+import {
+  FAMILY_MEMBER_ORDER,
+  PERSON_COLUMNS,
+  toSummaries,
+  type PersonRow,
+} from "../services/persons";
+import { completedYearsOn, parseIsoDate, toIsoDate } from "../services/upcoming-dates";
 import { deletePhoto, photoUrls } from "../photos";
 import {
   familyCreateSchema,
+  familyMemberOrderSchema,
   familyMemberSchema,
   familyWriteSchema,
   fullName,
   photoAttachSchema,
   uuidSchema,
+  type FamilyAnniversaryDto,
   type FamilyDto,
+  type FamilyMemberDto,
   type FamilySummaryDto,
   type JoinRequestDto,
 } from "../types";
@@ -104,6 +113,101 @@ const JOIN_REQUEST_SELECT = `
     join persons_resolved p on p.id = jr.person_id
 `;
 
+/**
+ * Ages for the family page, and only where they may be shown.
+ *
+ * Gated on `show_year_count` in the SQL rather than after the fact: the age is
+ * one subtraction away from the birth year that `canSeeSpecialDateYear` already
+ * withholds, so a row nobody may see should never reach the process. Editors
+ * are not exempted -- the requirement is "if they have opted in to show age",
+ * and someone who can edit a record can already read the year on its own page.
+ */
+async function loadMemberAges(
+  q: Queryable,
+  familyId: string,
+  todayIso: string
+): Promise<Map<string, number>> {
+  const { rows } = await q.query<{
+    person_id: string;
+    month: number;
+    day: number;
+    year: number | null;
+  }>(
+    `select sd.person_id, sd.month, sd.day, sd.year
+       from special_dates sd
+       join persons p on p.id = sd.person_id
+      where p.family_id = $1
+        and p.deleted_at is null
+        and sd.type = 'BIRTHDAY'
+        and sd.show_year_count = true
+        and sd.year is not null`,
+    [familyId]
+  );
+
+  const ages = new Map<string, number>();
+  for (const row of rows) {
+    const age = completedYearsOn(todayIso, row.month, row.day, row.year, true);
+    if (age !== null) ages.set(row.person_id, age);
+  }
+  return ages;
+}
+
+/**
+ * The couples inside this family, so the page can mark both halves.
+ *
+ * Both spouses must be members: an anniversary linking a member to someone
+ * outside the household is still their anniversary -- and still shows on the
+ * family's date list -- but there is no second tile here to pair it with.
+ */
+async function loadAnniversaries(
+  q: Queryable,
+  familyId: string,
+  todayIso: string
+): Promise<FamilyAnniversaryDto[]> {
+  const { rows } = await q.query<{
+    person_id: string;
+    related_person_id: string;
+    month: number;
+    day: number;
+    year: number | null;
+    show_year_count: boolean;
+  }>(
+    `select sd.person_id, sd.related_person_id, sd.month, sd.day, sd.year, sd.show_year_count
+       from special_dates sd
+       join persons a on a.id = sd.person_id
+       join persons b on b.id = sd.related_person_id
+      where sd.type = 'ANNIVERSARY'
+        and a.family_id = $1
+        and b.family_id = $1
+        and a.deleted_at is null
+        and b.deleted_at is null
+      order by sd.month, sd.day`,
+    [familyId]
+  );
+
+  return rows.map((row) => ({
+    personIds: [row.person_id, row.related_person_id] as [string, string],
+    month: row.month,
+    day: row.day,
+    yearCount: completedYearsOn(todayIso, row.month, row.day, row.year, row.show_year_count),
+  }));
+}
+
+/**
+ * The caller's own today, as yyyy-mm-dd. Ages turn over at midnight where the
+ * reader is, not where the Lambda runs, which is the same reason
+ * /special-dates/upcoming takes its window start from the browser.
+ */
+function todayFrom(param: string | undefined): string {
+  if (param === undefined) return toIsoDate(new Date());
+  try {
+    parseIsoDate(param);
+  } catch {
+    throw new HTTPException(400, { message: "today must be a yyyy-mm-dd date" });
+  }
+  return param;
+}
+
 function toJoinRequest(row: JoinRequestRow): JoinRequestDto {
   return {
     id: row.id,
@@ -170,34 +274,45 @@ routes.get("/:id", async (c) => {
   const organizationId = requireOrganizationId(c);
   const id = uuidSchema.parse(c.req.param("id"));
 
+  const today = todayFrom(c.req.query("today"));
+
   const family = await loadFamilyRow(db, id, organizationId);
   const canEdit = canEditFamily(caller, { id: family.id, organizationId: family.organization_id });
 
-  const { rows: memberRows } = await db.query<PersonRow>(
-    `select ${PERSON_COLUMNS}
-       from persons_resolved r
-      where r.family_id = $1 and r.deleted_at is null
-      ${PERSON_ORDER}`,
-    [id]
-  );
+  const [{ rows: memberRows }, ages, anniversaries, pending] = await Promise.all([
+    db.query<PersonRow>(
+      `select ${PERSON_COLUMNS}
+         from persons_resolved r
+        where r.family_id = $1 and r.deleted_at is null
+        ${FAMILY_MEMBER_ORDER}`,
+      [id]
+    ),
+    loadMemberAges(db, id, today),
+    loadAnniversaries(db, id, today),
+    // Pending requests are only anyone's business if they can act on them.
+    canEdit
+      ? db
+          .query<JoinRequestRow>(
+            `${JOIN_REQUEST_SELECT} where jr.family_id = $1 and jr.status = 'PENDING'
+              order by jr.requested_at`,
+            [id]
+          )
+          .then(({ rows }) => rows.map(toJoinRequest))
+      : Promise.resolve<JoinRequestDto[]>([]),
+  ]);
 
-  // Pending requests are only anyone's business if they can act on them.
-  const pending = canEdit
-    ? (
-        await db.query<JoinRequestRow>(
-          `${JOIN_REQUEST_SELECT} where jr.family_id = $1 and jr.status = 'PENDING'
-            order by jr.requested_at`,
-          [id]
-        )
-      ).rows.map(toJoinRequest)
-    : [];
+  const members: FamilyMemberDto[] = toSummaries(caller, memberRows).map((member) => ({
+    ...member,
+    age: ages.get(member.id) ?? null,
+  }));
 
   const body: FamilyDto = {
     id: family.id,
     organizationId: family.organization_id,
     name: family.name,
     ...familyPhotoFields(family),
-    members: toSummaries(caller, memberRows),
+    members,
+    anniversaries,
     pendingJoinRequests: pending,
     canEdit,
     isMember: caller.familyId === family.id,
@@ -241,7 +356,7 @@ routes.post("/", async (c) => {
     if (payload.join) {
       // Leaving one family for another drops inheritance from the old one.
       await clearInheritanceFor(tx, caller.personId!);
-      await tx.query("update persons set family_id = $2 where id = $1", [
+      await tx.query("update persons set family_id = $2, family_order = null where id = $1", [
         caller.personId,
         created.id,
       ]);
@@ -521,6 +636,65 @@ routes.post("/:id/members", async (c) => {
 });
 
 /**
+ * Set the family's own member order -- "custom ordering of family members (drag
+ * and drop) - only admins and family members can set ordering", which is
+ * exactly what `assertCanEditFamily` already means.
+ *
+ * Takes the complete ordered list rather than one move. That makes the write
+ * idempotent, so a dropped response or a double-tap cannot corrupt the order,
+ * and it needs no fractional indices to rebalance. A family is a handful of
+ * people, so sending all of it costs nothing.
+ */
+routes.put("/:id/member-order", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const { personIds } = familyMemberOrderSchema.parse(await c.req.json());
+
+  const family = await loadFamilyRow(db, id, organizationId);
+  assertCanEditFamily(caller, { id: family.id, organizationId: family.organization_id });
+
+  const { rows: current } = await db.query<{ id: string }>(
+    "select id from persons where family_id = $1 and deleted_at is null",
+    [id]
+  );
+
+  // The list has to be exactly this family's membership. A short list would
+  // leave whoever was omitted with a stale position and strand them in the
+  // middle of the order; a list with a stranger's id in it would be a write to
+  // a person the caller was never authorised for, which the family-scoped
+  // `update` below would silently drop rather than report.
+  const submitted = new Set(personIds);
+  const expected = new Set(current.map((row) => row.id));
+  const matches =
+    submitted.size === personIds.length &&
+    submitted.size === expected.size &&
+    personIds.every((personId) => expected.has(personId));
+  if (!matches) {
+    throw new HTTPException(400, {
+      message: "The order must list every member of this family exactly once",
+    });
+  }
+
+  await db.query(
+    `update persons p
+        set family_order = v.ord
+       from unnest($1::uuid[]) with ordinality as v(id, ord)
+      where p.id = v.id and p.family_id = $2`,
+    [personIds, id]
+  );
+
+  await audit(db, caller, {
+    action: "family.reorderMembers",
+    entityType: "family",
+    entityId: id,
+    changes: { personIds },
+  });
+  return c.body(null, 204);
+});
+
+/**
  * Delete an empty family. Admin-only, because the people who can create a
  * family for someone else are the ones who need to undo a typo.
  */
@@ -603,10 +777,10 @@ routes.delete("/:id/members/:personId", async (c) => {
 
   await db.transaction(async (tx) => {
     await clearInheritanceFor(tx, personId);
-    await tx.query("update persons set family_id = null where id = $1 and family_id = $2", [
-      personId,
-      id,
-    ]);
+    await tx.query(
+      "update persons set family_id = null, family_order = null where id = $1 and family_id = $2",
+      [personId, id]
+    );
     // They are not in any family now, so every outstanding request is moot.
     await cancelPendingJoinRequests(tx, personId);
   });
@@ -652,7 +826,10 @@ async function joinFamily(
   }
 
   await clearInheritanceFor(q, personId);
-  await q.query("update persons set family_id = $2 where id = $1", [personId, familyId]);
+  await q.query("update persons set family_id = $2, family_order = null where id = $1", [
+    personId,
+    familyId,
+  ]);
   // Any other outstanding requests from this person are moot now.
   await cancelPendingJoinRequests(q, personId, familyId);
 }

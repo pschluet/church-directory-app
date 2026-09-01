@@ -229,7 +229,11 @@ async function main(): Promise<void> {
   await addDate(maria, "BIRTHDAY", inTwo.month, inTwo.day, { year: 1987 });
   // Month and day only.
   await addDate(anna, "BIRTHDAY", inThree.month, inThree.day);
-  await addDate(nikolai, "BIRTHDAY", inTwenty.month, inTwenty.day, { year: 2015 });
+  // A child whose age is shown, so the family page has more than one to render.
+  await addDate(nikolai, "BIRTHDAY", inTwenty.month, inTwenty.day, {
+    year: 2015,
+    showYearCount: true,
+  });
   // Feast days -- the patron saint's day, month and day only.
   await addDate(anna, "FEAST_DAY", today.month, today.day);
   await addDate(ivan, "FEAST_DAY", inFive.month, inFive.day);

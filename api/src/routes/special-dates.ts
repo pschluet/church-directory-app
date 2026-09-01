@@ -38,15 +38,22 @@ interface OccurrenceRow extends SpecialDateRow {
 async function loadOccurrences(
   db: AppEnv["Variables"]["db"],
   organizationId: string,
-  keys: number[]
+  keys: number[],
+  /** Narrow to one family, for the family page's year ahead. */
+  familyId: string | null = null
 ): Promise<OccurrenceRow[]> {
   if (keys.length === 0) return [];
   const { rows } = await db.query<OccurrenceRow>(
     `${SPECIAL_DATE_SELECT}
       where sd.organization_id = $1
         and p.deleted_at is null
-        and (sd.month * 100 + sd.day) = any($2::int[])`,
-    [organizationId, keys]
+        and (sd.month * 100 + sd.day) = any($2::int[])
+        -- The related person as well as the owner: an anniversary is stored
+        -- once against one spouse, so a couple where only the related half is
+        -- in this family is still that family's anniversary, and has to
+        -- surface on its list.
+        and ($3::uuid is null or p.family_id = $3 or rp.family_id = $3)`,
+    [organizationId, keys, familyId]
   );
   return rows.map((row) => ({ ...row, month_day_key: monthDayKey(row.month, row.day) }));
 }
@@ -106,9 +113,11 @@ routes.get("/upcoming", async (c) => {
     throw new HTTPException(400, { message: "start must be a yyyy-mm-dd date" });
   }
   const days = Number(c.req.query("days") ?? DEFAULT_WINDOW_DAYS);
+  const familyIdParam = c.req.query("familyId");
+  const familyId = familyIdParam ? uuidSchema.parse(familyIdParam) : null;
 
   const window = expandWindow(start, Number.isFinite(days) ? days : DEFAULT_WINDOW_DAYS);
-  const rows = await loadOccurrences(db, organizationId, allMonthDayKeys(window));
+  const rows = await loadOccurrences(db, organizationId, allMonthDayKeys(window), familyId);
 
   const body: UpcomingDatesDto = {
     start: window[0]?.iso ?? start,

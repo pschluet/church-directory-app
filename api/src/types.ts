@@ -180,6 +180,20 @@ export type FamilyCreate = z.infer<typeof familyCreateSchema>;
 
 export const familyMemberSchema = z.object({ personId: uuidSchema });
 
+/**
+ * A custom member order, as the complete ordered list rather than one move.
+ *
+ * Whole-list replacement makes the write idempotent and means no fractional
+ * index ever has to be rebalanced; a family is small enough that sending all of
+ * it costs nothing. The API rejects a list that is not exactly the family's
+ * current membership, since a partial one would silently strand whoever was
+ * left out.
+ */
+export const familyMemberOrderSchema = z.object({
+  personIds: z.array(uuidSchema).min(1).max(200),
+});
+export type FamilyMemberOrder = z.infer<typeof familyMemberOrderSchema>;
+
 /** A row in the families list. */
 export interface FamilySummaryDto {
   id: string;
@@ -189,6 +203,38 @@ export interface FamilySummaryDto {
   memberNames: string[];
   /** The caller's own undecided request to join this family, if any. */
   pendingJoinRequestId: string | null;
+}
+
+/**
+ * A member as the family page needs them: a directory summary plus the one
+ * derived fact that page shows and no other listing does.
+ *
+ * Age is not on PersonSummaryDto because it is not free -- it means joining
+ * special_dates -- and the directory has no use for it.
+ */
+export interface FamilyMemberDto extends PersonSummaryDto {
+  /**
+   * Whole years old today. Null unless a birthday with a year is on record
+   * *and* the person opted in to showing their age, so this can never disclose
+   * what `canSeeSpecialDateYear` withholds.
+   */
+  age: number | null;
+}
+
+/**
+ * A wedding anniversary shared by two members of the same family, so the page
+ * can mark both halves of the couple.
+ *
+ * Stored as one special_dates row per couple, which is why this is a family-
+ * level list rather than a field on each member: the pair is the fact.
+ */
+export interface FamilyAnniversaryDto {
+  /** Both spouses. Each is a member of this family. */
+  personIds: [string, string];
+  month: number;
+  day: number;
+  /** Whole years married today. Null unless they opted in to showing it. */
+  yearCount: number | null;
 }
 
 export interface FamilyDto {
@@ -206,7 +252,10 @@ export interface FamilyDto {
    */
   photoWidth: number | null;
   photoHeight: number | null;
-  members: PersonSummaryDto[];
+  /** In the family's custom order, or by name where none has been set. */
+  members: FamilyMemberDto[];
+  /** Every couple in this family, for marking who is married to whom. */
+  anniversaries: FamilyAnniversaryDto[];
   pendingJoinRequests: JoinRequestDto[];
   canEdit: boolean;
   /** True when the caller is a member, so the UI can offer "request to join". */

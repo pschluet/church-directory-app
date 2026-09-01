@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   displayPhone,
   formatMonthDay,
+  formatMonthDayShort,
   formatMultilineAddress,
   initials,
   specialDateDetail,
@@ -112,5 +113,34 @@ describe("initials", () => {
 
   it("copes with no last name", () => {
     expect(initials({ firstName: "Anna", lastName: null })).toBe("A");
+  });
+});
+
+describe("formatMonthDayShort", () => {
+  it("abbreviates the month to three letters", () => {
+    expect(formatMonthDayShort(9, 6)).toBe("Sep 6");
+    expect(formatMonthDayShort(6, 14)).toBe("Jun 14");
+  });
+
+  it("covers every month", () => {
+    expect(Array.from({ length: 12 }, (_, i) => formatMonthDayShort(i + 1, 1))).toEqual([
+      "Jan 1",
+      "Feb 1",
+      "Mar 1",
+      "Apr 1",
+      "May 1",
+      "Jun 1",
+      "Jul 1",
+      "Aug 1",
+      "Sep 1",
+      "Oct 1",
+      "Nov 1",
+      "Dec 1",
+    ]);
+  });
+
+  it("is shorter than the full form for every month but the three-letter ones", () => {
+    // The whole reason it exists: the pill has to fit beside a name.
+    expect(formatMonthDayShort(9, 6).length).toBeLessThan(formatMonthDay(9, 6).length);
   });
 });

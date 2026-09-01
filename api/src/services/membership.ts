@@ -143,7 +143,9 @@ export async function setAccountOrganization(
     await clearInheritanceFor(tx, personId);
 
     // Family membership is parish-scoped, so it cannot survive the move.
-    await tx.query("update persons set family_id = null where id = $1", [personId]);
+    await tx.query("update persons set family_id = null, family_order = null where id = $1", [
+      personId,
+    ]);
     await cancelPendingJoinRequests(tx, personId);
 
     // Don't leave a family in the old parish pointing at them as its creator.

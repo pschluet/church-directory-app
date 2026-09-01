@@ -62,6 +62,32 @@ export function formatMonthDay(month: number, day: number, year?: number | null)
   return year ? `${name} ${day}, ${year}` : `${name} ${day}`;
 }
 
+const MONTHS_SHORT = [
+  "Jan",
+  "Feb",
+  "Mar",
+  "Apr",
+  "May",
+  "Jun",
+  "Jul",
+  "Aug",
+  "Sep",
+  "Oct",
+  "Nov",
+  "Dec",
+] as const;
+
+/**
+ * "Sep 6" -- for a pill sitting in a row next to a name, where "September" is
+ * the difference between the name fitting and the name being cut off.
+ *
+ * Only for the visible label. Anything a screen reader gets should use
+ * `formatMonthDay`, which has no width to fight over.
+ */
+export function formatMonthDayShort(month: number, day: number): string {
+  return `${MONTHS_SHORT[month - 1] ?? ""} ${day}`;
+}
+
 const SPECIAL_DATE_LABELS: Record<SpecialDateType, string> = {
   BIRTHDAY: "Birthday",
   ANNIVERSARY: "Wedding Anniversary",

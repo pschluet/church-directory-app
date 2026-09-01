@@ -1,19 +1,23 @@
 import { useState } from "react";
 import { useParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { FamilyDto, PersonDto, PersonSummaryDto } from "@shared";
+import type { FamilyDto, FamilyMemberDto, PersonDto, UpcomingDatesDto } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
+import { todayIso } from "../lib/format";
 import { useMe } from "../context/MeContext";
-import { PersonCard } from "../components/PersonCard";
-import { PhotoUpload } from "../components/PhotoUpload";
+import { FamilyMemberList } from "../components/FamilyMemberList";
+import { usePhotoPicker } from "../components/PhotoUpload";
 import { FamilyPhoto } from "../components/FamilyPhoto";
+import { SpecialDateList } from "../components/SpecialDateList";
 import {
   Button,
   ConfirmDialog,
   EmptyState,
   ErrorNotice,
   Field,
+  MenuButton,
+  MenuItem,
   Modal,
   PageHeading,
   Spinner,
@@ -21,11 +25,27 @@ import {
 } from "../components/ui";
 
 /**
- * A family: its members, its photo, and the requests waiting to join it.
+ * How far ahead the family's dates run: "starting from today and going to 1
+ * year from now".
+ *
+ * 365 rather than 366 so every annual date lands exactly once. A 366-day window
+ * starting today ends on today's month and day next year, which would list
+ * every date falling on it twice.
+ */
+const YEAR_AHEAD_DAYS = 365;
+
+/**
+ * A family: its members, its photo, its year of special dates, and the requests
+ * waiting to join it.
  *
  * Any member with an account can add family members who have none -- "a family
- * might have children that don't have an account in the app" -- and approve
- * requests from others.
+ * might have children that don't have an account in the app" -- approve requests
+ * from others, and arrange the household into whatever order makes sense to
+ * them.
+ *
+ * Every management action lives behind a menu rather than a row of buttons. The
+ * page is read far more often than it is edited, and on a phone the buttons cost
+ * more room than the members they act on.
  */
 export function FamilyDetail() {
   const { id } = useParams<{ id: string }>();
@@ -37,7 +57,7 @@ export function FamilyDetail() {
   const [busy, setBusy] = useState(false);
   const [renaming, setRenaming] = useState(false);
   const [name, setName] = useState("");
-  const [removing, setRemoving] = useState<PersonSummaryDto | null>(null);
+  const [removing, setRemoving] = useState<FamilyMemberDto | null>(null);
   const [addingExisting, setAddingExisting] = useState(false);
   /*
    * Only ever set by a mutation. The read's own failure is `familyQuery.error`,
@@ -45,17 +65,53 @@ export function FamilyDetail() {
    * write goes wrong -- see the branch under this.
    */
   const [actionError, setActionError] = useState<string | null>(null);
+  /*
+   * A drag is applied here first and sent afterwards. Without it the members
+   * would snap back to the server's order for as long as the round trip takes,
+   * which on a phone reads as the drag having failed.
+   */
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
 
   const myPersonId = me?.appUser.personId ?? null;
+  // Fixed for the life of the render so the age the API computes and the window
+  // the dates run over cannot straddle midnight.
+  const [today] = useState(todayIso);
 
   const familyQuery = useQuery({
     queryKey: qk.family(organizationId, id ?? ""),
-    queryFn: ({ signal }) => api<FamilyDto>(`/families/${id}`, { signal }),
+    queryFn: ({ signal }) => api<FamilyDto>(`/families/${id}`, { query: { today }, signal }),
+    enabled: Boolean(id),
+  });
+
+  const datesQuery = useQuery({
+    queryKey: qk.familyUpcomingDates(organizationId, id ?? "", today),
+    queryFn: ({ signal }) =>
+      api<UpcomingDatesDto>("/special-dates/upcoming", {
+        query: { start: today, days: YEAR_AHEAD_DAYS, familyId: id! },
+        signal,
+      }),
     enabled: Boolean(id),
   });
 
   const family = familyQuery.data ?? null;
   const error = actionError ?? familyQuery.error?.message ?? null;
+
+  async function attachPhoto(photoKey: string | null, width?: number, height?: number) {
+    // The crop is free-form here, so its dimensions go with the key: they are
+    // what lets the photo's box be reserved before it loads.
+    await api(`/families/${id}/photo`, {
+      method: "PUT",
+      body: photoKey ? { photoKey, photoWidth: width, photoHeight: height } : { photoKey: null },
+    });
+    await reload();
+  }
+
+  // Keyed off the route param, not `family.id`: this has to be called on every
+  // render, including the one that returns the spinner below.
+  const photoPicker = usePhotoPicker({
+    owner: { familyId: id ?? "" },
+    onUploaded: ({ photoKey, width, height }) => attachPhoto(photoKey, width, height),
+  });
 
   // Members, the family list that counts them, and the join requests admins
   // see all hang off the same prefix.
@@ -97,7 +153,7 @@ export function FamilyDetail() {
     await reloadMe();
   }
 
-  async function removeMember(member: PersonSummaryDto): Promise<void> {
+  async function removeMember(member: FamilyMemberDto): Promise<void> {
     setBusy(true);
     setActionError(null);
     try {
@@ -110,6 +166,21 @@ export function FamilyDetail() {
       setActionError(err instanceof Error ? err.message : "Could not remove them");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function reorder(personIds: string[]): Promise<void> {
+    setPendingOrder(personIds);
+    setActionError(null);
+    try {
+      await api(`/families/${family!.id}/member-order`, { method: "PUT", body: { personIds } });
+      await reload();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not save that order");
+    } finally {
+      // Either the reload has brought the saved order back or the order never
+      // took; either way the server's answer is the one to show now.
+      setPendingOrder(null);
     }
   }
 
@@ -126,32 +197,47 @@ export function FamilyDetail() {
     }
   }
 
+  // A drag in flight wins over the cached order behind it.
+  const members = pendingOrder
+    ? pendingOrder
+        .map((personId) => family.members.find((m) => m.id === personId))
+        .filter((m): m is FamilyMemberDto => Boolean(m))
+    : family.members;
+
   return (
     <>
       <PageHeading
         title={family.name}
         subtitle={`${family.members.length} ${family.members.length === 1 ? "member" : "members"}`}
+        // The only action here is a three-dots menu, which does not deserve a
+        // row of its own on a phone.
+        compactActions={family.canEdit}
         actions={
           <>
             {family.canEdit && (
-              <>
-                <Button variant="secondary" onClick={() => setAddingMember(true)}>
-                  Create a new person
-                </Button>
-                <Button variant="secondary" onClick={() => setAddingExisting(true)}>
-                  Add an existing person
-                </Button>
-                <Button
-                  variant="ghost"
-                  onClick={() => {
+              <MenuButton label="Family actions">
+                <MenuItem onSelect={photoPicker.open}>
+                  {family.thumbUrl ? "Change photo" : "Add a photo"}
+                </MenuItem>
+                {family.thumbUrl && (
+                  <MenuItem danger onSelect={() => void attachPhoto(null)}>
+                    Remove photo
+                  </MenuItem>
+                )}
+                <MenuItem onSelect={() => setAddingMember(true)}>Create a new person</MenuItem>
+                <MenuItem onSelect={() => setAddingExisting(true)}>Add an existing person</MenuItem>
+                <MenuItem
+                  onSelect={() => {
                     setName(family.name);
                     setRenaming(true);
                   }}
                 >
-                  Rename
-                </Button>
-              </>
+                  Rename family
+                </MenuItem>
+              </MenuButton>
             )}
+            {/* Not in the menu: for someone who is not in this family, this is
+                the whole reason they opened the page. */}
             {!family.isMember && !family.canEdit && myPersonId && (
               <Button onClick={() => void requestToJoin()} disabled={busy}>
                 Ask to join this family
@@ -161,50 +247,32 @@ export function FamilyDetail() {
         }
       />
 
-      {/* The photo is the page's centrepiece: centred, with its controls under
-          it rather than off to one side. */}
-      <div className="mb-6 flex flex-col items-center gap-4">
-        {family.canEdit ? (
-          <PhotoUpload
-            stacked
-            owner={{ familyId: family.id }}
+      {/* The file input and the cropper, with no control of their own: the photo
+          is added from the menu above. */}
+      {family.canEdit && photoPicker.elements}
+
+      {/* Only ever a photo. "Don't show the add a photo button or the photo
+          placeholder unless a family photo has been added" -- so a family
+          without one gets the space back rather than an empty circle. */}
+      {family.thumbUrl && (
+        <div className="mb-6 flex flex-col items-center gap-4">
+          <FamilyPhoto
             thumbUrl={family.thumbUrl}
             fullUrl={family.fullUrl}
-            photoWidth={family.photoWidth}
-            photoHeight={family.photoHeight}
-            person={{ firstName: family.name, lastName: null }}
-            onUploaded={async ({ photoKey, width, height }) => {
-              // The crop is free-form here, so its dimensions go with the key:
-              // they are what lets the photo's box be reserved before it loads.
-              await api(`/families/${family.id}/photo`, {
-                method: "PUT",
-                body: { photoKey, photoWidth: width, photoHeight: height },
-              });
-              await reload();
-            }}
-            onRemove={async () => {
-              await api(`/families/${family.id}/photo`, {
-                method: "PUT",
-                body: { photoKey: null },
-              });
-              await reload();
-            }}
+            width={family.photoWidth}
+            height={family.photoHeight}
+            familyName={family.name}
           />
-        ) : (
-          family.thumbUrl && (
-            <FamilyPhoto
-              thumbUrl={family.thumbUrl}
-              fullUrl={family.fullUrl}
-              width={family.photoWidth}
-              height={family.photoHeight}
-              familyName={family.name}
-            />
-          )
-        )}
-      </div>
+        </div>
+      )}
 
       {/* A failed mutation reports here rather than replacing the page. */}
       {error && <ErrorNotice message={error} />}
+      {photoPicker.error && (
+        <p role="alert" className="mb-4 font-bold text-primary">
+          {photoPicker.error}
+        </p>
+      )}
 
       {family.pendingJoinRequests.length > 0 && (
         <section className="mb-6 rounded-lg border border-accent/40 bg-accent/5 p-4">
@@ -231,23 +299,32 @@ export function FamilyDetail() {
       {family.members.length === 0 ? (
         <EmptyState title="Nobody in this family yet" />
       ) : (
-        <ul className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
-          {family.members.map((member) => (
-            <li key={member.id} className="flex flex-col gap-1">
-              <PersonCard person={member} />
-              {family.canEdit && (
-                <button
-                  type="button"
-                  className="tap-target self-end text-sm font-bold text-primary hover:text-accent"
-                  onClick={() => setRemoving(member)}
-                >
-                  {member.id === myPersonId ? "Leave this family" : "Remove from family"}
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
+        <FamilyMemberList
+          members={members}
+          anniversaries={family.anniversaries}
+          canEdit={family.canEdit}
+          myPersonId={myPersonId}
+          onRemove={setRemoving}
+          onReorder={(personIds) => void reorder(personIds)}
+        />
       )}
+
+      <section className="mt-8">
+        <h2 className="mb-3 text-xl font-bold text-ink">The year ahead</h2>
+        {datesQuery.isPending ? (
+          <Spinner label="Loading dates" />
+        ) : datesQuery.error ? (
+          <ErrorNotice
+            message={datesQuery.error.message}
+            onRetry={() => void datesQuery.refetch()}
+          />
+        ) : (
+          <SpecialDateList
+            days={datesQuery.data?.days ?? []}
+            emptyTitle="No special dates in the next year"
+          />
+        )}
+      </section>
 
       {addingMember && (
         <Modal title="Add a family member" onClose={() => setAddingMember(false)}>

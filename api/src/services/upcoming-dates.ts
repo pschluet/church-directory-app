@@ -102,6 +102,44 @@ export function yearCountFor(
   return count >= 0 ? count : null;
 }
 
+/**
+ * Whole years elapsed as of `todayIso` -- someone's age today, or a couple's
+ * years married today.
+ *
+ * Distinct from `yearCountFor`, which answers "how old will they be *on* that
+ * occurrence" for the upcoming-dates list: on 3 May, that says 41 for a 4 May
+ * birthday while this says 40. The family page states a fact about now, so it
+ * needs the second answer.
+ *
+ * Null unless the person opted in and a year is on record, for exactly the
+ * reason given on `yearCountFor`: showing an age is opt-in, so the default has
+ * to be silence.
+ */
+export function completedYearsOn(
+  todayIso: string,
+  month: number,
+  day: number,
+  storedYear: number | null,
+  showYearCount: boolean
+): number | null {
+  if (!showYearCount || storedYear == null) return null;
+
+  const today = parseIsoDate(todayIso);
+  // 29 February has no anniversary in three years out of four. Treat 1 March as
+  // the boundary, which is the same choice expandWindow makes when it surfaces
+  // a leap-day birthday on 1 March rather than skipping it.
+  const effectiveMonth = month === 2 && day === 29 && !isLeapYear(today.year) ? 3 : month;
+  const effectiveDay = month === 2 && day === 29 && !isLeapYear(today.year) ? 1 : day;
+
+  const hasOccurredThisYear =
+    today.month > effectiveMonth || (today.month === effectiveMonth && today.day >= effectiveDay);
+
+  const years = today.year - storedYear - (hasOccurredThisYear ? 0 : 1);
+  // A year in the future, or a date so recent the count is negative, is bad
+  // data rather than something to render as "-1 years old".
+  return years >= 0 ? years : null;
+}
+
 /** All the days in one calendar month, for the month-grid view. */
 export function expandMonth(year: number, month: number): WindowDay[] {
   const daysInThisMonth = new Date(Date.UTC(year, month, 0)).getUTCDate();

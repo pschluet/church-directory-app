@@ -6,6 +6,7 @@ import {
   createFamily,
   createNonUserPerson,
   createOrganization,
+  createSpecialDate,
   createUser,
   setInheritance,
   type CreatedUser,
@@ -460,6 +461,284 @@ describe.skipIf(!hasDb)("families and the gated join flow", () => {
         [child]
       );
       expect(rows.map((r) => r.status)).toEqual(["CANCELLED"]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // What the family page shows: ages, couples, and the order members sit in.
+  // -------------------------------------------------------------------------
+  describe("the family page payload", () => {
+    /** `today` is always passed explicitly so these never drift with the clock. */
+    const detail = (u: CreatedUser, today = "2026-09-01") =>
+      as(u).call("GET", `/api/families/${schlueters}?today=${today}`);
+
+    const memberNamed = (body: any, firstName: string) =>
+      body.members.find((m: any) => m.firstName === firstName);
+
+    it("shows an age when the person opted in to showing it", async () => {
+      await createSpecialDate(db(), {
+        organizationId: orgId,
+        personId: member.personId!,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 4,
+        year: 1985,
+        showYearCount: true,
+      });
+
+      const { body } = await detail(member);
+      expect(memberNamed(body, "Paul").age).toBe(41);
+    });
+
+    it("withholds the age when they did not opt in, even from someone who may edit them", async () => {
+      const child = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Anna",
+      });
+      await createSpecialDate(db(), {
+        organizationId: orgId,
+        personId: child,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 4,
+        year: 2014,
+        showYearCount: false,
+      });
+
+      // `member` can edit an accountless family member, and still gets nothing:
+      // the requirement is "if they have opted in to show age".
+      const { body } = await detail(member);
+      expect(memberNamed(body, "Anna").canEdit).toBe(true);
+      expect(memberNamed(body, "Anna").age).toBeNull();
+    });
+
+    it("withholds the age when the birthday carries no year", async () => {
+      await createSpecialDate(db(), {
+        organizationId: orgId,
+        personId: member.personId!,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 4,
+        year: null,
+      });
+
+      const { body } = await detail(member);
+      expect(memberNamed(body, "Paul").age).toBeNull();
+    });
+
+    it("has no age for someone with no birthday at all", async () => {
+      const { body } = await detail(member);
+      expect(memberNamed(body, "Paul").age).toBeNull();
+    });
+
+    it("counts the age against the caller's today, not the server's", async () => {
+      await createSpecialDate(db(), {
+        organizationId: orgId,
+        personId: member.personId!,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 4,
+        year: 1985,
+        showYearCount: true,
+      });
+
+      expect(memberNamed((await detail(member, "2026-05-03")).body, "Paul").age).toBe(40);
+      expect(memberNamed((await detail(member, "2026-05-04")).body, "Paul").age).toBe(41);
+    });
+
+    it("rejects a today that is not a date", async () => {
+      const { status } = await as(member).call(
+        "GET",
+        `/api/families/${schlueters}?today=not-a-date`
+      );
+      expect(status).toBe(400);
+    });
+
+    it("pairs a couple who are both in the family", async () => {
+      const spouse = await createUser(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        email: "spouse@test.example",
+        firstName: "Sarah",
+      });
+      await createSpecialDate(db(), {
+        organizationId: orgId,
+        personId: member.personId!,
+        relatedPersonId: spouse.personId!,
+        type: "ANNIVERSARY",
+        month: 6,
+        day: 14,
+        year: 2010,
+        showYearCount: true,
+      });
+
+      const { body } = await detail(member);
+      expect(body.anniversaries).toHaveLength(1);
+      expect(body.anniversaries[0].personIds.sort()).toEqual(
+        [member.personId, spouse.personId].sort()
+      );
+      expect(body.anniversaries[0].month).toBe(6);
+      expect(body.anniversaries[0].day).toBe(14);
+      expect(body.anniversaries[0].yearCount).toBe(16);
+    });
+
+    it("withholds the years married when the couple did not opt in", async () => {
+      const spouse = await createUser(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        email: "spouse2@test.example",
+        firstName: "Sarah",
+      });
+      await createSpecialDate(db(), {
+        organizationId: orgId,
+        personId: member.personId!,
+        relatedPersonId: spouse.personId!,
+        type: "ANNIVERSARY",
+        month: 6,
+        day: 14,
+        year: 2010,
+        showYearCount: false,
+      });
+
+      const { body } = await detail(member);
+      // Still paired -- who is married to whom is not the private part.
+      expect(body.anniversaries).toHaveLength(1);
+      expect(body.anniversaries[0].yearCount).toBeNull();
+    });
+
+    it("does not pair a couple whose other half is outside the family", async () => {
+      const outsider = await createUser(db(), {
+        organizationId: orgId,
+        familyId: null,
+        email: "outsider@test.example",
+        firstName: "Elena",
+      });
+      await createSpecialDate(db(), {
+        organizationId: orgId,
+        personId: member.personId!,
+        relatedPersonId: outsider.personId!,
+        type: "ANNIVERSARY",
+        month: 6,
+        day: 14,
+        year: 2010,
+        showYearCount: true,
+      });
+
+      const { body } = await detail(member);
+      expect(body.anniversaries).toEqual([]);
+    });
+
+    it("orders members by name until someone arranges them", async () => {
+      await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Anna",
+        lastName: "Schlueter",
+      });
+      await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Zoe",
+        lastName: "Schlueter",
+      });
+
+      const { body } = await detail(member);
+      expect(body.members.map((m: any) => m.firstName)).toEqual(["Anna", "Paul", "Zoe"]);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  describe("custom member order", () => {
+    let anna: string;
+    let zoe: string;
+
+    beforeEach(async () => {
+      anna = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Anna",
+        lastName: "Schlueter",
+      });
+      zoe = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Zoe",
+        lastName: "Schlueter",
+      });
+    });
+
+    const order = (u: CreatedUser, personIds: string[]) =>
+      as(u).call("PUT", `/api/families/${schlueters}/member-order`, { personIds });
+
+    const names = async (u: CreatedUser) =>
+      (await as(u).call("GET", `/api/families/${schlueters}`)).body.members.map(
+        (m: any) => m.firstName
+      );
+
+    it("lets a member arrange the family, and the order sticks", async () => {
+      const { status } = await order(member, [zoe, member.personId!, anna]);
+      expect(status).toBe(204);
+      expect(await names(member)).toEqual(["Zoe", "Paul", "Anna"]);
+    });
+
+    it("lets an admin arrange a family they do not belong to", async () => {
+      expect((await order(admin, [zoe, anna, member.personId!])).status).toBe(204);
+      expect(await names(admin)).toEqual(["Zoe", "Anna", "Paul"]);
+    });
+
+    it("refuses someone who is neither a member nor an admin", async () => {
+      const { status } = await order(joiner, [zoe, anna, member.personId!]);
+      expect(status).toBe(403);
+      // And nothing moved.
+      expect(await names(member)).toEqual(["Anna", "Paul", "Zoe"]);
+    });
+
+    it("rejects a list that leaves a member out", async () => {
+      const { status } = await order(member, [zoe, anna]);
+      expect(status).toBe(400);
+      expect(await names(member)).toEqual(["Anna", "Paul", "Zoe"]);
+    });
+
+    it("rejects a list that names someone twice", async () => {
+      const { status } = await order(member, [zoe, zoe, anna, member.personId!]);
+      expect(status).toBe(400);
+    });
+
+    it("rejects a list carrying someone outside the family", async () => {
+      const { status } = await order(member, [zoe, anna, member.personId!, joiner.personId!]);
+      expect(status).toBe(400);
+    });
+
+    it("is idempotent, so a repeated write is harmless", async () => {
+      await order(member, [zoe, member.personId!, anna]);
+      await order(member, [zoe, member.personId!, anna]);
+      expect(await names(member)).toEqual(["Zoe", "Paul", "Anna"]);
+    });
+
+    it("gives up a position when the member leaves the family", async () => {
+      await order(member, [zoe, anna, member.personId!]);
+      await as(member).call("DELETE", `/api/families/${schlueters}/members/${zoe}`);
+
+      const { rows } = await db().query<{ family_order: number | null }>(
+        "select family_order from persons where id = $1",
+        [zoe]
+      );
+      expect(rows[0]!.family_order).toBeNull();
+    });
+
+    it("puts a newly added member at the end of an arranged family", async () => {
+      await order(member, [zoe, anna, member.personId!]);
+      const newcomer = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: null,
+        firstName: "Boris",
+      });
+      await as(member).call("POST", `/api/families/${schlueters}/members`, {
+        personId: newcomer,
+      });
+
+      expect(await names(member)).toEqual(["Zoe", "Anna", "Paul", "Boris"]);
     });
   });
 
