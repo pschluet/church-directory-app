@@ -109,28 +109,41 @@ const SELECT_APP_USER = `
 
 /**
  * Finds the account for a token, binding it to the Cognito subject the first
- * time we see one.
+ * time we see one and marking it ACTIVE on its first sign-in.
  *
- * The bind-by-email branch exists for exactly one case: the bootstrap super
- * admin, who is inserted by V3__bootstrap_super_admin.sql before any Cognito
- * user exists (the database is private, so there is no way to insert the row
- * later from a laptop). Every other account is created by the invite flow,
- * which calls AdminCreateUser and stores the sub in the same request. We
- * require a verified email so this cannot be used to hijack a row.
+ * Two steps, because the account can arrive by either route and both mean
+ * someone just signed in successfully. Resolving by sub is the ordinary case;
+ * `bindByEmail` is the exception. Activation then happens once, outside both,
+ * which is the whole point: it used to live inside the bind-by-email UPDATE, so
+ * every invited account -- which already has its sub, and so never took that
+ * branch -- stayed INVITED forever no matter how often they signed in.
  */
 export async function findOrBindAppUser(q: Queryable, claims: Claims): Promise<AppUserRow | null> {
-  const bySub = await one<AppUserRow>(q, `${SELECT_APP_USER} where u.cognito_sub = $1`, [
-    claims.sub,
-  ]);
-  if (bySub) return bySub;
+  const user =
+    (await one<AppUserRow>(q, `${SELECT_APP_USER} where u.cognito_sub = $1`, [claims.sub])) ??
+    (await bindByEmail(q, claims));
+  if (!user) return null;
 
+  return activateOnFirstSignIn(q, user);
+}
+
+/**
+ * Claims an account that has no Cognito subject yet.
+ *
+ * This exists for exactly one case: the bootstrap super admin, who is inserted
+ * by V3__bootstrap_super_admin.sql before any Cognito user exists (the database
+ * is private, so there is no way to insert the row later from a laptop). Every
+ * other account is created by the invite flow, which calls AdminCreateUser and
+ * stores the sub in the same request. We require a verified email so this
+ * cannot be used to hijack a row.
+ */
+async function bindByEmail(q: Queryable, claims: Claims): Promise<AppUserRow | null> {
   if (!claims.email || !claims.emailVerified) return null;
 
-  const bound = await one<AppUserRow>(
+  const bound = await one<{ id: string }>(
     q,
     `update app_users
-        set cognito_sub = $1,
-            status = case when status = 'INVITED' then 'ACTIVE' else status end
+        set cognito_sub = $1
       where email = $2
         and cognito_sub is null
       returning id`,
@@ -139,6 +152,27 @@ export async function findOrBindAppUser(q: Queryable, claims: Claims): Promise<A
   if (!bound) return null;
 
   return one<AppUserRow>(q, `${SELECT_APP_USER} where u.id = $1`, [bound.id]);
+}
+
+/**
+ * INVITED means "invited but never seen"; presenting a valid token settles
+ * that. The status is what the People & Accounts screen shows, and there is no
+ * other signal that anyone ever signed in.
+ *
+ * Only INVITED is touched, so a DISABLED account is not resurrected -- the
+ * WHERE clause repeats the check in case a concurrent request disabled the row
+ * between the SELECT and here. The updated status is patched into the row we
+ * already hold rather than re-selected, so the caller built from it (and the
+ * `status` GET /me echoes back) is correct on the very request that activated
+ * the account.
+ */
+async function activateOnFirstSignIn(q: Queryable, user: AppUserRow): Promise<AppUserRow> {
+  if (user.status !== "INVITED") return user;
+
+  await q.query("update app_users set status = 'ACTIVE' where id = $1 and status = 'INVITED'", [
+    user.id,
+  ]);
+  return { ...user, status: "ACTIVE" };
 }
 
 /**

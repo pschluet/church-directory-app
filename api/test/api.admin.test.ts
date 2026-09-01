@@ -272,6 +272,74 @@ describe.skipIf(!hasDb)("account management", () => {
     });
   });
 
+  describe("first sign-in", () => {
+    /** An account exactly as POST /api/admin/users leaves it: sub already stored. */
+    async function invitedRow(email: string, sub: string): Promise<void> {
+      await db().query(
+        `insert into app_users (cognito_sub, email, role, organization_id, status)
+         values ($1, $2, 'USER', $3, 'INVITED')`,
+        [sub, email, orgId]
+      );
+    }
+
+    const statusOf = async (email: string): Promise<string> => {
+      const { rows } = await db().query<{ status: string }>(
+        "select status from app_users where email = $1",
+        [email]
+      );
+      return rows[0]!.status;
+    };
+
+    it("marks an invited account active the first time it signs in", async () => {
+      await invitedRow("invitee@test.example", "sub-invitee");
+
+      const { status, body } = await client(db(), {
+        sub: "sub-invitee",
+        email: "invitee@test.example",
+      }).call("GET", "/api/me");
+
+      expect(status).toBe(200);
+      // Right on the request that activated it, not one request late.
+      expect(body.appUser.status).toBe("ACTIVE");
+      expect(await statusOf("invitee@test.example")).toBe("ACTIVE");
+    });
+
+    it("shows as active on the People & Accounts list once they have signed in", async () => {
+      await invitedRow("invitee@test.example", "sub-invitee");
+
+      const before = await as(admin).call("GET", "/api/admin/users");
+      expect(before.body.users.find((u: any) => u.email === "invitee@test.example").status).toBe(
+        "INVITED"
+      );
+
+      await client(db(), { sub: "sub-invitee", email: "invitee@test.example" }).call(
+        "GET",
+        "/api/me"
+      );
+
+      const after = await as(admin).call("GET", "/api/admin/users");
+      expect(after.body.users.find((u: any) => u.email === "invitee@test.example").status).toBe(
+        "ACTIVE"
+      );
+    });
+
+    it("does not resurrect a disabled account", async () => {
+      await db().query(
+        `insert into app_users (cognito_sub, email, role, organization_id, status)
+         values ('sub-disabled', 'disabled@test.example', 'USER', $1, 'DISABLED')`,
+        [orgId]
+      );
+
+      const { status } = await client(db(), {
+        sub: "sub-disabled",
+        email: "disabled@test.example",
+      }).call("GET", "/api/me");
+
+      expect(status).toBe(403);
+      expect(await statusOf("disabled@test.example")).toBe("DISABLED");
+    });
+  });
+
   describe("bootstrap super admin", () => {
     it("binds an unclaimed account to the Cognito subject on first sign-in", async () => {
       // V3__bootstrap_super_admin.sql inserts exactly this: a super admin row
