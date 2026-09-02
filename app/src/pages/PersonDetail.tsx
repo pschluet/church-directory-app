@@ -7,6 +7,7 @@ import type {
   MergeRequestDto,
   PersonDto,
   PersonMergeResultDto,
+  SpecialDateDto,
 } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
@@ -14,7 +15,7 @@ import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
 import { PersonForm } from "../components/PersonForm";
 import { PhoneLink } from "../components/PhoneLink";
-import { PhotoUpload } from "../components/PhotoUpload";
+import { usePhotoPicker } from "../components/usePhotoPicker";
 import { SpecialDateForm } from "../components/SpecialDateForm";
 import { PersonPicker, type PickedPerson } from "../components/PersonPicker";
 import {
@@ -23,6 +24,8 @@ import {
   ConfirmDialog,
   ErrorNotice,
   InfoPopover,
+  MenuButton,
+  MenuItem,
   Modal,
   Spinner,
 } from "../components/ui";
@@ -51,6 +54,7 @@ export function PersonDetail() {
   const [editingDateId, setEditingDateId] = useState<string | null>(null);
   const [merging, setMerging] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [removingDate, setRemovingDate] = useState<SpecialDateDto | null>(null);
   const [busy, setBusy] = useState(false);
   // Kept apart from the query's own error: a failed action must not replace the
   // record with a notice.
@@ -171,6 +175,24 @@ export function PersonDetail() {
     }
   };
 
+  /*
+   * Keyed off the route param rather than `person.id`, because a hook has to be
+   * called on every render -- including the ones that return the spinner or the
+   * notice just below.
+   *
+   * The picker is headless: it owns the hidden file input and the cropper, and
+   * the visible way in is the menu beside the name.
+   */
+  const savePhotoKey = async (photoKey: string | null): Promise<void> => {
+    applyPerson(
+      await api<PersonDto>(`/persons/${id}/photo`, { method: "PUT", body: { photoKey } })
+    );
+  };
+  const photoPicker = usePhotoPicker({
+    owner: { personId: id ?? "" },
+    onUploaded: ({ photoKey }) => savePhotoKey(photoKey),
+  });
+
   if (personQuery.isPending) return <Spinner label="Loading" />;
   if (personQuery.error) {
     return (
@@ -178,12 +200,6 @@ export function PersonDetail() {
     );
   }
   if (!person) return null;
-
-  const savePhoto = async (photoKey: string | null): Promise<void> => {
-    applyPerson(
-      await api<PersonDto>(`/persons/${person.id}/photo`, { method: "PUT", body: { photoKey } })
-    );
-  };
 
   const name = fullName(person);
   const address = formatMultilineAddress(person);
@@ -216,6 +232,20 @@ export function PersonDetail() {
       : canMergeRelative
         ? ("relative" as const)
         : null;
+
+  const removeDate = async (date: SpecialDateDto): Promise<void> => {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api(`/special-dates/${date.id}`, { method: "DELETE" });
+      setRemovingDate(null);
+      await reloadDates();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not remove that date");
+    } finally {
+      setBusy(false);
+    }
+  };
 
   const deletePerson = async (): Promise<void> => {
     setBusy(true);
@@ -278,32 +308,57 @@ export function PersonDetail() {
         </p>
       )}
       <div className="mb-6 flex flex-col gap-5 md:flex-row md:items-start md:gap-8">
-        {/* Fixed-width sidebar from md up, so the photo controls never crowd
-            the details beside them. */}
+        {/* Fixed-width sidebar from md up, so the photo never crowds the
+            details beside it. Nothing but the photo lives here any more -- its
+            controls are in the menu by the name. */}
         <div className="flex shrink-0 flex-col items-center gap-3 md:w-44">
-          {person.canEdit ? (
-            <PhotoUpload
-              stacked
-              owner={{ personId: person.id }}
-              thumbUrl={person.thumbUrl}
-              fullUrl={person.fullUrl}
-              person={person}
-              onUploaded={async ({ photoKey }) => {
-                await savePhoto(photoKey);
-              }}
-              onRemove={async () => {
-                await savePhoto(null);
-              }}
-            />
-          ) : (
-            <Avatar thumbUrl={person.thumbUrl} fullUrl={person.fullUrl} person={person} size="lg" />
+          <Avatar thumbUrl={person.thumbUrl} fullUrl={person.fullUrl} person={person} size="lg" />
+          {/* The file input and the cropper, with no control of their own. */}
+          {person.canEdit && photoPicker.elements}
+          {photoPicker.error && (
+            <p role="alert" className="text-center text-sm font-bold text-primary">
+              {photoPicker.error}
+            </p>
           )}
         </div>
 
         <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-3">
-            <h1 className="text-2xl font-bold text-ink md:text-3xl">{name}</h1>
-            {person.appUserId === null && <Badge>No account</Badge>}
+          {/* Two children rather than one wrapping row: the menu has to stay on
+              the name's line, and a long name with a badge after it has to be
+              free to wrap underneath without taking the menu down with it. */}
+          <div className="flex items-start justify-between gap-3">
+            <div className="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-1">
+              <h1 className="text-2xl font-bold text-ink md:text-3xl">{name}</h1>
+              {person.appUserId === null && <Badge>No account</Badge>}
+            </div>
+            {/* Everything that acts on the record, in one place: a row of
+                buttons here competed with the details it edits, and the photo
+                controls sat a column away from the rest. */}
+            {person.canEdit && (
+              <MenuButton label={`Actions for ${name}`} className="shrink-0">
+                <MenuItem onSelect={photoPicker.open}>
+                  {person.thumbUrl ? "Change photo" : "Add a photo"}
+                </MenuItem>
+                {person.thumbUrl && (
+                  <MenuItem danger onSelect={() => void savePhotoKey(null)}>
+                    Remove photo
+                  </MenuItem>
+                )}
+                <MenuItem onSelect={() => setEditing(true)}>Edit details</MenuItem>
+                {mergeOffer && (
+                  <MenuItem onSelect={() => setMerging(true)}>
+                    {mergeOffer === "own"
+                      ? "Merge a duplicate into my record"
+                      : "Merge into an account holder"}
+                  </MenuItem>
+                )}
+                {!hasAccount && (
+                  <MenuItem danger onSelect={() => setConfirmDelete(true)}>
+                    Delete this person
+                  </MenuItem>
+                )}
+              </MenuButton>
+            )}
           </div>
 
           {person.familyId && (
@@ -352,26 +407,6 @@ export function PersonDetail() {
               )}
             </DetailRow>
           </dl>
-
-          {person.canEdit && (
-            <div className="mt-5 flex flex-wrap gap-2">
-              <Button variant="secondary" onClick={() => setEditing(true)}>
-                Edit details
-              </Button>
-              {mergeOffer && (
-                <Button variant="secondary" onClick={() => setMerging(true)}>
-                  {mergeOffer === "own"
-                    ? "Merge a duplicate into my record…"
-                    : "Merge into an account holder…"}
-                </Button>
-              )}
-              {!hasAccount && (
-                <Button variant="ghost" onClick={() => setConfirmDelete(true)}>
-                  Delete this person
-                </Button>
-              )}
-            </div>
-          )}
         </div>
       </div>
 
@@ -394,57 +429,54 @@ export function PersonDetail() {
               const isTheirs = date.personId === person.id;
               const partner = specialDatePartner(date, person.id);
               return (
-                <li key={date.id} className="flex flex-wrap items-baseline gap-x-3 gap-y-1 py-3">
-                  <span className="font-bold text-ink">{specialDateLabel(date.type)}</span>
-                  <span className="inline-flex items-center gap-1.5">
-                    {formatMonthDay(date.month, date.day, date.year)}
-                    {/* A year we can see while `showYearCount` is off means the
-                        API judged us allowed to -- the person themselves, an
-                        admin, or the other half of an anniversary. Everyone else
-                        received `year: null`, so no "is this my page" check is
-                        needed here. */}
-                    {date.year != null && !date.showYearCount && (
-                      <InfoPopover
-                        label={`Why can I see the year of this ${specialDateLabel(date.type).toLowerCase()}?`}
-                        title="Not shown to others"
-                      >
-                        “{showYearCountLabel(date.type)}” is off for this date, so other members see
-                        only the day and month.
-                      </InfoPopover>
+                // Same split as the heading: the type and the menu are the row
+                // on a phone, and everything else about the date wraps below.
+                <li key={date.id} className="flex items-start gap-3 py-2">
+                  <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className="font-bold text-ink">{specialDateLabel(date.type)}</span>
+                    <span className="inline-flex items-center gap-1.5">
+                      {formatMonthDay(date.month, date.day, date.year)}
+                      {/* A year we can see while `showYearCount` is off means the
+                          API judged us allowed to -- the person themselves, an
+                          admin, or the other half of an anniversary. Everyone
+                          else received `year: null`, so no "is this my page"
+                          check is needed here. */}
+                      {date.year != null && !date.showYearCount && (
+                        <InfoPopover
+                          label={`Why can I see the year of this ${specialDateLabel(date.type).toLowerCase()}?`}
+                          title="Not shown to others"
+                        >
+                          “{showYearCountLabel(date.type)}” is off for this date, so other members
+                          see only the day and month.
+                        </InfoPopover>
+                      )}
+                    </span>
+                    {detail && <span className="text-sm font-bold text-accent">{detail}</span>}
+                    {partner && (
+                      <span className="text-sm text-ink-muted">
+                        with{" "}
+                        <Link
+                          to={`/people/${partner.id}`}
+                          className="text-primary transition hover:text-accent"
+                        >
+                          {partner.name}
+                        </Link>
+                      </span>
                     )}
-                  </span>
-                  {detail && <span className="text-sm font-bold text-accent">{detail}</span>}
-                  {partner && (
-                    <span className="text-sm text-ink-muted">
-                      with{" "}
-                      <Link
-                        to={`/people/${partner.id}`}
-                        className="text-primary transition hover:text-accent"
-                      >
-                        {partner.name}
-                      </Link>
-                    </span>
-                  )}
+                  </div>
                   {person.canEdit && isTheirs && (
-                    <span className="ml-auto flex gap-3 text-sm">
-                      <button
-                        type="button"
-                        className="font-bold text-primary hover:text-accent"
-                        onClick={() => setEditingDateId(date.id)}
-                      >
-                        Edit
-                      </button>
-                      <button
-                        type="button"
-                        className="font-bold text-primary hover:text-accent"
-                        onClick={async () => {
-                          await api(`/special-dates/${date.id}`, { method: "DELETE" });
-                          await reloadDates();
-                        }}
-                      >
-                        Remove
-                      </button>
-                    </span>
+                    // The date is in the label because nothing stops someone
+                    // holding two of the same type, and "Actions for
+                    // anniversary" twice over tells a screen reader nothing.
+                    <MenuButton
+                      label={`Actions for ${specialDateLabel(date.type).toLowerCase()} on ${formatMonthDay(date.month, date.day)}`}
+                      className="shrink-0"
+                    >
+                      <MenuItem onSelect={() => setEditingDateId(date.id)}>Edit date</MenuItem>
+                      <MenuItem danger onSelect={() => setRemovingDate(date)}>
+                        Remove date
+                      </MenuItem>
+                    </MenuButton>
                   )}
                 </li>
               );
@@ -464,6 +496,19 @@ export function PersonDetail() {
             await reloadAfterMerge(result);
           }}
         />
+      )}
+
+      {removingDate && (
+        <ConfirmDialog
+          title={`Remove this ${specialDateLabel(removingDate.type).toLowerCase()}?`}
+          confirmLabel="Remove"
+          busy={busy}
+          onConfirm={() => void removeDate(removingDate)}
+          onClose={() => setRemovingDate(null)}
+        >
+          {formatMonthDay(removingDate.month, removingDate.day, removingDate.year)} will no longer
+          appear on {person.firstName}'s record or in Special Dates.
+        </ConfirmDialog>
       )}
 
       {confirmDelete && (

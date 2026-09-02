@@ -7,7 +7,7 @@ import { qk } from "../lib/queryKeys";
 import { todayIso } from "../lib/format";
 import { useMe } from "../context/MeContext";
 import { FamilyMemberList } from "../components/FamilyMemberList";
-import { usePhotoPicker } from "../components/PhotoUpload";
+import { usePhotoPicker } from "../components/usePhotoPicker";
 import { FamilyPhoto } from "../components/FamilyPhoto";
 import { SpecialDateList } from "../components/SpecialDateList";
 import {

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MAX_PHOTO_BYTES } from "@shared";
-import { PhotoUpload } from "../src/components/PhotoUpload";
+import { usePhotoPicker } from "../src/components/usePhotoPicker";
 
 const uploadPhoto = vi.fn();
 vi.mock("../src/lib/api", () => ({
@@ -25,9 +25,25 @@ vi.mock("../src/components/PhotoCropper", () => ({
   ),
 }));
 
-const PERSON = { firstName: "Layla", lastName: "Haddad" };
+/**
+ * The hook is headless, so a test needs something to render its `elements` and
+ * an error to read. Both pages that use it do the same, with a menu item in
+ * place of the button.
+ */
+function Harness({ owner }: { owner: { personId: string } | { familyId: string } }) {
+  const picker = usePhotoPicker({ owner, onUploaded: vi.fn() });
+  return (
+    <>
+      {picker.elements}
+      <button type="button" onClick={picker.open}>
+        Add a photo
+      </button>
+      {picker.error && <p role="alert">{picker.error}</p>}
+    </>
+  );
+}
 
-/** The input is sr-only and label-less by design; the button drives it. */
+/** The input is sr-only and label-less by design; `open()` drives it. */
 function fileInput(): HTMLInputElement {
   const input = document.querySelector<HTMLInputElement>("input[type=file]");
   if (!input) throw new Error("no file input rendered");
@@ -40,17 +56,9 @@ function pick(name = "face.jpg", type = "image/jpeg", size = 1024): File {
   return file;
 }
 
-describe("PhotoUpload", () => {
+describe("usePhotoPicker", () => {
   it("opens the cropper instead of uploading the file as picked", async () => {
-    render(
-      <PhotoUpload
-        owner={{ personId: "p1" }}
-        thumbUrl={null}
-        fullUrl={null}
-        person={PERSON}
-        onUploaded={vi.fn()}
-      />
-    );
+    render(<Harness owner={{ personId: "p1" }} />);
 
     await userEvent.upload(fileInput(), pick());
 
@@ -59,45 +67,29 @@ describe("PhotoUpload", () => {
   });
 
   it("locks a person to a square crop and leaves a family free-form", async () => {
-    const { unmount } = render(
-      <PhotoUpload
-        owner={{ personId: "p1" }}
-        thumbUrl={null}
-        fullUrl={null}
-        person={PERSON}
-        onUploaded={vi.fn()}
-      />
-    );
+    const { unmount } = render(<Harness owner={{ personId: "p1" }} />);
     await userEvent.upload(fileInput(), pick());
     expect(await screen.findByLabelText("cropper:person")).toBeInTheDocument();
     unmount();
 
-    render(
-      <PhotoUpload
-        owner={{ familyId: "f1" }}
-        thumbUrl={null}
-        fullUrl={null}
-        person={{ firstName: "Haddad", lastName: null }}
-        onUploaded={vi.fn()}
-      />
-    );
+    render(<Harness owner={{ familyId: "f1" }} />);
     await userEvent.upload(fileInput(), pick());
     expect(await screen.findByLabelText("cropper:family")).toBeInTheDocument();
   });
 
-  it("rejects a file type the cropper cannot decode", async () => {
-    render(
-      <PhotoUpload
-        owner={{ personId: "p1" }}
-        thumbUrl={null}
-        fullUrl={null}
-        person={PERSON}
-        onUploaded={vi.fn()}
-      />
-    );
+  it("hides the input from the tab order, since a menu item is the way in", () => {
+    render(<Harness owner={{ personId: "p1" }} />);
+
+    const input = fileInput();
+    expect(input).toHaveAttribute("aria-hidden", "true");
+    expect(input).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("rejects a file type the cropper cannot decode", () => {
+    render(<Harness owner={{ personId: "p1" }} />);
 
     // fireEvent rather than userEvent.upload: the latter honours the input's
-    // `accept` attribute and would simply drop the file, so the component's own
+    // `accept` attribute and would simply drop the file, so the hook's own
     // check -- the one that matters, since `accept` is only a hint -- would
     // never run.
     fireEvent.change(fileInput(), { target: { files: [pick("scan.gif", "image/gif")] } });
@@ -110,15 +102,7 @@ describe("PhotoUpload", () => {
     // The reported bug. Nothing about the upload cares how big the original is
     // any more -- it is cropped and downscaled locally and never leaves the
     // browser -- so the only ceiling is what the decode can hold.
-    render(
-      <PhotoUpload
-        owner={{ personId: "p1" }}
-        thumbUrl={null}
-        fullUrl={null}
-        person={PERSON}
-        onUploaded={vi.fn()}
-      />
-    );
+    render(<Harness owner={{ personId: "p1" }} />);
 
     await userEvent.upload(fileInput(), pick("big.jpg", "image/jpeg", 12 * 1024 * 1024));
 
@@ -127,34 +111,11 @@ describe("PhotoUpload", () => {
   });
 
   it("still rejects an oversized original, which has to be decoded to be cropped", async () => {
-    render(
-      <PhotoUpload
-        owner={{ personId: "p1" }}
-        thumbUrl={null}
-        fullUrl={null}
-        person={PERSON}
-        onUploaded={vi.fn()}
-      />
-    );
+    render(<Harness owner={{ personId: "p1" }} />);
 
     await userEvent.upload(fileInput(), pick("huge.jpg", "image/jpeg", MAX_PHOTO_BYTES + 1));
 
     expect(screen.getByRole("alert")).toHaveTextContent(/too large/i);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-  });
-
-  it("shows a family's photo whole rather than as a circle", () => {
-    render(
-      <PhotoUpload
-        owner={{ familyId: "f1" }}
-        thumbUrl="/photos/org/family/f1/01A/thumb"
-        fullUrl="/photos/org/family/f1/01A/full"
-        photoWidth={1600}
-        photoHeight={1067}
-        person={{ firstName: "Haddad", lastName: null }}
-        onUploaded={vi.fn()}
-      />
-    );
-    expect(screen.getByAltText("The Haddad family")).toBeInTheDocument();
   });
 });

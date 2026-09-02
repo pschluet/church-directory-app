@@ -3,9 +3,7 @@ import type { ReactNode } from "react";
 import { MAX_PHOTO_BYTES, PHOTO_CONTENT_TYPES } from "@shared";
 import { uploadPhoto } from "../lib/api";
 import type { Renditions } from "../lib/images";
-import { Avatar } from "./Avatar";
-import { FamilyPhoto } from "./FamilyPhoto";
-import { Button, Spinner } from "./ui";
+import { Spinner } from "./ui";
 
 /**
  * Loaded on demand. react-image-crop and its stylesheet are only needed by
@@ -28,12 +26,14 @@ export interface UploadedPhoto {
  * Picking a photo, framing it, and uploading the renditions -- without any
  * opinion about what the control looks like.
  *
- * Split out from PhotoUpload because the family page drives this from a menu
- * item and renders the photo itself: "don't show the add a photo button or the
- * photo placeholder unless a family photo has been added" leaves nothing for
- * PhotoUpload's own button and preview to be. `elements` has to be rendered
- * somewhere for `open()` to work -- it is the file input the click goes to, plus
- * the cropper once a file is chosen.
+ * Headless because both pages that use it drive the picker from a three-dots
+ * menu and render the photo themselves: on the family page "don't show the add
+ * a photo button or the photo placeholder unless a family photo has been added"
+ * leaves nothing for a built-in button and preview to be, and on the person page
+ * the photo sits in a column of its own, away from the menu that acts on it.
+ *
+ * `elements` has to be rendered somewhere for `open()` to work -- it is the file
+ * input the click goes to, plus the cropper once a file is chosen.
  */
 export function usePhotoPicker({
   owner,
@@ -131,92 +131,4 @@ export function usePhotoPicker({
   );
 
   return { open: () => inputRef.current?.click(), elements, busy, error };
-}
-
-/**
- * A photo with its own controls under it: the preview, an add/change button, and
- * a remove button once there is something to remove.
- *
- * The file is not uploaded on selection: it opens the cropper, and what goes to
- * S3 is what was framed, downscaled to the sizes the app actually renders. The
- * original never leaves the browser.
- */
-export function PhotoUpload({
-  owner,
-  thumbUrl,
-  fullUrl,
-  person,
-  photoWidth = null,
-  photoHeight = null,
-  onUploaded,
-  onRemove,
-  /**
-   * Keeps the controls centred under the photo at every width. The person page
-   * puts this in a narrow left column, where letting it spread sideways pushes
-   * the buttons into the details beside it; the family page wants the photo
-   * centred on the page with its buttons below.
-   */
-  stacked = false,
-}: {
-  owner: { personId: string } | { familyId: string };
-  thumbUrl: string | null;
-  fullUrl: string | null;
-  person: { firstName: string; lastName: string | null };
-  photoWidth?: number | null;
-  photoHeight?: number | null;
-  onUploaded: (photo: UploadedPhoto) => Promise<void> | void;
-  onRemove?: () => void | Promise<void>;
-  stacked?: boolean;
-}) {
-  const picker = usePhotoPicker({ owner, onUploaded });
-  const isFamily = "familyId" in owner;
-
-  return (
-    <div
-      className={
-        stacked
-          ? "flex flex-col items-center gap-3"
-          : "flex flex-col items-center gap-3 sm:flex-row sm:items-start"
-      }
-    >
-      {isFamily && thumbUrl ? (
-        <FamilyPhoto
-          thumbUrl={thumbUrl}
-          fullUrl={fullUrl}
-          width={photoWidth}
-          height={photoHeight}
-          familyName={person.firstName}
-        />
-      ) : (
-        <Avatar thumbUrl={thumbUrl} fullUrl={fullUrl} person={person} size="lg" />
-      )}
-
-      <div
-        className={
-          stacked
-            ? "flex flex-col items-center gap-2"
-            : "flex flex-col items-center gap-2 sm:items-start"
-        }
-      >
-        {picker.elements}
-        <div
-          className={`flex flex-wrap gap-2 ${stacked ? "justify-center" : "justify-center sm:justify-start"}`}
-        >
-          <Button variant="secondary" disabled={picker.busy} onClick={picker.open}>
-            {picker.busy ? "Uploading…" : thumbUrl ? "Change photo" : "Add photo"}
-          </Button>
-          {thumbUrl && onRemove && (
-            <Button variant="ghost" disabled={picker.busy} onClick={() => void onRemove()}>
-              Remove
-            </Button>
-          )}
-        </div>
-        {picker.error && (
-          <p role="alert" className="text-sm font-bold text-primary">
-            {picker.error}
-          </p>
-        )}
-      </div>
-    </div>
-  );
 }

@@ -81,9 +81,11 @@ function buildPerson(specialDates: SpecialDateDto[]): PersonDto {
   };
 }
 
-function renderPage(specialDates: SpecialDateDto[]) {
-  api.mockImplementation((path: string) => {
-    if (path === "/persons/person-1") return Promise.resolve(buildPerson(specialDates));
+function renderPage(specialDates: SpecialDateDto[], overrides: Partial<PersonDto> = {}) {
+  api.mockImplementation((path: string, options?: { method?: string }) => {
+    if (options?.method) return Promise.resolve({});
+    if (path === "/persons/person-1")
+      return Promise.resolve({ ...buildPerson(specialDates), ...overrides });
     return Promise.resolve({ people: [], families: [] });
   });
   return renderWithProviders(
@@ -154,6 +156,61 @@ describe("PersonDetail special dates", () => {
     expect(await screen.findByText("May 4, 1985")).toBeInTheDocument();
     expect(infoButton()).toBeNull();
   });
+
+  // -------------------------------------------------------------------------
+  describe("the menu on a date row", () => {
+    // The type alone would not do: nothing stops two dates of the same type.
+    const dateMenu = /actions for birthday on may 4/i;
+
+    it("holds edit and remove behind one button", async () => {
+      renderPage([birthday()], { canEdit: true });
+
+      await userEvent.click(await screen.findByRole("button", { name: dateMenu }));
+      expect(screen.getByRole("menuitem", { name: /edit date/i })).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: /remove date/i })).toBeInTheDocument();
+    });
+
+    it("shows nothing to someone who cannot edit the record", async () => {
+      renderPage([birthday()]);
+
+      await screen.findByText("May 4, 1985");
+      expect(screen.queryByRole("button", { name: dateMenu })).not.toBeInTheDocument();
+    });
+
+    it("removes nothing until the removal is confirmed", async () => {
+      renderPage([birthday()], { canEdit: true });
+
+      await userEvent.click(await screen.findByRole("button", { name: dateMenu }));
+      await userEvent.click(screen.getByRole("menuitem", { name: /remove date/i }));
+      expect(api).not.toHaveBeenCalledWith("/special-dates/date-1", { method: "DELETE" });
+
+      await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith("/special-dates/date-1", { method: "DELETE" })
+      );
+    });
+
+    it("reports a failed removal rather than swallowing it", async () => {
+      api.mockImplementation((path: string, options?: { method?: string }) => {
+        if (options?.method === "DELETE") return Promise.reject(new Error("Date is locked"));
+        if (path === "/persons/person-1")
+          return Promise.resolve({ ...buildPerson([birthday()]), canEdit: true });
+        return Promise.resolve({ people: [], families: [] });
+      });
+      renderWithProviders(
+        <Routes>
+          <Route path="/people/:id" element={<PersonDetail />} />
+        </Routes>,
+        { initialEntries: ["/people/person-1"] }
+      );
+
+      await userEvent.click(await screen.findByRole("button", { name: dateMenu }));
+      await userEvent.click(screen.getByRole("menuitem", { name: /remove date/i }));
+      await userEvent.click(screen.getByRole("button", { name: "Remove" }));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent("Date is locked");
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -198,6 +255,24 @@ function render(subject: PersonDto, mergeRequests: MergeRequestDto[] = []) {
 }
 
 const button = (name: RegExp) => screen.queryByRole("button", { name });
+const menuitem = (name: RegExp) => screen.queryByRole("menuitem", { name });
+
+/**
+ * Everything that acts on the record now lives behind one three-dots button, so
+ * a test that wants an action has to open the menu to get at it.
+ */
+async function openRecordMenu(): Promise<void> {
+  await userEvent.click(await screen.findByRole("button", { name: /actions for/i }));
+}
+
+/** The same, for a case that has to drive its own user with fake timers. */
+async function chooseRecordAction(
+  name: RegExp,
+  user: { click: (element: Element) => Promise<void> } = userEvent
+): Promise<void> {
+  await user.click(await screen.findByRole("button", { name: /actions for/i }));
+  await user.click(await screen.findByRole("menuitem", { name }));
+}
 
 describe("PersonDetail merging and deleting", () => {
   beforeEach(() => {
@@ -208,24 +283,62 @@ describe("PersonDetail merging and deleting", () => {
     meState.isAdmin = false;
   });
 
+  it("keeps every action on the record behind one button", async () => {
+    meState.personId = "someone-else";
+    render(person({ appUserId: null, canEdit: true, familyId: "family-1" }));
+    await openRecordMenu();
+
+    for (const label of [
+      /add a photo/i,
+      /edit details/i,
+      /merge into an account holder/i,
+      /delete this person/i,
+    ]) {
+      expect(await screen.findByRole("menuitem", { name: label })).toBeInTheDocument();
+    }
+    // And nothing is left loose beside the details it edits.
+    expect(button(/edit details/i)).not.toBeInTheDocument();
+  });
+
+  it("offers to remove the photo only once there is one", async () => {
+    render(person({ canEdit: true }));
+    await openRecordMenu();
+
+    expect(screen.getByRole("menuitem", { name: /add a photo/i })).toBeInTheDocument();
+    expect(menuitem(/remove photo/i)).not.toBeInTheDocument();
+  });
+
+  it("offers to change or remove a photo that is already there", async () => {
+    render(person({ canEdit: true, thumbUrl: "https://example.test/layla.jpg" }));
+    await openRecordMenu();
+
+    expect(screen.getByRole("menuitem", { name: /change photo/i })).toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /remove photo/i })).toBeInTheDocument();
+    expect(menuitem(/add a photo/i)).not.toBeInTheDocument();
+  });
+
   it("offers to absorb a duplicate on your own record, and no delete", async () => {
     render(person({ canEdit: true }));
+    await openRecordMenu();
 
     expect(
-      await screen.findByRole("button", { name: /merge a duplicate into my record/i })
+      await screen.findByRole("menuitem", { name: /merge a duplicate into my record/i })
     ).toBeInTheDocument();
     // You cannot delete a record that has an account -- the API refuses it too.
-    expect(button(/delete this person/i)).not.toBeInTheDocument();
+    expect(menuitem(/delete this person/i)).not.toBeInTheDocument();
   });
 
   it("offers merge and delete on an account-less relative", async () => {
-    render(person({ id: "person-1", appUserId: null, canEdit: true, familyId: "family-1" }));
+    // Before the render, not after: nothing re-renders on a change to this, so
+    // setting it late only works by accident of a later refetch.
     meState.personId = "someone-else";
+    render(person({ id: "person-1", appUserId: null, canEdit: true, familyId: "family-1" }));
+    await openRecordMenu();
 
     expect(
-      await screen.findByRole("button", { name: /merge into an account holder/i })
+      await screen.findByRole("menuitem", { name: /merge into an account holder/i })
     ).toBeInTheDocument();
-    expect(button(/delete this person/i)).toBeInTheDocument();
+    expect(menuitem(/delete this person/i)).toBeInTheDocument();
   });
 
   it("offers neither on someone you cannot edit", async () => {
@@ -233,22 +346,23 @@ describe("PersonDetail merging and deleting", () => {
     render(person({ appUserId: null, canEdit: false }));
 
     await screen.findByText("Layla Haddad");
-    expect(button(/merge/i)).not.toBeInTheDocument();
-    expect(button(/delete this person/i)).not.toBeInTheDocument();
+    // No menu at all, so none of it is reachable.
+    expect(button(/actions for/i)).not.toBeInTheDocument();
   });
 
   it("stands down while a merge is already pending", async () => {
     render(person({ canEdit: true }), [mergeRequest({ canDecide: false })]);
 
     expect(await screen.findByText(/waiting to be approved/i)).toBeInTheDocument();
-    expect(button(/merge a duplicate/i)).not.toBeInTheDocument();
+    await openRecordMenu();
+    expect(menuitem(/merge a duplicate/i)).not.toBeInTheDocument();
   });
 
   it("sends nothing until the delete is confirmed", async () => {
     meState.personId = "someone-else";
     render(person({ appUserId: null, canEdit: true, familyId: "family-1" }));
 
-    await userEvent.click(await screen.findByRole("button", { name: /delete this person/i }));
+    await chooseRecordAction(/delete this person/i);
     expect(api).not.toHaveBeenCalledWith("/persons/person-1", { method: "DELETE" });
 
     await userEvent.click(screen.getByRole("button", { name: "Delete" }));
@@ -321,9 +435,7 @@ describe("PersonDetail merging and deleting", () => {
       withLookup(person({ canEdit: true }), { id: "dup-9", name: "Layla H" });
 
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-      await user.click(
-        await screen.findByRole("button", { name: /merge a duplicate into my record/i })
-      );
+      await chooseRecordAction(/merge a duplicate into my record/i, user);
       await pick(/the duplicate record/i, "Layla H");
 
       await waitFor(() =>
@@ -342,9 +454,7 @@ describe("PersonDetail merging and deleting", () => {
       });
 
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-      await user.click(
-        await screen.findByRole("button", { name: /merge into an account holder/i })
-      );
+      await chooseRecordAction(/merge into an account holder/i, user);
       await pick(/the account holder/i, "Layla Haddad");
 
       await waitFor(() =>
@@ -435,9 +545,7 @@ describe("PersonDetail merging and deleting", () => {
 
     const askToMerge = async () => {
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-      await user.click(
-        await screen.findByRole("button", { name: /merge into an account holder/i })
-      );
+      await chooseRecordAction(/merge into an account holder/i, user);
       await user.type(screen.getByRole("combobox", { name: /the account holder/i }), "lay");
       vi.advanceTimersByTime(250);
       await user.click(await screen.findByRole("option", { name: /layla haddad/i }));
@@ -458,9 +566,7 @@ describe("PersonDetail merging and deleting", () => {
     it("tells an admin the merge is immediate rather than a request", async () => {
       duplicatePage(MERGED);
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-      await user.click(
-        await screen.findByRole("button", { name: /merge into an account holder/i })
-      );
+      await chooseRecordAction(/merge into an account holder/i, user);
       await user.type(screen.getByRole("combobox", { name: /the account holder/i }), "lay");
       vi.advanceTimersByTime(250);
       await user.click(await screen.findByRole("option", { name: /layla haddad/i }));
@@ -475,9 +581,7 @@ describe("PersonDetail merging and deleting", () => {
       duplicatePage({ status: "PENDING", id: "merge-new" });
 
       const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
-      await user.click(
-        await screen.findByRole("button", { name: /merge into an account holder/i })
-      );
+      await chooseRecordAction(/merge into an account holder/i, user);
       await user.type(screen.getByRole("combobox", { name: /the account holder/i }), "lay");
       vi.advanceTimersByTime(250);
       await user.click(await screen.findByRole("option", { name: /layla haddad/i }));
