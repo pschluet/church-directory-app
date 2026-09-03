@@ -4,9 +4,11 @@ import { requireRole, type AppEnv } from "../auth";
 import { one } from "../db";
 import { audit } from "../audit";
 import { assertCanGrantRole } from "../services/access";
-import { createInvitedUser, setUserEnabled, updateUserEmail } from "../cognito";
+import { createInvitedUser, deleteUser, setUserEnabled, updateUserEmail } from "../cognito";
 import { sendInvitationEmail } from "../email";
+import { clearInheritanceFor } from "../services/inheritance";
 import { setAccountOrganization } from "../services/membership";
+import { deletePhoto } from "../photos";
 import {
   fullName,
   inviteUserSchema,
@@ -310,31 +312,112 @@ routes.patch("/users/:id", async (c) => {
 });
 
 /**
- * Disables rather than deletes. Directory data is kept forever, and removing
- * the Cognito user while the app_users row survives would let the same address
- * be invited again and re-bind to the old record.
+ * Removes an account and the directory record behind it, permanently.
+ *
+ * The gentler operation is still here -- PATCH with `{status:"DISABLED"}` locks
+ * someone out and keeps every row -- and remains the right answer for a
+ * parishioner who has simply stopped attending. This is for the rows that
+ * should never have existed: a mistake, a duplicate, someone who has left.
+ *
+ * It is the one hard delete of a Person in the app. `DELETE /persons/:id` is a
+ * soft delete and refuses anyone with an account precisely because the account
+ * would be left pointing at nothing; here both halves go together, which is
+ * what makes it safe to do at all.
+ *
+ * Two orderings are possible and only one is recoverable, so this is deliberate:
+ * the transaction commits first and Cognito is deleted after. If Cognito then
+ * fails, a user lingers there that cannot sign in to anything -- findOrBindAppUser
+ * returns null with no app_users row, and bindByEmail only claims a row whose
+ * cognito_sub is null -- and the admin finds out because re-inviting the address
+ * 409s. The reverse leaves an account row whose cognito_sub names a user that no
+ * longer exists: it looks intact on this screen, can never sign in, and cannot
+ * be re-bound or re-invited. A visible orphan beats a silent one.
  */
 routes.delete("/users/:id", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
   const id = uuidSchema.parse(c.req.param("id"));
 
-  const target = await one<{ id: string; email: string; organization_id: string | null }>(
+  const target = await one<{
+    id: string;
+    email: string;
+    role: string;
+    organization_id: string | null;
+    cognito_sub: string | null;
+    person_id: string | null;
+    photo_key: string | null;
+  }>(
     db,
-    "select id, email::text as email, organization_id from app_users where id = $1",
+    `select u.id,
+            u.email::text as email,
+            u.role,
+            u.organization_id,
+            u.cognito_sub,
+            p.id as person_id,
+            p.photo_key
+       from app_users u
+       left join persons p on p.app_user_id = u.id
+      where u.id = $1`,
     [id]
   );
   if (!target) throw new HTTPException(404, { message: "Account not found" });
+  // 404 and not 403, so another parish's account is indistinguishable from one
+  // that does not exist -- the same shape as every other handler here.
   if (!caller.isSuperAdmin && target.organization_id !== caller.homeOrganizationId) {
     throw new HTTPException(404, { message: "Account not found" });
   }
-  if (target.id === caller.appUserId) {
-    throw new HTTPException(400, { message: "You cannot disable your own account" });
+  if (!caller.isSuperAdmin && target.role === "SUPER_ADMIN") {
+    throw new HTTPException(403, { message: "Only a super admin can delete a super admin" });
   }
+  if (target.id === caller.appUserId) {
+    throw new HTTPException(400, { message: "You cannot delete your own account" });
+  }
+  /*
+   * No "last super admin" guard, and none is needed: the two checks above make
+   * it unreachable. Only a super admin can delete a super admin, and nobody can
+   * delete themselves, so any such delete leaves at least the caller behind.
+   */
 
-  await db.query("update app_users set status = 'DISABLED' where id = $1", [id]);
-  await setUserEnabled(target.email, false);
-  await audit(db, caller, { action: "user.disable", entityType: "appUser", entityId: id });
+  // Before the rows are gone, while the caller can still be told what happened.
+  await audit(db, caller, {
+    action: "user.delete",
+    entityType: "appUser",
+    entityId: id,
+    changes: { email: target.email, personId: target.person_id },
+  });
+
+  await db.transaction(async (tx) => {
+    if (target.person_id) {
+      /*
+       * Explicitly, rather than leaning on the inherit_* columns' ON DELETE SET
+       * NULL: this is what makes a family member who took a surname or an
+       * address from them fall back to their own value instead of silently
+       * losing it. Every other delete path does the same.
+       */
+      await clearInheritanceFor(tx, target.person_id);
+      // Cascades special_dates on both person_id and related_person_id, so a
+      // wedding anniversary shared with a spouse goes too. The confirmation on
+      // the admin screen says so.
+      await tx.query("delete from persons where id = $1", [target.person_id]);
+    }
+    // Last: persons.app_user_id references this row, and deleting it first
+    // would null that pointer and lose the person we just looked up.
+    await tx.query("delete from app_users where id = $1", [id]);
+  });
+
+  /*
+   * By cognito_sub and not by email. updateUserEmail changes the email
+   * attribute but never the username, which stays whatever the address was at
+   * AdminCreateUser time -- so for anyone whose sign-in address was changed,
+   * deleting by email would miss. Null only for the bootstrap super admin,
+   * inserted by V3 before any Cognito user existed.
+   */
+  if (target.cognito_sub) await deleteUser(target.cognito_sub);
+
+  // After the commit, and last of all: S3 is not transactional, and an orphaned
+  // rendition is a wasted object rather than a broken record.
+  await deletePhoto(target.photo_key);
+
   return c.body(null, 204);
 });
 

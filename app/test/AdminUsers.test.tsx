@@ -54,10 +54,16 @@ const REQUEST: JoinRequestDto = {
   decidedAt: null,
 };
 
-function mockLoad(joinRequests: JoinRequestDto[], mergeRequests: MergeRequestDto[] = []) {
+function mockLoad(
+  joinRequests: JoinRequestDto[],
+  mergeRequests: MergeRequestDto[] = [],
+  users: AppUserDto[] = [USER]
+) {
   api.mockImplementation((path: string, options?: { method?: string }) => {
     if (options?.method === "POST") return Promise.resolve({ status: "APPROVED" });
-    if (path === "/admin/users") return Promise.resolve({ users: [USER] });
+    if (options?.method === "DELETE") return Promise.resolve(null);
+    if (options?.method === "PATCH") return Promise.resolve({});
+    if (path === "/admin/users") return Promise.resolve({ users });
     if (path === "/families") return Promise.resolve({ families: [] });
     if (path === "/families/join-requests/pending") return Promise.resolve({ joinRequests });
     if (path === "/merges/pending") return Promise.resolve({ mergeRequests });
@@ -167,12 +173,255 @@ describe("AdminUsers", () => {
     await waitFor(() => expect(reload).toHaveBeenCalled());
   });
 
+  describe("the search box", () => {
+    const OTHER = {
+      ...USER,
+      id: "user-2",
+      email: "boris@example.com",
+      personId: "person-9",
+      personName: "Boris Popov",
+      role: "ADMIN",
+      status: "DISABLED",
+    } as unknown as AppUserDto;
+
+    const box = () => screen.getByRole("searchbox", { name: /search people and accounts/i });
+
+    it("is its own search box, not the directory's", async () => {
+      /*
+       * SearchField hardcoded the directory's label. Two boxes with the same
+       * accessible name are indistinguishable to anyone listening rather than
+       * looking -- and the Directory suite selects on that exact name.
+       */
+      mockLoad([]);
+      renderPage();
+      expect(
+        await screen.findByRole("searchbox", { name: /search people and accounts/i })
+      ).toBeInTheDocument();
+      expect(
+        screen.queryByRole("searchbox", { name: /search the directory/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("narrows the list without asking the server for anything", async () => {
+      mockLoad([], [], [USER, OTHER]);
+      renderPage();
+      await screen.findByText("Layla Haddad");
+
+      const before = api.mock.calls.length;
+      await userEvent.type(box(), "boris");
+
+      await waitFor(() => expect(screen.queryByText("Layla Haddad")).not.toBeInTheDocument());
+      expect(screen.getByText("Boris Popov")).toBeInTheDocument();
+      // The accounts are already loaded; searching them is not a request.
+      expect(api.mock.calls.length).toBe(before);
+    });
+
+    it("matches the role and status words that are on screen", async () => {
+      mockLoad([], [], [USER, OTHER]);
+      renderPage();
+      await screen.findByText("Layla Haddad");
+
+      await userEvent.type(box(), "disabled");
+      await waitFor(() => expect(screen.queryByText("Layla Haddad")).not.toBeInTheDocument());
+      expect(screen.getByText("Boris Popov")).toBeInTheDocument();
+    });
+
+    it("narrows with every term rather than widening", async () => {
+      mockLoad([], [], [USER, OTHER]);
+      renderPage();
+      await screen.findByText("Layla Haddad");
+
+      await userEvent.type(box(), "boris administrator");
+      await waitFor(() => expect(screen.queryByText("Layla Haddad")).not.toBeInTheDocument());
+      expect(screen.getByText("Boris Popov")).toBeInTheDocument();
+
+      // Both terms have to match: Boris is an administrator, Layla is not.
+      await userEvent.clear(box());
+      await userEvent.type(box(), "boris member");
+      await waitFor(() => expect(screen.queryByText("Boris Popov")).not.toBeInTheDocument());
+    });
+
+    it("says so when nothing matches, and restores the list when cleared", async () => {
+      mockLoad([], [], [USER, OTHER]);
+      renderPage();
+      await screen.findByText("Layla Haddad");
+
+      await userEvent.type(box(), "nobody");
+      expect(await screen.findByText(/no accounts match/i)).toBeInTheDocument();
+
+      await userEvent.clear(box());
+      expect(await screen.findByText("Layla Haddad")).toBeInTheDocument();
+      expect(screen.getByText("Boris Popov")).toBeInTheDocument();
+    });
+  });
+
+  describe("the row menu", () => {
+    const openMenu = async (name: RegExp) => {
+      await userEvent.click(await screen.findByRole("button", { name }));
+    };
+
+    it("puts every action behind one kebab", async () => {
+      mockLoad([]);
+      renderPage();
+
+      await openMenu(/actions for layla haddad/i);
+      expect(screen.getByRole("menuitem", { name: /make administrator/i })).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: /^disable$/i })).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: /delete permanently/i })).toBeInTheDocument();
+      // Not a super admin, so no parish move.
+      expect(screen.queryByRole("menuitem", { name: /move church/i })).not.toBeInTheDocument();
+    });
+
+    it("disables an account from the menu", async () => {
+      mockLoad([]);
+      renderPage();
+
+      await openMenu(/actions for layla haddad/i);
+      await userEvent.click(screen.getByRole("menuitem", { name: /^disable$/i }));
+
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith("/admin/users/user-1", {
+          method: "PATCH",
+          body: { status: "DISABLED" },
+        })
+      );
+    });
+
+    it("promotes someone from the menu", async () => {
+      mockLoad([]);
+      renderPage();
+
+      await openMenu(/actions for layla haddad/i);
+      await userEvent.click(screen.getByRole("menuitem", { name: /make administrator/i }));
+
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith("/admin/users/user-1", {
+          method: "PATCH",
+          body: { role: "ADMIN" },
+        })
+      );
+    });
+
+    it("offers no menu at all when nothing applies", async () => {
+      /*
+       * An admin can do nothing to a super admin in their own parish -- no role
+       * change, no parish move, no disable, no delete -- so a kebab here would
+       * open an empty panel.
+       */
+      const untouchable = {
+        ...USER,
+        id: "user-3",
+        personName: "Super Person",
+        role: "SUPER_ADMIN",
+      } as unknown as AppUserDto;
+      mockLoad([], [], [untouchable]);
+      renderPage();
+
+      await screen.findByText("Super Person");
+      expect(
+        screen.queryByRole("button", { name: /actions for super person/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("does not offer an admin a disable it cannot perform", async () => {
+      // The server answers 404 for a super admin outside the caller's reach,
+      // so offering the action at all was a dead end.
+      const untouchable = {
+        ...USER,
+        id: "user-3",
+        personName: "Super Person",
+        role: "SUPER_ADMIN",
+      } as unknown as AppUserDto;
+      mockLoad([], [], [USER, untouchable]);
+      renderPage();
+
+      await screen.findByText("Super Person");
+      await userEvent.click(screen.getByRole("button", { name: /actions for layla haddad/i }));
+      expect(screen.getByRole("menuitem", { name: /^disable$/i })).toBeInTheDocument();
+    });
+  });
+
+  describe("deleting an account", () => {
+    it("asks first, and says what else goes", async () => {
+      mockLoad([]);
+      renderPage();
+
+      await userEvent.click(
+        await screen.findByRole("button", { name: /actions for layla haddad/i })
+      );
+      await userEvent.click(screen.getByRole("menuitem", { name: /delete permanently/i }));
+
+      expect(await screen.findByText(/delete layla haddad\?/i)).toBeInTheDocument();
+      // The cascade nobody would guess, which the API test pins server-side.
+      expect(screen.getByText(/wedding anniversary/i)).toBeInTheDocument();
+      expect(screen.getByText(/cannot be undone/i)).toBeInTheDocument();
+      // Nothing has happened yet.
+      expect(api).not.toHaveBeenCalledWith("/admin/users/user-1", { method: "DELETE" });
+    });
+
+    it("deletes once confirmed", async () => {
+      mockLoad([]);
+      renderPage();
+
+      await userEvent.click(
+        await screen.findByRole("button", { name: /actions for layla haddad/i })
+      );
+      await userEvent.click(screen.getByRole("menuitem", { name: /delete permanently/i }));
+      await userEvent.click(screen.getByRole("button", { name: /delete permanently/i }));
+
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith("/admin/users/user-1", { method: "DELETE" })
+      );
+    });
+
+    it("leaves the account alone when the dialog is dismissed", async () => {
+      mockLoad([]);
+      renderPage();
+
+      await userEvent.click(
+        await screen.findByRole("button", { name: /actions for layla haddad/i })
+      );
+      await userEvent.click(screen.getByRole("menuitem", { name: /delete permanently/i }));
+      await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+      await waitFor(() =>
+        expect(screen.queryByText(/delete layla haddad\?/i)).not.toBeInTheDocument()
+      );
+      expect(api).not.toHaveBeenCalledWith("/admin/users/user-1", { method: "DELETE" });
+    });
+
+    it("shows the reason when the server refuses", async () => {
+      mockLoad([]);
+      api.mockImplementation((path: string, options?: { method?: string }) => {
+        if (options?.method === "DELETE") {
+          return Promise.reject(new Error("Only a super admin can delete a super admin"));
+        }
+        if (path === "/admin/users") return Promise.resolve({ users: [USER] });
+        if (path === "/families") return Promise.resolve({ families: [] });
+        if (path === "/families/join-requests/pending")
+          return Promise.resolve({ joinRequests: [] });
+        if (path === "/merges/pending") return Promise.resolve({ mergeRequests: [] });
+        return Promise.resolve({ organizations: [] });
+      });
+      renderPage();
+
+      await userEvent.click(
+        await screen.findByRole("button", { name: /actions for layla haddad/i })
+      );
+      await userEvent.click(screen.getByRole("menuitem", { name: /delete permanently/i }));
+      await userEvent.click(screen.getByRole("button", { name: /delete permanently/i }));
+
+      expect(
+        await screen.findByText(/only a super admin can delete a super admin/i)
+      ).toBeInTheDocument();
+    });
+  });
+
   it("stays out of the way when there are no merges", async () => {
     mockLoad([]);
     renderPage();
 
-    // Rendered twice -- the mobile card and the table row.
-    await screen.findAllByText("layla@example.com");
+    await screen.findByText("layla@example.com");
     expect(screen.queryByText(/pending merge requests/i)).not.toBeInTheDocument();
   });
 });

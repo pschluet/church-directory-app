@@ -100,6 +100,10 @@ export async function updateUserEmail(username: string, email: string): Promise<
  * Disabling rather than deleting is the default: directory data is kept
  * forever, and a deleted Cognito user whose app_users row survives would be
  * able to sign up again and re-bind by email.
+ *
+ * The exception is the admin screen's permanent delete, which removes the
+ * account row and this user together -- neither can outlive the other, so the
+ * re-bind that makes a lone Cognito delete dangerous cannot happen.
  */
 export async function setUserEnabled(username: string, enabled: boolean): Promise<void> {
   if (MODE === "local") return;
@@ -110,6 +114,12 @@ export async function setUserEnabled(username: string, enabled: boolean): Promis
   );
 }
 
+/**
+ * Callers pass `app_users.cognito_sub`, not an email address. updateUserEmail
+ * changes the email attribute and never the username, so for anyone whose
+ * sign-in address has been changed the two no longer agree and only the sub
+ * still identifies the user.
+ */
 export async function deleteUser(username: string): Promise<void> {
   if (MODE === "local") return;
   await cognito().send(

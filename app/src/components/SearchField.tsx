@@ -14,10 +14,17 @@ import { inputClass } from "./ui";
 export function SearchField({
   value,
   onChange,
+  label = "Search the directory",
   placeholder = "Search name, phone, address, saint…",
 }: {
   value: string;
   onChange: (next: string) => void;
+  /**
+   * The accessible name. Worth overriding wherever this is not the directory --
+   * two searchboxes both called "Search the directory" are indistinguishable to
+   * anyone listening rather than looking.
+   */
+  label?: string;
   placeholder?: string;
 }) {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -42,7 +49,7 @@ export function SearchField({
           type="search"
           inputMode="search"
           autoComplete="off"
-          aria-label="Search the directory"
+          aria-label={label}
           placeholder={placeholder}
           value={value}
           onChange={(event) => onChange(event.target.value)}

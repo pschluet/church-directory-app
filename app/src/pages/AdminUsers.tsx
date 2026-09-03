@@ -15,14 +15,18 @@ import { useMe } from "../context/MeContext";
 import {
   Badge,
   Button,
+  ConfirmDialog,
   EmptyState,
   ErrorNotice,
   Field,
+  MenuButton,
+  MenuItem,
   Modal,
   PageHeading,
   Spinner,
   inputClass,
 } from "../components/ui";
+import { SearchField } from "../components/SearchField";
 
 /**
  * Accounts.
@@ -30,7 +34,18 @@ import {
  * Sign-up is disabled on the user pool, so this is the only way in: an
  * administrator enters a name and address, and Cognito emails the invitation.
  *
- * The table becomes stacked cards under `md` rather than scrolling sideways.
+ * One reflowing list at every width, with every per-account action behind a
+ * kebab. It was a table from `md` up, which put a portrait tablet -- 768px, the
+ * exact breakpoint -- on the table branch, where six padded columns and four
+ * action labels could not fit and an `overflow-hidden` wrapper clipped the rest
+ * with no way to scroll to it.
+ *
+ * The search box filters the accounts already loaded rather than calling
+ * /directory/search. That endpoint returns people, not accounts: no role, no
+ * status, and nothing for an account with no directory record -- a parish-less
+ * super admin -- or for anyone whose sign-in address was changed, since it
+ * matches on persons.email. GET /admin/users already returns everything in
+ * scope, so there is nothing to fetch.
  */
 
 const ROLE_LABELS: Record<Role, string> = {
@@ -39,11 +54,21 @@ const ROLE_LABELS: Record<Role, string> = {
   USER: "Member",
 };
 
+/** Shared by the badge and the search, so typing what is on screen matches. */
+const STATUS_LABELS: Record<AppUserDto["status"], string> = {
+  ACTIVE: "Active",
+  INVITED: "Invited",
+  DISABLED: "Disabled",
+};
+
 export function AdminUsers() {
   const { me, isSuperAdmin, organizationId, reload: reloadMe } = useMe();
   const queryClient = useQueryClient();
   const [moving, setMoving] = useState<AppUserDto | null>(null);
+  const [deleting, setDeleting] = useState<AppUserDto | null>(null);
+  const [busy, setBusy] = useState(false);
   const [inviting, setInviting] = useState(false);
+  const [search, setSearch] = useState("");
   // Mutation failures only; the read's own is `usersQuery.error`.
   const [actionError, setActionError] = useState<string | null>(null);
 
@@ -100,6 +125,30 @@ export function AdminUsers() {
     [organizationsQuery.data]
   );
 
+  /*
+   * Every whitespace-separated term has to match somewhere, so "smith admin"
+   * narrows rather than widens -- the same rule /directory/search applies
+   * server-side. Role and status are matched by their labels, because
+   * "administrator" and "disabled" are what is on screen to be typed.
+   */
+  const shown = useMemo(() => {
+    const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return users;
+    return users.filter((user) => {
+      const haystack = [
+        user.personName,
+        user.email,
+        ROLE_LABELS[user.role],
+        STATUS_LABELS[user.status],
+        user.organizationName,
+      ]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      return terms.every((term) => haystack.includes(term));
+    });
+  }, [users, search]);
+
   // Only the accounts list gates the page, exactly as it did when it was the
   // one call in the Promise.all without a catch around it.
   const loading = usersQuery.isPending;
@@ -149,6 +198,29 @@ export function AdminUsers() {
     }
   }
 
+  /*
+   * Permanent, and wider than `reload`: the person goes with the account, so
+   * their special dates and their place in a family go too. No navigation to
+   * do afterwards -- unlike the person page, the row simply leaves this list.
+   */
+  async function remove(user: AppUserDto): Promise<void> {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api(`/admin/users/${user.id}`, { method: "DELETE" });
+      await Promise.all([
+        reload(),
+        queryClient.invalidateQueries({ queryKey: qk.persons(organizationId) }),
+        queryClient.invalidateQueries({ queryKey: qk.specialDates(organizationId) }),
+      ]);
+      setDeleting(null);
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not delete that account");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function update(user: AppUserDto, body: Record<string, unknown>): Promise<void> {
     try {
       await api(`/admin/users/${user.id}`, { method: "PATCH", body });
@@ -162,8 +234,25 @@ export function AdminUsers() {
     <>
       <PageHeading
         title="People & Accounts"
-        subtitle={`${users.length} ${users.length === 1 ? "account" : "accounts"}`}
-        actions={<Button onClick={() => setInviting(true)}>Invite someone</Button>}
+        subtitle={
+          search.trim()
+            ? `${shown.length} of ${users.length} ${users.length === 1 ? "account" : "accounts"}`
+            : `${users.length} ${users.length === 1 ? "account" : "accounts"}`
+        }
+        /*
+         * The search box, not the Invite button. `actions` is beside the title
+         * from `md` up and stacked underneath it on a phone, which is exactly
+         * where a search box wants to be; `filters` would keep it below the
+         * title at every width. Invite moved down to the list it adds to.
+         */
+        actions={
+          <SearchField
+            value={search}
+            onChange={setSearch}
+            label="Search people and accounts"
+            placeholder="Search name, email, role, status…"
+          />
+        }
       />
 
       {error && <ErrorNotice message={error} onRetry={() => void usersQuery.refetch()} />}
@@ -220,92 +309,71 @@ export function AdminUsers() {
         </section>
       )}
 
+      {/*
+       * Directly above the list it adds to, rather than in the heading, where
+       * the search box now sits. Outside the branch below so it is still there
+       * when there are no accounts at all -- which is the one moment inviting
+       * someone is the only thing to do.
+       */}
+      <div className="mb-3 flex justify-end">
+        <Button onClick={() => setInviting(true)}>Invite someone</Button>
+      </div>
+
       {loading ? (
         <Spinner label="Loading accounts" />
       ) : users.length === 0 ? (
         <EmptyState title="No accounts yet" />
+      ) : shown.length === 0 ? (
+        <EmptyState title={`No accounts match “${search.trim()}”`} />
       ) : (
-        <>
-          {/* Cards on a phone; a table from md up. */}
-          <ul className="space-y-3 md:hidden">
-            {users.map((user) => (
-              <li key={user.id} className="rounded-lg border border-line bg-surface p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <p className="truncate font-bold text-ink">{user.personName ?? user.email}</p>
-                    <p className="truncate text-sm text-ink-muted">{user.email}</p>
-                  </div>
+        /*
+         * One list at every width, rounded on the rows rather than the
+         * container: `overflow-hidden` here would clip an open row menu, and
+         * focusing an item that stuck out would make the browser scroll this
+         * box and slide the top row out of sight. See FamilyMemberList.
+         */
+        <ul className="divide-y divide-line rounded-lg border border-line bg-surface">
+          {shown.map((user) => (
+            <li
+              key={user.id}
+              className="flex items-center gap-3 bg-surface p-4 first:rounded-t-lg last:rounded-b-lg"
+            >
+              <div className="min-w-0 flex-1">
+                {user.personId ? (
+                  <Link
+                    to={`/people/${user.personId}`}
+                    className="block truncate font-bold text-primary hover:text-accent"
+                  >
+                    {user.personName ?? user.email}
+                  </Link>
+                ) : (
+                  <p className="truncate font-bold text-ink">{user.personName ?? user.email}</p>
+                )}
+                <p className="truncate text-sm text-ink-muted">{user.email}</p>
+                {/*
+                 * Badges on a wrapping line rather than table columns: this is
+                 * what lets a narrow tablet in portrait reflow instead of
+                 * forcing a width nothing could scroll to.
+                 */}
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <Badge>{ROLE_LABELS[user.role]}</Badge>
                   <StatusBadge status={user.status} />
+                  {isSuperAdmin && user.organizationName && (
+                    <Badge tone="accent">{user.organizationName}</Badge>
+                  )}
                 </div>
-                <dl className="mt-3 space-y-1 text-sm">
-                  <Row label="Role">{ROLE_LABELS[user.role]}</Row>
-                  {isSuperAdmin && <Row label="Church">{user.organizationName ?? "—"}</Row>}
-                </dl>
-                <div className="mt-3 flex flex-wrap gap-3 text-sm">
-                  <UserActions
-                    user={user}
-                    isSelf={user.id === me?.appUser.id}
-                    isSuperAdmin={isSuperAdmin}
-                    onUpdate={update}
-                    onMove={setMoving}
-                  />
-                </div>
-              </li>
-            ))}
-          </ul>
-
-          <div className="hidden overflow-hidden rounded-lg border border-line md:block">
-            <table className="w-full text-left">
-              <thead className="bg-surface-muted text-sm uppercase tracking-wide text-ink-muted">
-                <tr>
-                  <th className="px-4 py-3 font-bold">Name</th>
-                  <th className="px-4 py-3 font-bold">Email</th>
-                  <th className="px-4 py-3 font-bold">Role</th>
-                  {isSuperAdmin && <th className="px-4 py-3 font-bold">Church</th>}
-                  <th className="px-4 py-3 font-bold">Status</th>
-                  <th className="px-4 py-3 font-bold">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-line">
-                {users.map((user) => (
-                  <tr key={user.id}>
-                    <td className="px-4 py-3">
-                      {user.personId ? (
-                        <Link
-                          to={`/people/${user.personId}`}
-                          className="font-bold text-primary hover:text-accent"
-                        >
-                          {user.personName}
-                        </Link>
-                      ) : (
-                        <span className="text-ink-muted">—</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-ink-muted">{user.email}</td>
-                    <td className="px-4 py-3">{ROLE_LABELS[user.role]}</td>
-                    {isSuperAdmin && (
-                      <td className="px-4 py-3 text-ink-muted">{user.organizationName ?? "—"}</td>
-                    )}
-                    <td className="px-4 py-3">
-                      <StatusBadge status={user.status} />
-                    </td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-wrap gap-3 text-sm">
-                        <UserActions
-                          user={user}
-                          isSelf={user.id === me?.appUser.id}
-                          isSuperAdmin={isSuperAdmin}
-                          onUpdate={update}
-                          onMove={setMoving}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </>
+              </div>
+              <UserActions
+                user={user}
+                isSelf={user.id === me?.appUser.id}
+                isSuperAdmin={isSuperAdmin}
+                onUpdate={update}
+                onMove={setMoving}
+                onDelete={setDeleting}
+              />
+            </li>
+          ))}
+        </ul>
       )}
 
       {inviting && (
@@ -319,6 +387,20 @@ export function AdminUsers() {
             await reload();
           }}
         />
+      )}
+
+      {deleting && (
+        <ConfirmDialog
+          title={`Delete ${deleting.personName ?? deleting.email}?`}
+          confirmLabel="Delete permanently"
+          busy={busy}
+          onConfirm={() => void remove(deleting)}
+          onClose={() => setDeleting(null)}
+        >
+          This removes their account, their sign-in, and their directory record — contact details,
+          family membership, and every special date recorded for them. A wedding anniversary they
+          share with someone will be removed from that person's record too. This cannot be undone.
+        </ConfirmDialog>
       )}
 
       {moving && (
@@ -336,84 +418,93 @@ export function AdminUsers() {
   );
 }
 
-function Row({ label, children }: { label: string; children: React.ReactNode }) {
-  return (
-    <div className="flex gap-2">
-      <dt className="font-bold text-ink-muted">{label}</dt>
-      <dd>{children}</dd>
-    </div>
-  );
-}
-
 function StatusBadge({ status }: { status: AppUserDto["status"] }) {
-  if (status === "ACTIVE") return <Badge tone="accent">Active</Badge>;
-  if (status === "INVITED") return <Badge tone="primary">Invited</Badge>;
-  return <Badge>Disabled</Badge>;
+  const label = STATUS_LABELS[status];
+  if (status === "ACTIVE") return <Badge tone="accent">{label}</Badge>;
+  if (status === "INVITED") return <Badge tone="primary">{label}</Badge>;
+  return <Badge>{label}</Badge>;
 }
 
+/**
+ * Every action on an account, in one kebab.
+ *
+ * They used to be four bare buttons side by side in a table cell, which is
+ * most of why the row could not fit a tablet in portrait: the widest label
+ * ("Make administrator") set a minimum width no amount of wrapping could get
+ * under. This also matches the person and family pages.
+ */
 function UserActions({
   user,
   isSelf,
   isSuperAdmin,
   onUpdate,
   onMove,
+  onDelete,
 }: {
   user: AppUserDto;
   isSelf: boolean;
   isSuperAdmin: boolean;
   onUpdate: (user: AppUserDto, body: Record<string, unknown>) => Promise<void>;
   onMove: (user: AppUserDto) => void;
+  onDelete: (user: AppUserDto) => void;
 }) {
-  const canChangeRole = isSuperAdmin || user.role !== "SUPER_ADMIN";
+  const canManage = isSuperAdmin || user.role !== "SUPER_ADMIN";
+
+  const items = [
+    canManage && user.role === "USER" && (
+      <MenuItem key="promote" onSelect={() => void onUpdate(user, { role: "ADMIN" })}>
+        Make administrator
+      </MenuItem>
+    ),
+    canManage && user.role === "ADMIN" && (
+      <MenuItem key="demote" onSelect={() => void onUpdate(user, { role: "USER" })}>
+        Make member
+      </MenuItem>
+    ),
+    isSuperAdmin && (
+      <MenuItem key="move" onSelect={() => onMove(user)}>
+        Move church
+      </MenuItem>
+    ),
+    /*
+     * Destructive items last, so the one that cannot be undone is not next to
+     * the one most likely to be aimed at. MenuItem has no separator.
+     */
+    /*
+     * Gated on canManage as well as self, which the old row of buttons was not:
+     * it offered an admin "Disable" on a super admin's row and the server
+     * answered 404. Harmless as a link that failed, worse as a menu entry that
+     * looks like the others.
+     */
+    !isSelf &&
+      canManage &&
+      (user.status === "DISABLED" ? (
+        <MenuItem key="enable" onSelect={() => void onUpdate(user, { status: "ACTIVE" })}>
+          Re-enable
+        </MenuItem>
+      ) : (
+        <MenuItem key="disable" danger onSelect={() => void onUpdate(user, { status: "DISABLED" })}>
+          Disable
+        </MenuItem>
+      )),
+    !isSelf && canManage && (
+      <MenuItem key="delete" danger onSelect={() => onDelete(user)}>
+        Delete permanently
+      </MenuItem>
+    ),
+  ].filter(Boolean);
+
+  /*
+   * Nothing applicable means no button at all, rather than a kebab that opens
+   * an empty panel. Reachable: an admin looking at a super admin in their own
+   * parish can do none of these.
+   */
+  if (items.length === 0) return null;
 
   return (
-    <>
-      {canChangeRole && user.role !== "ADMIN" && user.role !== "SUPER_ADMIN" && (
-        <button
-          type="button"
-          className="font-bold text-primary hover:text-accent"
-          onClick={() => void onUpdate(user, { role: "ADMIN" })}
-        >
-          Make administrator
-        </button>
-      )}
-      {canChangeRole && user.role === "ADMIN" && (
-        <button
-          type="button"
-          className="font-bold text-primary hover:text-accent"
-          onClick={() => void onUpdate(user, { role: "USER" })}
-        >
-          Make member
-        </button>
-      )}
-      {isSuperAdmin && (
-        <button
-          type="button"
-          className="font-bold text-primary hover:text-accent"
-          onClick={() => onMove(user)}
-        >
-          Move church
-        </button>
-      )}
-      {!isSelf &&
-        (user.status === "DISABLED" ? (
-          <button
-            type="button"
-            className="font-bold text-primary hover:text-accent"
-            onClick={() => void onUpdate(user, { status: "ACTIVE" })}
-          >
-            Re-enable
-          </button>
-        ) : (
-          <button
-            type="button"
-            className="font-bold text-primary hover:text-accent"
-            onClick={() => void onUpdate(user, { status: "DISABLED" })}
-          >
-            Disable
-          </button>
-        ))}
-    </>
+    <MenuButton label={`Actions for ${user.personName ?? user.email}`} className="shrink-0">
+      {items}
+    </MenuButton>
   );
 }
 

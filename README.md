@@ -52,7 +52,16 @@ Accounts are invite-only, created by a parish administrator.
   are permanent, so the browser cache and the CloudFront edge both work. A presigned GET
   changes on every response and defeats both.
 - **Retention:** people and photos are kept forever (`RemovalPolicy.RETAIN`; deletes are
-  soft).
+  soft). One exception, and it is deliberate: `DELETE /api/admin/users/:id` on the People &
+  Accounts screen removes an account, its Cognito user and the person behind it for good —
+  for the rows that should never have existed, a duplicate or a mistake. Disabling
+  (`PATCH` with `{status:"DISABLED"}`) is still the answer for someone who has simply
+  stopped attending. The hard delete cascades `special_dates` on both `person_id` and
+  `related_person_id`, so a wedding anniversary disappears from the surviving spouse's
+  record too; the confirmation says so, and `api/test/api.admin.test.ts` pins it. The
+  transaction commits before the Cognito user is deleted, because the reverse order can
+  leave an account row whose `cognito_sub` names a user that no longer exists — it looks
+  intact, can never sign in, and `bindByEmail` will not re-bind it.
 - **Roles:** Super Admin, Admin and User, stored in Postgres rather than in Cognito
   groups — a group cannot express which organization an admin is scoped to.
 - **Tags:** every resource carries `Project=all-saints` for cost tracking.
