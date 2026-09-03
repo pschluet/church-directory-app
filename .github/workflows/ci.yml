@@ -50,6 +50,12 @@ jobs:
       - name: Typecheck
         run: npm run typecheck --workspaces --if-present
 
+      - name: Build the SPA
+        # Catches anything that typechecks but will not bundle. Ahead of the
+        # tests, not after them, because app/test/serviceWorker.test.ts asserts
+        # on dist/sw.js and skips when there is no build to read.
+        run: npm run build:app
+
       - name: Test
         run: npm test
         env:
@@ -57,7 +63,3 @@ jobs:
           DB_PORT: "5432"
           DB_USER: postgres
           DB_PASSWORD: postgres
-
-      - name: Build the SPA
-        # Catches anything that typechecks but will not bundle.
-        run: npm run build:app

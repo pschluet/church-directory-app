@@ -12,6 +12,24 @@
     -->
     <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
     <link rel="icon" href="/favicon.ico" sizes="32x32" />
+    <!--
+      No <link rel="manifest"> here: vite-plugin-pwa injects one at build time.
+      Declaring it as well got two of them into dist/index.html, and in dev --
+      where the plugin generates no manifest and Vite answers any unmatched
+      path with this file -- the browser was handed HTML to parse as JSON and
+      logged a manifest syntax error on every page load.
+
+      These are what iOS reads. Safari ignores the manifest's icons for Add to
+      Home Screen and takes apple-touch-icon instead, so leaving it out gets a
+      screenshot of the page as the home-screen icon. Both capable tags:
+      mobile-web-app-capable is the standard one, and the apple- prefix is
+      deprecated but still what older iOS honours for standalone display.
+    -->
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon-180x180.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <meta name="apple-mobile-web-app-title" content="Directory" />
     <meta name="description" content="Parish directory" />
     <title>Parish Directory</title>
   </head>

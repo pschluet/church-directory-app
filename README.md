@@ -18,6 +18,20 @@ Accounts are invite-only, created by a parish administrator.
   whatever phone last signed in. Every org-scoped key is namespaced by organization id in
   `app/src/lib/queryKeys.ts`: `api()` appends `?orgId=` from `localStorage` itself, so a
   key that left it out would serve one parish's directory to another.
+- **Installable:** a PWA, so the directory can live on a home screen — this is the app
+  someone opens standing in the parking lot after a service, and one tap beats recalling a
+  URL. It is also what would make Web Push possible later, since iOS only delivers it to a
+  site added to the home screen. The service worker (`vite-plugin-pwa`, Workbox
+  `generateSW`) precaches the app shell and **nothing else**: `workbox.runtimeCaching` is
+  empty, so `/api/*`, `/photos/*` and the presigned S3 uploads all fall straight through
+  to the network. That is the same decision as *Client cache* above, for the same reason —
+  a `runtimeCaching` entry would put the parish's phone numbers on disk in the Cache API
+  instead of `localStorage`, which is no better. `app/test/serviceWorker.test.ts` asserts
+  it against the built `dist/sw.js`, because nothing in the app would look different if it
+  regressed. The icons in `app/public` are generated from `favicon.svg`; see
+  `app/pwa-assets.config.js` for the command. One deploy consequence: `sw.js` must never
+  be uploaded `immutable`, or every installed copy is pinned to that build with no address
+  bar to reload from.
 - **Auth:** Cognito user pool (Essentials tier), email-OTP passwordless sign-in. Self
   sign-up is disabled; administrators invite people and the API sends the invitation
   through SES. Cognito's own invitation is suppressed, because a custom Cognito template
@@ -203,8 +217,9 @@ normal `git push`.
 
 ## CI/CD
 
-`ci.yml` runs on every pull request and on pushes to `main`: Biome, typecheck, the full
-test suite against a Postgres service container, and an SPA build.
+`ci.yml` runs on every pull request and on pushes to `main`: Biome, typecheck, an SPA
+build, then the full test suite against a Postgres service container. The build comes
+before the tests because `app/test/serviceWorker.test.ts` reads `app/dist/sw.js`.
 
 `deploy.yml` runs after CI passes on `main` (and can be dispatched manually). It deploys
 the infrastructure, runs the Flyway migrations as a one-off Fargate task and fails if they

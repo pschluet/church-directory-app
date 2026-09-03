@@ -56,3 +56,20 @@ createRoot(document.getElementById("root")!).render(
     </BrowserRouter>
   </StrictMode>
 );
+
+/*
+ * Production only. The virtual module is created by vite-plugin-pwa, which is
+ * not in vitest.config.ts (a standalone config, not a merge of vite.config.ts),
+ * and in dev a worker in front of the /api and /photos proxies only obscures
+ * what the server actually returned. Dynamic, so under test and in dev neither
+ * the import nor its resolution ever happens.
+ *
+ * `immediate` takes the update on the next launch instead of prompting: in
+ * standalone display there is no address bar and no reload button, so someone
+ * left on a stale shell has no way out short of deleting the app.
+ */
+if (import.meta.env.PROD) {
+  void import("virtual:pwa-register").then(({ registerSW }) => {
+    registerSW({ immediate: true });
+  });
+}
