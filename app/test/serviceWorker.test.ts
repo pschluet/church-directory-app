@@ -81,6 +81,10 @@ describe.skipIf(!built)("the generated service worker", () => {
     expect(manifest.display).toBe("standalone");
     expect(manifest.scope).toBe("/");
     expect(manifest.start_url).toBe("/");
+    // Never "portrait": Android enforces a manifest orientation lock on an
+    // installed app, so a tablet would refuse to rotate. iOS ignores the
+    // field, so this cannot be caught by testing on an iPhone.
+    expect(manifest.orientation).toBe("any");
     // Android masks every icon; without a maskable one it crops whatever it
     // is given, which for an edge-to-edge cross means clipping the bars.
     expect(manifest.icons.some((icon: { purpose?: string }) => icon.purpose === "maskable")).toBe(

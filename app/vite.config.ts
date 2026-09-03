@@ -55,7 +55,15 @@ export default defineConfig(({ mode }) => {
           start_url: "/",
           scope: "/",
           display: "standalone",
-          orientation: "portrait",
+          /*
+           * Not "portrait". Android honours a manifest orientation lock for an
+           * installed app, so that setting made a tablet refuse to rotate --
+           * while iOS ignores the field entirely, which is why the same build
+           * rotated on an iPhone and hid the problem. Nothing here wants to be
+           * locked: the card lists reflow, and the full-screen photo view is
+           * better in landscape for a photo that was taken that way.
+           */
+          orientation: "any",
           // The liturgical red and white from theme.css, so the splash screen
           // and title bar match the app rather than flashing a default.
           theme_color: "#b42d23",
