@@ -187,7 +187,7 @@ describe("NotificationBell", () => {
     await userEvent.click(await screen.findByRole("button", { name: /2 unread/ }));
 
     expect(screen.getByText(/^Prayer request ·/)).toBeInTheDocument();
-    expect(screen.getByText(/^Waiting for review ·/)).toBeInTheDocument();
+    expect(screen.getByText(/^Needs your approval ·/)).toBeInTheDocument();
   });
 
   it("says so when the panel is empty", async () => {

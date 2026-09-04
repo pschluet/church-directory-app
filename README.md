@@ -78,10 +78,12 @@ Accounts are invite-only, created by a parish administrator.
   `notifications` table, one per recipient per event, fanned out in the same transaction
   that posts a prayer request — so "unread" is a fact about a person, which a
   high-water-mark timestamp could count but could not list by title. There are two kinds:
-  a request has been posted, and — for reviewers — a request is waiting for review. The
+  a request has been posted, and — for approvers — a request is waiting for approval. The
   second retires itself, because the query that lists it requires the request to still be
   `PENDING`: whoever gets there first clears it for everyone, and nothing has to go back
-  and mark it read. On top of that, **Web
+  and mark it read. They are separately switchable, because one is news and the other is
+  work: an approver may want to be told a request needs them without hearing about every
+  post, or the reverse. On top of that, **Web
   Push**: `web-push` in the API, a VAPID keypair from `scripts/create-push-key.sh`
   delivered exactly like the photo signing key, and the `push` listener in `app/src/sw.ts`.
   The push body is only ever a count — "3 new prayer requests", that recipient's own unread
@@ -189,7 +191,7 @@ codes arrive in your actual inbox.
 ```sh
 npm run ci:check                        # Biome lint + format
 npm run typecheck --workspaces
-npm test                                # 859 tests across api, app and infra
+npm test                                # 865 tests across api, app and infra
 ```
 
 The API tests run against a real Postgres (`directory_test`, migrated automatically by

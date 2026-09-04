@@ -59,7 +59,9 @@ describe("Settings", () => {
   beforeEach(() => {
     apiMock.mockReset();
     apiMock.mockImplementation((path: string) => {
-      if (path === "/notifications/preferences") return Promise.resolve({ prayerRequests: true });
+      if (path === "/notifications/preferences") {
+        return Promise.resolve({ prayerRequests: true, prayerRequestReviews: true });
+      }
       return Promise.resolve({});
     });
     pushState.availability = "ready";
@@ -72,7 +74,7 @@ describe("Settings", () => {
   it("offers both switches when push is available", async () => {
     renderWithProviders(<Settings />);
     expect(await screen.findByRole("checkbox", { name: /Push notifications/ })).not.toBeChecked();
-    expect(await screen.findByRole("checkbox", { name: /Prayer requests/ })).toBeChecked();
+    expect(await screen.findByRole("checkbox", { name: /New prayer requests/ })).toBeChecked();
   });
 
   it("says up front what notifications actually do", async () => {
@@ -91,18 +93,20 @@ describe("Settings", () => {
     );
     expect(section).not.toBeNull();
     expect(section).toHaveTextContent("Notify me about");
-    expect(section).toHaveTextContent("Prayer requests");
+    expect(section).toHaveTextContent("New prayer requests");
     expect(section).toHaveTextContent("On this device");
   });
 
   it("says the two switches compose, rather than leaving push on with nothing to send", async () => {
     apiMock.mockImplementation((path: string) => {
-      if (path === "/notifications/preferences") return Promise.resolve({ prayerRequests: false });
+      if (path === "/notifications/preferences") {
+        return Promise.resolve({ prayerRequests: false, prayerRequestReviews: false });
+      }
       return Promise.resolve({});
     });
     renderWithProviders(<Settings />);
     expect(
-      await screen.findByText(/Nothing to send while Prayer requests is off/)
+      await screen.findByText(/Nothing to send while everything above is switched off/)
     ).toBeInTheDocument();
   });
 
@@ -152,24 +156,70 @@ describe("Settings", () => {
     expect(SUBSCRIPTION.unsubscribe).toHaveBeenCalled();
   });
 
-  it("tells a reviewer the switch covers their review queue too", async () => {
-    // One switch, two things -- so the copy has to mention both to exactly the
-    // people who get both.
-    meState.canApprove = true;
-    renderWithProviders(<Settings />);
-    expect(await screen.findByText(/waiting for your review/i)).toBeInTheDocument();
-  });
+  describe("the approval switch", () => {
+    /*
+     * Separate from the posted-requests switch because they are separate
+     * things: one is news, the other is work. Shown only to the people who
+     * would ever get one -- for anybody else it would be a switch with no
+     * effect.
+     */
+    it("is offered to an approver, alongside the posted-requests one", async () => {
+      meState.canApprove = true;
+      renderWithProviders(<Settings />);
 
-  it("does not mention reviewing to somebody who cannot review", async () => {
-    renderWithProviders(<Settings />);
-    await screen.findByRole("checkbox", { name: /Prayer requests/ });
-    expect(screen.queryByText(/waiting for your review/i)).not.toBeInTheDocument();
+      expect(await screen.findByRole("checkbox", { name: /New prayer requests/ })).toBeChecked();
+      expect(
+        screen.getByRole("checkbox", { name: /Requests waiting for my approval/ })
+      ).toBeChecked();
+    });
+
+    it("is hidden from somebody who cannot approve", async () => {
+      renderWithProviders(<Settings />);
+      await screen.findByRole("checkbox", { name: /New prayer requests/ });
+      expect(
+        screen.queryByRole("checkbox", { name: /Requests waiting for my approval/ })
+      ).not.toBeInTheDocument();
+    });
+
+    it("saves only itself, leaving the posted-requests switch alone", async () => {
+      meState.canApprove = true;
+      renderWithProviders(<Settings />);
+
+      await userEvent.click(
+        await screen.findByRole("checkbox", { name: /Requests waiting for my approval/ })
+      );
+
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/notifications/preferences", {
+          method: "PUT",
+          body: { prayerRequestReviews: false },
+          withOrg: false,
+        })
+      );
+    });
+
+    it("reassures the approver that switching it off does not remove the work", async () => {
+      // The obvious fear on reading it, and the one thing that would stop
+      // somebody from using the switch at all.
+      meState.canApprove = true;
+      renderWithProviders(<Settings />);
+      expect(await screen.findByText(/does not stop you approving them/i)).toBeInTheDocument();
+      expect(screen.getByText(/still show on the Prayer Requests page/i)).toBeInTheDocument();
+    });
+
+    it("explains in plain terms what it is about", async () => {
+      meState.canApprove = true;
+      renderWithProviders(<Settings />);
+      expect(
+        await screen.findByText(/needs your approval before the parish can see it/i)
+      ).toBeInTheDocument();
+    });
   });
 
   it("saves the prayer request preference", async () => {
     renderWithProviders(<Settings />);
 
-    await userEvent.click(await screen.findByRole("checkbox", { name: /Prayer requests/ }));
+    await userEvent.click(await screen.findByRole("checkbox", { name: /New prayer requests/ }));
 
     await waitFor(() =>
       expect(apiMock).toHaveBeenCalledWith("/notifications/preferences", {
@@ -212,7 +262,9 @@ describe("Settings", () => {
         await screen.findByText(/Push notifications are not switched on for this directory/)
       ).toBeInTheDocument();
       // The category switch still matters: it also governs the in-app bell.
-      expect(await screen.findByRole("checkbox", { name: /Prayer requests/ })).toBeInTheDocument();
+      expect(
+        await screen.findByRole("checkbox", { name: /New prayer requests/ })
+      ).toBeInTheDocument();
     });
 
     it("says so on a browser that cannot do push at all", async () => {

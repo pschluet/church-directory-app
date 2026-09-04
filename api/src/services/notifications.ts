@@ -209,7 +209,10 @@ export async function fanOutPrayerRequestForReview(
       where u.organization_id = $2
         and u.status = 'ACTIVE'
         and u.role = any($3::text[])
-        and coalesce(p.prayer_requests, true)
+        -- Its own switch, not prayer_requests: being told a request was posted
+        -- and being told one needs your approval are different things, and an
+        -- approver may want either without the other.
+        and coalesce(p.prayer_request_reviews, true)
      on conflict do nothing
      returning app_user_id`,
     [options.prayerRequestId, options.organizationId, rolesAtLeast("PRAYER_REQUEST_ADMIN")]

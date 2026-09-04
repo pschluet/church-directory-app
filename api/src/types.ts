@@ -496,19 +496,29 @@ export interface InboxDto {
 }
 
 /**
- * The two switches on the settings page.
+ * What somebody wants to be told about.
  *
- * `push` is about this browser holding a subscription at all; `prayerRequests`
- * is whether to be told about prayer requests. Both are optional so the page
- * can send just the one that changed.
+ * Two independent things, not one with a sub-setting: `prayerRequests` is news
+ * (something was posted for the parish) and `prayerRequestReviews` is work
+ * (something needs your approval before anyone can see it). An approver may
+ * reasonably want either without the other, which is why one switch could not
+ * serve both.
+ *
+ * `prayerRequestReviews` is only ever read for accounts that may approve, so it
+ * is harmless on everyone else's row and the settings page simply does not show
+ * it to them.
+ *
+ * Both optional, so the page can send just the one that changed.
  */
 export const notificationPreferencesSchema = z.object({
   prayerRequests: z.boolean().optional(),
+  prayerRequestReviews: z.boolean().optional(),
 });
 export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>;
 
 export interface NotificationPreferencesDto {
   prayerRequests: boolean;
+  prayerRequestReviews: boolean;
 }
 
 /**

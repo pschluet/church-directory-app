@@ -243,13 +243,44 @@ describe.skipIf(!hasDb)("notifications", () => {
       expect((await inbox(wandering)).body.unreadCount).toBe(0);
     });
 
-    it("respects a reviewer who has switched prayer requests off", async () => {
+    it("respects an approver who has switched approval notices off", async () => {
       await as(reviewer).call("PUT", "/api/notifications/preferences", {
-        prayerRequests: false,
+        prayerRequestReviews: false,
       });
       await submit();
       expect((await inbox(reviewer)).body.unreadCount).toBe(0);
       expect((await inbox(admin)).body.unreadCount).toBe(1);
+    });
+
+    it("still tells an approver who only switched off *posted* requests", async () => {
+      /*
+       * The whole point of the second switch. "A request was posted" is news;
+       * "a request needs you" is a job, and somebody who declined the first has
+       * not declined the second. Before this was split, one switch silenced
+       * both and an approver could stop being told about work without ever
+       * asking to.
+       */
+      await as(reviewer).call("PUT", "/api/notifications/preferences", {
+        prayerRequests: false,
+      });
+      await submit();
+      expect((await inbox(reviewer)).body.unreadCount).toBe(1);
+      expect((await inbox(reviewer)).body.notifications[0]!.type).toBe("PRAYER_REQUEST_REVIEW");
+    });
+
+    it("keeps the two switches independent in the other direction too", async () => {
+      // Approval notices off, posted ones on: they should still hear about a
+      // request once it is up, just not while it is waiting for them.
+      const id = await submit();
+      await as(admin).call("PUT", "/api/notifications/preferences", {
+        prayerRequestReviews: false,
+      });
+      expect((await inbox(admin)).body.unreadCount).toBe(1); // written before the change
+
+      await as(reviewer).call("POST", `/api/prayer-requests/${id}/approve`);
+      const { body } = await inbox(admin);
+      expect(body.unreadCount).toBe(1);
+      expect(body.notifications[0]!.type).toBe("PRAYER_REQUEST");
     });
 
     it("clears itself once the request is approved, even by somebody else", async () => {
@@ -329,7 +360,7 @@ describe.skipIf(!hasDb)("notifications", () => {
     it("defaults to on, with no row stored", async () => {
       const { status, body } = await as(member).call("GET", "/api/notifications/preferences");
       expect(status).toBe(200);
-      expect(body).toEqual({ prayerRequests: true });
+      expect(body).toEqual({ prayerRequests: true, prayerRequestReviews: true });
 
       const { rows } = await db().query<{ count: string }>(
         "select count(*)::text as count from notification_preferences"
@@ -341,7 +372,7 @@ describe.skipIf(!hasDb)("notifications", () => {
       const off = await as(member).call("PUT", "/api/notifications/preferences", {
         prayerRequests: false,
       });
-      expect(off.body).toEqual({ prayerRequests: false });
+      expect(off.body).toEqual({ prayerRequests: false, prayerRequestReviews: true });
 
       await post();
 
@@ -374,13 +405,25 @@ describe.skipIf(!hasDb)("notifications", () => {
     it("leaves an unmentioned preference alone", async () => {
       await as(member).call("PUT", "/api/notifications/preferences", { prayerRequests: false });
       const { body } = await as(member).call("PUT", "/api/notifications/preferences", {});
-      expect(body).toEqual({ prayerRequests: false });
+      expect(body).toEqual({ prayerRequests: false, prayerRequestReviews: true });
+    });
+
+    it("saves one switch without disturbing the other", async () => {
+      // The page sends only what was just touched, so an absent field must read
+      // as "leave it alone" rather than as "off".
+      await as(reviewer).call("PUT", "/api/notifications/preferences", {
+        prayerRequests: false,
+      });
+      const { body } = await as(reviewer).call("PUT", "/api/notifications/preferences", {
+        prayerRequestReviews: false,
+      });
+      expect(body).toEqual({ prayerRequests: false, prayerRequestReviews: false });
     });
 
     it("is per account, not per parish", async () => {
       await as(member).call("PUT", "/api/notifications/preferences", { prayerRequests: false });
       const { body } = await as(other).call("GET", "/api/notifications/preferences");
-      expect(body).toEqual({ prayerRequests: true });
+      expect(body).toEqual({ prayerRequests: true, prayerRequestReviews: true });
     });
   });
 

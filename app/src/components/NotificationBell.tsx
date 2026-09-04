@@ -31,7 +31,7 @@ import { useNow } from "./ui";
  */
 const NOTIFICATION_LABELS: Record<NotificationType, string> = {
   PRAYER_REQUEST: "Prayer request",
-  PRAYER_REQUEST_REVIEW: "Waiting for review",
+  PRAYER_REQUEST_REVIEW: "Needs your approval",
 };
 
 export function NotificationBell({ className = "" }: { className?: string }) {

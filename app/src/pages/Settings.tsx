@@ -50,7 +50,9 @@ export function Settings() {
   });
 
   const savePreferences = useMutation({
-    mutationFn: (body: { prayerRequests: boolean }) =>
+    // Only the switch that was touched: the server coalesces an absent field to
+    // whatever it already held, so this cannot clear the other one.
+    mutationFn: (body: Partial<NotificationPreferencesDto>) =>
       api<NotificationPreferencesDto>("/notifications/preferences", {
         method: "PUT",
         body,
@@ -133,6 +135,8 @@ export function Settings() {
 
   const preferences = preferencesQuery.data;
   const prayerRequests = preferences?.prayerRequests ?? true;
+  const prayerRequestReviews = preferences?.prayerRequestReviews ?? true;
+  const saving = preferencesQuery.isPending || savePreferences.isPending;
   const message = error ?? preferencesQuery.error?.message ?? null;
 
   return (
@@ -144,8 +148,8 @@ export function Settings() {
       <section className="rounded-lg border border-line bg-surface p-4">
         <h2 className="font-bold text-ink">Notifications</h2>
         <p className="mt-1 text-sm text-ink-muted">
-          When a prayer request is posted, the directory can tell you two ways: a badge on the bell
-          in the top corner, and a notification on your phone or computer.
+          The directory can tell you about prayer requests two ways: a badge on the bell in the top
+          corner, and a notification on your phone or computer.
         </p>
 
         <div className="mt-5">
@@ -153,19 +157,29 @@ export function Settings() {
             Notify me about
           </h3>
           <Switch
-            label="Prayer requests"
-            hint={
-              // Reviewers get told about two different things through this one
-              // switch, so saying only "when one is posted" would be a half
-              // truth to exactly the people who most need the other half.
-              canApprovePrayerRequests
-                ? "When one is posted for the parish, and when one is waiting for your review."
-                : "Whenever one is posted for the parish."
-            }
+            label="New prayer requests"
+            hint="When somebody's prayer request is posted for the parish to see."
             checked={prayerRequests}
-            disabled={preferencesQuery.isPending || savePreferences.isPending}
+            disabled={saving}
             onChange={(next) => savePreferences.mutate({ prayerRequests: next })}
           />
+
+          {/*
+            Only shown to the people who would ever get one. For everybody else
+            it would be a switch with no effect, and the value stored on their
+            row is simply never read.
+          */}
+          {canApprovePrayerRequests && (
+            <div className="mt-4 border-t border-line pt-4">
+              <Switch
+                label="Requests waiting for my approval"
+                hint="When somebody asks for prayers and it needs your approval before the parish can see it. Turning this off does not stop you approving them — they still show on the Prayer Requests page."
+                checked={prayerRequestReviews}
+                disabled={saving}
+                onChange={(next) => savePreferences.mutate({ prayerRequestReviews: next })}
+              />
+            </div>
+          )}
         </div>
 
         <div className="mt-5 border-t border-line pt-5">
@@ -181,8 +195,8 @@ export function Settings() {
               hint={
                 // The two switches compose, so say so rather than leaving
                 // somebody with push on and nothing selected to send.
-                !prayerRequests
-                  ? "Nothing to send while Prayer requests is off."
+                !prayerRequests && !(canApprovePrayerRequests && prayerRequestReviews)
+                  ? "Nothing to send while everything above is switched off."
                   : subscribed
                     ? "This device will be notified even when the directory is closed."
                     : "Your phone or computer will ask for permission."

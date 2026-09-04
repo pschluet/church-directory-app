@@ -34,17 +34,28 @@ routes.post("/read", async (c) => {
   return c.json({ cleared });
 });
 
+interface PreferenceRow {
+  prayer_requests: boolean;
+  prayer_request_reviews: boolean;
+}
+
+/** No row means every default is on, which is why nothing needed backfilling. */
+function toPreferences(row: PreferenceRow | null): NotificationPreferencesDto {
+  return {
+    prayerRequests: row?.prayer_requests ?? true,
+    prayerRequestReviews: row?.prayer_request_reviews ?? true,
+  };
+}
+
 routes.get("/preferences", async (c) => {
   const caller = c.get("caller");
-  const row = await one<{ prayer_requests: boolean }>(
+  const row = await one<PreferenceRow>(
     c.get("db"),
-    "select prayer_requests from notification_preferences where app_user_id = $1",
+    `select prayer_requests, prayer_request_reviews
+       from notification_preferences where app_user_id = $1`,
     [caller.appUserId]
   );
-  // No row means every default is on, which is why nothing had to be
-  // backfilled when the table arrived.
-  const body: NotificationPreferencesDto = { prayerRequests: row?.prayer_requests ?? true };
-  return c.json(body);
+  return c.json(toPreferences(row));
 });
 
 routes.put("/preferences", async (c) => {
@@ -52,18 +63,24 @@ routes.put("/preferences", async (c) => {
   const db = c.get("db");
   const payload = notificationPreferencesSchema.parse(await c.req.json());
 
-  const row = await one<{ prayer_requests: boolean }>(
+  /*
+   * `coalesce` twice over, so a payload naming one switch leaves the other
+   * exactly as it was -- the settings page sends only what the member just
+   * touched, and an absent field must not be read as "off".
+   */
+  const row = await one<PreferenceRow>(
     db,
-    `insert into notification_preferences (app_user_id, prayer_requests)
-     values ($1, coalesce($2, true))
+    `insert into notification_preferences (app_user_id, prayer_requests, prayer_request_reviews)
+     values ($1, coalesce($2, true), coalesce($3, true))
      on conflict (app_user_id) do update
-        set prayer_requests = coalesce($2, notification_preferences.prayer_requests)
-     returning prayer_requests`,
-    [caller.appUserId, payload.prayerRequests ?? null]
+        set prayer_requests = coalesce($2, notification_preferences.prayer_requests),
+            prayer_request_reviews =
+              coalesce($3, notification_preferences.prayer_request_reviews)
+     returning prayer_requests, prayer_request_reviews`,
+    [caller.appUserId, payload.prayerRequests ?? null, payload.prayerRequestReviews ?? null]
   );
 
-  const body: NotificationPreferencesDto = { prayerRequests: row!.prayer_requests };
-  return c.json(body);
+  return c.json(toPreferences(row));
 });
 
 export default routes;
