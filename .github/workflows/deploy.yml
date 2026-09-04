@@ -81,9 +81,10 @@ jobs:
         #
         # VAPID_PRIVATE_KEY may be unset: a parish with no keypair posts prayer
         # requests that arrive without a push notification, which the API treats
-        # as a supported state. Setting it while infra/push-public-key.txt is
-        # missing (or the reverse) fails the synth on purpose -- see
-        # readPushKeys in infra/bin/app.ts.
+        # as a supported state. Committing infra/push-public-key.txt *without*
+        # setting this fails the synth on purpose; the reverse only warns, so the
+        # secret and the commit can land in either order. See readPushKeys in
+        # infra/bin/app.ts.
         env:
           CLOUDFRONT_PRIVATE_KEY: ${{ secrets.CLOUDFRONT_PRIVATE_KEY }}
           VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}

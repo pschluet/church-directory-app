@@ -47,26 +47,39 @@ function readPhotoKeys(): { publicKeyPem: string; privateKeyPem: string } {
 /**
  * The VAPID keypair for Web Push. Created once by scripts/create-push-key.sh.
  *
- * Unlike the photo keypair, both halves being absent is fine: a parish with no
- * keys posts prayer requests that simply arrive without a notification, and the
- * API treats empty values as "push is not configured". What is *not* fine is
- * one without the other -- a committed public key with no secret behind it
- * would let browsers subscribe to something that can never send -- so that
- * combination throws here rather than deploying quietly.
+ * Unlike the photo keypair, having no keys at all is fine: a parish without them
+ * posts prayer requests that simply arrive without a notification, and the API
+ * treats empty values as "push is not configured".
+ *
+ * The committed public key is what decides whether push is switched on, and the
+ * two cases are deliberately not symmetric.
+ *
+ * A public key with no secret behind it *throws*: browsers would happily
+ * subscribe against it to a sender that can never send, and nothing downstream
+ * would look wrong.
+ *
+ * A secret with no public key committed does not, because the setup is two
+ * steps in two different places -- `gh secret set` and a commit -- and the order
+ * they land in should not be able to break a deploy. Until the public key
+ * arrives, push is simply off. It is warned about rather than ignored, so a
+ * misplaced file is visible in the deploy log instead of silently costing
+ * everyone their notifications.
  */
 function readPushKeys(): { publicKey: string; privateKey: string } {
   const publicKeyPath = path.join(__dirname, "..", "push-public-key.txt");
-  const hasPublicKey = fs.existsSync(publicKeyPath);
   const privateKey = app.node.tryGetContext("vapidPrivateKey") ?? process.env.VAPID_PRIVATE_KEY;
 
-  if (!hasPublicKey && !privateKey) return { publicKey: "", privateKey: "" };
-
-  if (!hasPublicKey) {
-    throw new Error(
-      "A VAPID private key was supplied but infra/push-public-key.txt is missing. " +
-        "Run ./scripts/create-push-key.sh and commit the public key."
-    );
+  if (!fs.existsSync(publicKeyPath)) {
+    if (privateKey) {
+      console.warn(
+        "A VAPID private key was supplied but infra/push-public-key.txt is missing, " +
+          "so Web Push is being deployed switched off. Run ./scripts/create-push-key.sh " +
+          "and commit the public key it writes."
+      );
+    }
+    return { publicKey: "", privateKey: "" };
   }
+
   if (!privateKey) {
     throw new Error(
       'Missing the VAPID private key. Pass -c vapidPrivateKey="$(cat key.txt)" or set ' +

@@ -274,9 +274,12 @@ normal `git push`.
    generate a keypair, and a private key in the template would be readable by anyone who can
    describe the stack.
 
-   Setting the secret without committing the public key — or the reverse — fails the synth on
-   purpose (`readPushKeys` in `infra/bin/app.ts`), because a public key browsers can
-   subscribe against with no private key behind it is worse than no push at all.
+   The two can land in either order — the secret is set in GitHub, the public key arrives in a
+   commit, and neither should be able to break a deploy that catches the other half in
+   flight. Committing the public key *without* the secret does fail the synth on purpose
+   (`readPushKeys` in `infra/bin/app.ts`): a public key browsers can subscribe against with no
+   private key behind it is worse than no push at all. The reverse only warns, and deploys
+   with push switched off until the commit lands.
 
    Re-running the script **rotates** the keypair and invalidates every existing subscription.
    Nobody has to clean anything up — a send to a stale subscription answers 410 and the row
