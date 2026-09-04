@@ -27,6 +27,7 @@ import {
   PageHeading,
   Spinner,
   inputClass,
+  useNow,
 } from "../components/ui";
 
 /**
@@ -56,15 +57,28 @@ export function PrayerRequests() {
   // the list with a notice.
   const [actionError, setActionError] = useState<string | null>(null);
 
+  /*
+   * Nothing on this page polls. It updates three ways: a push, forwarded to
+   * open tabs by the service worker (see useRealtimeRefresh); coming back to
+   * the app; and the refresh button.
+   *
+   * `refetchOnWindowFocus` is on for these two and the bell's inbox, and
+   * nowhere else in the app -- the default in lib/queryClient.ts is off. The
+   * page needs it because the bell has it: without it, returning to the app
+   * could show a badge reading "1 new" above a list that does not contain it.
+   * It only fires when the data is already stale (30s) or was invalidated.
+   */
   const feedQuery = useQuery({
     queryKey: qk.prayerRequests(organizationId),
     queryFn: ({ signal }) => api<Feed>("/prayer-requests", { signal }),
+    refetchOnWindowFocus: true,
   });
 
   const queueQuery = useQuery({
     queryKey: qk.pendingPrayerRequests(organizationId),
     queryFn: ({ signal }) => api<Feed>("/prayer-requests/pending", { signal }),
     enabled: canApprovePrayerRequests,
+    refetchOnWindowFocus: true,
   });
 
   /*
@@ -80,12 +94,31 @@ export function PrayerRequests() {
       queryClient.invalidateQueries({ queryKey: qk.notifications() }),
     ]);
 
+  /*
+   * Acting on a row somebody else already dealt with is not the caller's
+   * mistake, so it is reconciled rather than reported.
+   *
+   * The server answers 409 on a request that has already been reviewed and 404
+   * on one that is gone; both mean "your copy of this list is out of date".
+   * Refreshing makes the stale row disappear, which is what the caller wanted
+   * to happen to it anyway. This matters more now that nothing polls: the
+   * window in which a reviewer can be looking at a decided queue used to be a
+   * minute and is now open-ended.
+   */
+  function handleActionError(err: unknown, fallback: string): void {
+    if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
+      setActionError("Somebody else got there first — this list has been refreshed.");
+      void refresh();
+      return;
+    }
+    setActionError(err instanceof Error ? err.message : fallback);
+  }
+
   const decide = useMutation({
     mutationFn: ({ id, decision }: { id: string; decision: "approve" | "reject" }) =>
       api(`/prayer-requests/${id}/${decision}`, { method: "POST" }),
     onSuccess: refresh,
-    onError: (err) =>
-      setActionError(err instanceof Error ? err.message : "Could not record that decision"),
+    onError: (err) => handleActionError(err, "Could not record that decision"),
   });
 
   const remove = useMutation({
@@ -94,8 +127,10 @@ export function PrayerRequests() {
       setConfirmDelete(null);
       await refresh();
     },
-    onError: (err) =>
-      setActionError(err instanceof Error ? err.message : "Could not remove that request"),
+    onError: (err) => {
+      setConfirmDelete(null);
+      handleActionError(err, "Could not remove that request");
+    },
   });
 
   const all = feedQuery.data?.prayerRequests ?? [];
@@ -113,13 +148,31 @@ export function PrayerRequests() {
 
   const error = actionError ?? feedQuery.error?.message ?? null;
   const canPost = Boolean(me?.appUser.personId);
+  const fetching = feedQuery.isFetching || queueQuery.isFetching;
+  /*
+   * One clock for every relative time on this page -- the cards and the
+   * "Updated" label alike. Without it they freeze at the moment they were
+   * rendered, which is how a page left open came to disagree with the bell
+   * about when the same request was posted.
+   */
+  const now = useNow();
 
   return (
     <>
       <PageHeading
         title="Prayer Requests"
         subtitle={`${posted.length} ${posted.length === 1 ? "request" : "requests"} from the last month`}
-        actions={canPost && <Button onClick={() => setComposing(true)}>Ask for prayers</Button>}
+        actions={
+          <>
+            <RefreshButton
+              busy={fetching}
+              updatedAt={feedQuery.dataUpdatedAt}
+              now={now}
+              onRefresh={() => void refresh()}
+            />
+            {canPost && <Button onClick={() => setComposing(true)}>Ask for prayers</Button>}
+          </>
+        }
       />
 
       {error && <ErrorNotice message={error} onRetry={() => void feedQuery.refetch()} />}
@@ -170,6 +223,7 @@ export function PrayerRequests() {
               <RequestCard
                 key={request.id}
                 request={request}
+                now={now}
                 onDelete={() => setConfirmDelete(request)}
               />
             ))}
@@ -195,6 +249,7 @@ export function PrayerRequests() {
               <RequestCard
                 key={request.id}
                 request={request}
+                now={now}
                 onDelete={() => setConfirmDelete(request)}
               />
             ))}
@@ -231,6 +286,82 @@ export function PrayerRequests() {
   );
 }
 
+/**
+ * Refresh, and how stale the list is.
+ *
+ * The button exists because nothing polls: a member without notifications
+ * enabled has no other way to pull in what has been posted since they opened
+ * the page. The timestamp beside it exists because the button alone implies the
+ * data *might* be old without saying whether that means three seconds or three
+ * hours.
+ *
+ * Icon-only, inline SVG, on the same footing as MenuButton -- the app ships no
+ * icon package. `aria-label` because there is no text to read.
+ */
+function RefreshButton({
+  busy,
+  updatedAt,
+  now,
+  onRefresh,
+}: {
+  busy: boolean;
+  /** `dataUpdatedAt`; 0 before the first fetch lands. */
+  updatedAt: number;
+  now: Date;
+  onRefresh: () => void;
+}) {
+  return (
+    <span className="flex items-center gap-2">
+      {updatedAt > 0 && (
+        // Rendered once, so it ages while the page sits open. The focus
+        // refetch re-renders it on return, which is when anyone looks.
+        // The `·` separator rather than "Updated <label>", because
+        // formatPostedAt capitalises its relative labels and falls back to a
+        // date -- lowercasing it would turn "4 May" into "4 may".
+        <span className="text-sm text-ink-muted">
+          Updated · {formatPostedAt(new Date(updatedAt).toISOString(), now)}
+        </span>
+      )}
+      <button
+        type="button"
+        aria-label="Refresh"
+        onClick={onRefresh}
+        // Disabled while in flight, so a double tap cannot queue two rounds.
+        disabled={busy}
+        className="tap-target inline-flex items-center justify-center rounded-md text-ink-muted transition hover:bg-surface-muted hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
+      >
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 20 20"
+          className={`h-5 w-5 fill-current ${busy ? "animate-spin" : ""}`}
+        >
+          {/*
+            A circular arrow. The ring is *stroked*, not filled: a filled arc
+            path closes across its own chord and renders as a blob rather than a
+            ring. It runs from 0 degrees the long way round to -45, leaving the
+            gap at the top right for the head.
+          */}
+          <path
+            d="M16 10a6 6 0 1 1-1.76-4.24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.8"
+            strokeLinecap="round"
+          />
+          {/*
+            The head, declared pointing straight down about the origin and then
+            rotated onto the arc's tangent -- the same trick as the gear's teeth
+            in SettingsLink, so the geometry is arithmetic rather than a
+            hand-fitted path. Transforms apply right to left: rotate, then move
+            to the arc's end at (14.24, 5.76).
+          */}
+          <path d="M-2.2 0h4.4l-2.2 3.2z" transform="translate(14.24 5.76) rotate(-45)" />
+        </svg>
+      </button>
+    </span>
+  );
+}
+
 /** The status of one of the caller's own requests. Posted rows need no badge. */
 function StatusBadge({ request }: { request: PrayerRequestDto }) {
   if (request.status === "PENDING") return <Badge tone="accent">Waiting for review</Badge>;
@@ -250,7 +381,15 @@ function RequestBody({ request }: { request: PrayerRequestDto }) {
   );
 }
 
-function RequestCard({ request, onDelete }: { request: PrayerRequestDto; onDelete: () => void }) {
+function RequestCard({
+  request,
+  now,
+  onDelete,
+}: {
+  request: PrayerRequestDto;
+  now: Date;
+  onDelete: () => void;
+}) {
   return (
     <li className="rounded-lg border border-line bg-surface p-4">
       <div className="flex items-start justify-between gap-3">
@@ -261,7 +400,7 @@ function RequestCard({ request, onDelete }: { request: PrayerRequestDto; onDelet
           </div>
           <p className="text-sm text-ink-muted">
             {request.authorName}
-            {request.postedAt && ` · ${formatPostedAt(request.postedAt)}`}
+            {request.postedAt && ` · ${formatPostedAt(request.postedAt, now)}`}
           </p>
         </div>
         {/* No menu at all rather than an empty one, as on the accounts page. */}

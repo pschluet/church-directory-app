@@ -1,10 +1,11 @@
 import { useEffect, useId, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
-import type { InboxDto } from "@shared";
+import type { InboxDto, NotificationType } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { formatPostedAt } from "../lib/format";
+import { useNow } from "./ui";
 
 /**
  * The bell, and the panel behind it.
@@ -21,6 +22,18 @@ import { formatPostedAt } from "../lib/format";
  * Opening it marks everything read, which is what the requirement asks for --
  * "when the notifications are viewed, the badge should go away".
  */
+/**
+ * What each kind of notification is, in the panel.
+ *
+ * The title alone is the whole message for a posted request; for one waiting to
+ * be reviewed the title only says *which* request, and this is what says it
+ * needs the reader to do something.
+ */
+const NOTIFICATION_LABELS: Record<NotificationType, string> = {
+  PRAYER_REQUEST: "Prayer request",
+  PRAYER_REQUEST_REVIEW: "Waiting for review",
+};
+
 export function NotificationBell({ className = "" }: { className?: string }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
@@ -32,17 +45,21 @@ export function NotificationBell({ className = "" }: { className?: string }) {
     queryKey: qk.notifications(),
     queryFn: ({ signal }) => api<InboxDto>("/notifications", { signal, withOrg: false }),
     /*
-     * Polled, because a prayer request is posted by somebody else and there is
-     * nothing to invalidate the cache from. A minute is well inside how long it
-     * takes to read a page, and the response is a count and at most thirty
-     * short rows.
+     * Deliberately not polled. This used to refetch every 60s, because a prayer
+     * request is posted by somebody else and there was nothing to invalidate
+     * the cache from. There is now: the service worker forwards the push to
+     * every open tab and `useRealtimeRefresh` invalidates this key.
      *
-     * The window-focus refetch is turned on for this one query -- the app-wide
-     * default is off (see lib/queryClient.ts) -- because coming back to the app
-     * is exactly the moment somebody looks at the bell, and on a phone the
-     * interval above has been suspended in the background.
+     * Polling was dropped rather than tightened because its cost scales with
+     * concurrent tabs -- tens of dollars a month at ten thousand members -- to
+     * catch something that happens a few times a week.
+     *
+     * The window-focus refetch stays on for this one query; the app-wide
+     * default is off (see lib/queryClient.ts). Coming back to the app is
+     * exactly the moment somebody looks at the bell, and it is what covers
+     * members who have not enabled notifications and so never get a push. Note
+     * it only fires when the data is already stale (30s) or was invalidated.
      */
-    refetchInterval: 60_000,
     refetchOnWindowFocus: true,
   });
 
@@ -50,7 +67,7 @@ export function NotificationBell({ className = "" }: { className?: string }) {
     mutationFn: () => api("/notifications/read", { method: "POST", withOrg: false }),
     onMutate: () => {
       // Optimistic, so the badge goes as the panel opens rather than a round
-      // trip later. A failure is corrected by the next poll.
+      // trip later.
       queryClient.setQueryData<InboxDto>(qk.notifications(), (previous) =>
         previous
           ? {
@@ -60,6 +77,22 @@ export function NotificationBell({ className = "" }: { className?: string }) {
           : previous
       );
     },
+    /*
+     * Not optional, and it used to be: this said "a failure is corrected by the
+     * next poll", and there is no next poll. Without settling against the
+     * server a failed mark-read leaves the badge reading 0 forever, and a push
+     * arriving mid-flight can refetch pre-commit state and strand it at the old
+     * number instead. Re-reading once is what makes the guess above safe.
+     */
+    onSettled: () => queryClient.invalidateQueries({ queryKey: qk.notifications() }),
+    /*
+     * Deliberately silent. Marking notifications read is a background
+     * courtesy, and a warning about it failing would be more disruptive than
+     * the failure -- the badge reappearing after `onSettled` re-reads is the
+     * signal, and it is an honest one. Handled explicitly rather than left to
+     * the default so the rejection is not merely unobserved.
+     */
+    onError: (err) => console.warn("Could not mark notifications read", err),
   });
 
   useEffect(() => {
@@ -80,6 +113,10 @@ export function NotificationBell({ className = "" }: { className?: string }) {
       document.removeEventListener("keydown", onKeyDown);
     };
   }, [open]);
+
+  // So "2 minutes ago" in the panel keeps up with the clock instead of freezing
+  // at whatever it said when this last rendered for some other reason.
+  const now = useNow();
 
   const inbox = inboxQuery.data;
   const unread = inbox?.unreadCount ?? 0;
@@ -158,7 +195,8 @@ export function NotificationBell({ className = "" }: { className?: string }) {
                       {notification.title}
                     </span>
                     <span className="block text-xs text-ink-muted">
-                      Prayer request · {formatPostedAt(notification.createdAt)}
+                      {NOTIFICATION_LABELS[notification.type]} ·{" "}
+                      {formatPostedAt(notification.createdAt, now)}
                     </span>
                   </Link>
                 </li>

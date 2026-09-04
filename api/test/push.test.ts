@@ -67,10 +67,11 @@ const subscription = (id: string, appUserId: string) => ({
   auth: "auth",
 });
 
-const payload = (body: string) => ({
+const payload = (body: string, tag = "prayer-requests") => ({
   title: "Parish Directory",
   body,
   url: "/prayer-requests",
+  tag,
 });
 
 describe("push configuration", () => {
@@ -176,6 +177,29 @@ describe("sendToUsers", () => {
 
     const [, json] = sendNotification.mock.calls[0]!;
     expect(JSON.parse(json as string).url).toBe("/prayer-requests");
+  });
+
+  it("carries the tag, so the two kinds do not displace one another", async () => {
+    /*
+     * A reviewer can have something waiting *and* something newly posted. They
+     * are different things to do, so they must not replace each other on the
+     * lock screen -- which is what a shared tag would cause.
+     */
+    const push = await loadPush(KEYS);
+    const { db } = fakeDb([subscription("s1", "user-1"), subscription("s2", "user-2")]);
+
+    await push.sendToUsers(
+      db,
+      new Map([
+        ["user-1", payload("1 new prayer request", "prayer-requests")],
+        ["user-2", payload("1 prayer request waiting for review", "prayer-requests-review")],
+      ])
+    );
+
+    const tags = sendNotification.mock.calls.map(
+      ([, json]) => JSON.parse(json as string).tag as string
+    );
+    expect(new Set(tags)).toEqual(new Set(["prayer-requests", "prayer-requests-review"]));
   });
 
   it("deletes a subscription the push service says is gone", async () => {

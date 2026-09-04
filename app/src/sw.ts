@@ -70,6 +70,40 @@ interface PushPayload {
   title?: string;
   body?: string;
   url?: string;
+  /** Which notification this replaces. See the `tag` note below. */
+  tag?: string;
+}
+
+/**
+ * Kept as a literal rather than imported from `@shared`, matching PushPayload
+ * above. The alias does resolve in this build, so an import would compile --
+ * and would pull Zod and the whole types module into sw.js.
+ */
+const CHANGED_MESSAGE = "prayer-requests-changed";
+
+/**
+ * Tells every open tab that something changed, so the bell and the prayer
+ * requests page update without waiting to be asked.
+ *
+ * This is the whole of the app's "real-time": nothing polls, so a push is the
+ * only signal that arrives on its own. Deliberately a bare signal with no
+ * payload -- this worker has no auth context and no idea which account a given
+ * window is signed in as, and a phone shared between two members registers one
+ * subscription that moves to whoever signed in last. So a message triggered by
+ * one account's push can land in a window signed in as another; carrying data
+ * would make that a leak, whereas a bare "go and re-read" is just a wasted
+ * request.
+ *
+ * `includeUncontrolled` is what makes this work at all on the first install: a
+ * page loaded before this worker took over is not controlled by it yet and
+ * would otherwise be missed. `matchAll` only ever returns same-origin clients,
+ * so there is nothing to filter.
+ */
+async function notifyOpenTabs(): Promise<void> {
+  const windows = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+  for (const client of windows) {
+    client.postMessage({ type: CHANGED_MESSAGE });
+  }
 }
 
 /**
@@ -88,6 +122,9 @@ interface PushPayload {
  * A notification is always shown, whatever arrives. Every subscription is made
  * `userVisibleOnly`, and a push that shows nothing is what gets a subscription
  * revoked -- on iOS after very few offences.
+ *
+ * The notification is only half of it: this also nudges any open tab, which is
+ * how the app updates itself now that nothing polls. See `notifyOpenTabs`.
  */
 self.addEventListener("push", (event) => {
   let payload: PushPayload = {};
@@ -98,16 +135,28 @@ self.addEventListener("push", (event) => {
   }
 
   event.waitUntil(
-    self.registration.showNotification(payload.title ?? "Parish Directory", {
-      body: payload.body ?? "Something new in the parish directory",
-      tag: "prayer-requests",
-      // Not in every lib.dom yet, though every engine that delivers Web Push
-      // supports it.
-      ...({ renotify: true } as NotificationOptions),
-      icon: "/pwa-192x192.png",
-      badge: "/pwa-64x64.png",
-      data: { url: payload.url ?? "/prayer-requests" },
-    })
+    (async () => {
+      await self.registration.showNotification(payload.title ?? "Parish Directory", {
+        body: payload.body ?? "Something new in the parish directory",
+        // From the payload, so a request waiting for review can replace the
+        // previous *review* notification without displacing a posted one.
+        tag: payload.tag ?? "prayer-requests",
+        // Not in every lib.dom yet, though every engine that delivers Web Push
+        // supports it.
+        ...({ renotify: true } as NotificationOptions),
+        icon: "/pwa-192x192.png",
+        badge: "/pwa-64x64.png",
+        data: { url: payload.url ?? "/prayer-requests" },
+      });
+
+      /*
+       * In the same chain as the notification, and swallowing its own failure.
+       * A second `waitUntil` risks the worker being killed before `matchAll`
+       * resolves, and a rejected one counts as having shown nothing against
+       * `userVisibleOnly` -- which is what gets a subscription revoked.
+       */
+      await notifyOpenTabs().catch(() => undefined);
+    })()
   );
 });
 

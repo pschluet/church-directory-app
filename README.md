@@ -76,8 +76,12 @@ Accounts are invite-only, created by a parish administrator.
   requests without being granted anything.
 - **Notifications:** two things, deliberately separate. A bell in the nav counts rows in a
   `notifications` table, one per recipient per event, fanned out in the same transaction
-  that approves a prayer request — so "unread" is a fact about a person, which a
-  high-water-mark timestamp could count but could not list by title. On top of that, **Web
+  that posts a prayer request — so "unread" is a fact about a person, which a
+  high-water-mark timestamp could count but could not list by title. There are two kinds:
+  a request has been posted, and — for reviewers — a request is waiting for review. The
+  second retires itself, because the query that lists it requires the request to still be
+  `PENDING`: whoever gets there first clears it for everyone, and nothing has to go back
+  and mark it read. On top of that, **Web
   Push**: `web-push` in the API, a VAPID keypair from `scripts/create-push-key.sh`
   delivered exactly like the photo signing key, and the `push` listener in `app/src/sw.ts`.
   The push body is only ever a count — "3 new prayer requests", that recipient's own unread
@@ -98,6 +102,17 @@ Accounts are invite-only, created by a parish administrator.
   signal at all. The one exclusion is whoever just posted it — the reviewer who approved
   it, or a Prayer Request Admin posting their own request, which goes up without review
   because they are the person who would otherwise approve it.
+- **Nothing polls.** The bell used to refetch every 60s, which is the obvious way to notice
+  something posted by somebody else — and the wrong one here: its cost scales with
+  concurrent open tabs rather than with events, around $2.70 per million requests, which at
+  ten thousand members is tens of dollars a month to catch something that happens a few
+  times a week. Instead the push that already goes out is the signal: `app/src/sw.ts`
+  forwards it to every open tab and `useRealtimeRefresh` turns it into a cache
+  invalidation, so anyone with notifications on gets a live page for nothing. Everyone else
+  has window refocus and a refresh button on the page, which also says how old the list is.
+  A corollary worth knowing: relative timestamps are computed at render and nothing
+  re-renders on its own, so `useNow` ticks them — without it a page left open disagreed
+  with the bell about when the same request was posted, from identical data.
 - **Tags:** every resource carries `Project=all-saints` for cost tracking.
 
 ### Why there is no NAT gateway
@@ -174,7 +189,7 @@ codes arrive in your actual inbox.
 ```sh
 npm run ci:check                        # Biome lint + format
 npm run typecheck --workspaces
-npm test                                # 815 tests across api, app and infra
+npm test                                # 859 tests across api, app and infra
 ```
 
 The API tests run against a real Postgres (`directory_test`, migrated automatically by

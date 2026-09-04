@@ -162,6 +162,48 @@ export function useDismissable(onClose: () => void): void {
 }
 
 /**
+ * A clock that advances, for relative timestamps.
+ *
+ * "2 minutes ago" is computed at render, and React has no reason to render
+ * again -- so without this a label sits frozen at whatever it said when the
+ * component mounted. That is not a cosmetic problem: with nothing polling, a
+ * page left open showed "1 hour ago" beside a bell that had re-rendered for its
+ * own reasons and said "2 hours ago", from identical data. Two clocks, one of
+ * them stopped.
+ *
+ * Ticks only while the document is visible -- nobody is reading a hidden tab,
+ * and waking the CPU to recompute invisible text is pure waste -- and re-syncs
+ * on `visibilitychange`, which is the case that matters most: somebody
+ * returning after an hour wants the times right immediately, not up to
+ * `intervalMs` later.
+ *
+ * 30 seconds by default, which is half the granularity of the shortest label
+ * `formatPostedAt` produces, so no reading is ever more than a minute stale.
+ */
+export function useNow(intervalMs = 30_000): Date {
+  const [now, setNow] = useState(() => new Date());
+
+  useEffect(() => {
+    const tick = () => setNow(new Date());
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") tick();
+    };
+
+    const timer = setInterval(() => {
+      if (document.visibilityState === "visible") tick();
+    }, intervalMs);
+    document.addEventListener("visibilitychange", onVisibility);
+
+    return () => {
+      clearInterval(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [intervalMs]);
+
+  return now;
+}
+
+/**
  * Whether a media query currently matches.
  *
  * For the rare case where two layouts are different enough that `md:hidden` on

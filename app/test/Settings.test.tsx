@@ -34,10 +34,16 @@ vi.mock("../src/lib/push", () => ({
   isInstalled: () => false,
 }));
 
-const meState = { pushPublicKey: "vapid-public-key" as string | null };
+const meState = {
+  pushPublicKey: "vapid-public-key" as string | null,
+  canApprove: false,
+};
 
 vi.mock("../src/context/MeContext", () => ({
-  useMe: () => ({ me: { pushPublicKey: meState.pushPublicKey } as unknown as MeDto }),
+  useMe: () => ({
+    me: { pushPublicKey: meState.pushPublicKey } as unknown as MeDto,
+    canApprovePrayerRequests: meState.canApprove,
+  }),
 }));
 
 const SUBSCRIPTION = {
@@ -60,6 +66,7 @@ describe("Settings", () => {
     pushState.subscription = null;
     pushState.subscribeResult = SUBSCRIPTION;
     meState.pushPublicKey = "vapid-public-key";
+    meState.canApprove = false;
   });
 
   it("offers both switches when push is available", async () => {
@@ -143,6 +150,20 @@ describe("Settings", () => {
       })
     );
     expect(SUBSCRIPTION.unsubscribe).toHaveBeenCalled();
+  });
+
+  it("tells a reviewer the switch covers their review queue too", async () => {
+    // One switch, two things -- so the copy has to mention both to exactly the
+    // people who get both.
+    meState.canApprove = true;
+    renderWithProviders(<Settings />);
+    expect(await screen.findByText(/waiting for your review/i)).toBeInTheDocument();
+  });
+
+  it("does not mention reviewing to somebody who cannot review", async () => {
+    renderWithProviders(<Settings />);
+    await screen.findByRole("checkbox", { name: /Prayer requests/ });
+    expect(screen.queryByText(/waiting for your review/i)).not.toBeInTheDocument();
   });
 
   it("saves the prayer request preference", async () => {

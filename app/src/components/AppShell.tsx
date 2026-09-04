@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { useMe } from "../context/MeContext";
 import { NotificationBell } from "./NotificationBell";
 import { SettingsLink } from "./SettingsLink";
+import { useRealtimeRefresh } from "./useRealtimeRefresh";
 
 /**
  * The frame every page sits in, following allsaintsorthodox.org's structure:
@@ -34,6 +35,9 @@ const NAV_ITEMS: NavItem[] = [
 
 export function AppShell() {
   const { me, isAdmin, isSuperAdmin, switchOrganization } = useMe();
+  // Once, here: the bell below is rendered twice (phone and desktop copies),
+  // so this cannot live inside it.
+  useRealtimeRefresh();
   const { signOut, email } = useAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const location = useLocation();

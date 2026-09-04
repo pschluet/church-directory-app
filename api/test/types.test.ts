@@ -8,6 +8,7 @@ import {
   isLeapYear,
   isRealDate,
   normalizePhone,
+  rolesAtLeast,
   specialDateWriteSchema,
   personWriteSchema,
   organizationWriteSchema,
@@ -41,6 +42,39 @@ describe("hasRole", () => {
     for (const role of ROLES) {
       expect(hasRole(role, "USER")).toBe(true);
     }
+  });
+});
+
+describe("rolesAtLeast", () => {
+  /*
+   * This is what the review fan-out passes to `role = any($3::text[])`. It is
+   * derived from ROLE_RANK rather than written out in SQL precisely so the two
+   * cannot drift -- these cases are the guard on that.
+   */
+  it("returns every role that may review a prayer request", () => {
+    expect(new Set(rolesAtLeast("PRAYER_REQUEST_ADMIN"))).toEqual(
+      new Set(["PRAYER_REQUEST_ADMIN", "ADMIN", "SUPER_ADMIN"])
+    );
+  });
+
+  it("excludes a plain member", () => {
+    expect(rolesAtLeast("PRAYER_REQUEST_ADMIN")).not.toContain("USER");
+  });
+
+  it("agrees with hasRole for every role and every floor", () => {
+    // The property that matters: the list is exactly the roles hasRole admits,
+    // so an SQL recipient set built from it matches what requireRole allows.
+    for (const floor of ROLES) {
+      const allowed = rolesAtLeast(floor);
+      for (const role of ROLES) {
+        expect(allowed.includes(role)).toBe(hasRole(role, floor));
+      }
+    }
+  });
+
+  it("returns everything for the lowest floor and one role for the highest", () => {
+    expect(rolesAtLeast("USER")).toHaveLength(ROLES.length);
+    expect(rolesAtLeast("SUPER_ADMIN")).toEqual(["SUPER_ADMIN"]);
   });
 });
 

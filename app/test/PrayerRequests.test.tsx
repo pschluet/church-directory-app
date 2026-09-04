@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { MeDto, PrayerRequestDto } from "@shared";
+import { ApiError } from "../src/lib/api";
 import { PrayerRequests } from "../src/pages/PrayerRequests";
 import { renderWithProviders } from "./utils";
 
@@ -269,6 +270,130 @@ describe("PrayerRequests", () => {
 
       await userEvent.click(first);
       expect(screen.getByRole("dialog", { name: "For Fr. John" })).toBeInTheDocument();
+    });
+  });
+
+  describe("refreshing", () => {
+    /*
+     * The page does not poll -- see the bell's comment and the plan's costing --
+     * so this button is the only way a member without notifications enabled
+     * pulls in what has been posted since they opened it.
+     */
+    it("re-reads the page and the bell in one tap", async () => {
+      stubFeed([request()]);
+      renderWithProviders(<PrayerRequests />);
+      await screen.findByText("For Fr. John");
+
+      const before = apiMock.mock.calls.length;
+      await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
+
+      await waitFor(() => expect(apiMock.mock.calls.length).toBeGreaterThan(before));
+      const after = apiMock.mock.calls.slice(before).map(([path]) => path);
+      expect(after).toContain("/prayer-requests");
+    });
+
+    it("says how old the list is, since nothing refreshes it on its own", async () => {
+      stubFeed([request()]);
+      renderWithProviders(<PrayerRequests />);
+      expect(await screen.findByText(/Updated · Just now/)).toBeInTheDocument();
+    });
+
+    it("ages the freshness label instead of saying Just now forever", async () => {
+      /*
+       * The reported bug, and the worst instance of it: a label whose whole job
+       * is to say how old the data is, frozen at "Just now" because nothing
+       * re-renders it. Reported alongside a page claiming a request was posted
+       * an hour ago while the bell said two -- same data, two render times, one
+       * of the clocks stopped.
+       */
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        stubFeed([request()]);
+        renderWithProviders(<PrayerRequests />);
+        expect(await screen.findByText(/Updated · Just now/)).toBeInTheDocument();
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(5 * 60_000);
+        });
+
+        expect(screen.getByText(/Updated · 5 minutes ago/)).toBeInTheDocument();
+        expect(screen.queryByText(/Updated · Just now/)).not.toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("ages the posted times on the cards too", async () => {
+      // Both clocks on the page come from one `useNow`, so the cards and the
+      // label can never disagree with each other.
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+      try {
+        stubFeed([request({ postedAt: new Date().toISOString() })]);
+        renderWithProviders(<PrayerRequests />);
+        await screen.findByText("For Fr. John");
+        expect(screen.getByText(/Boris Ivanov · Just now/)).toBeInTheDocument();
+
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2 * 60 * 60_000);
+        });
+
+        expect(screen.getByText(/Boris Ivanov · 2 hours ago/)).toBeInTheDocument();
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("has an accessible name, being icon-only", async () => {
+      stubFeed([]);
+      renderWithProviders(<PrayerRequests />);
+      expect(await screen.findByRole("button", { name: "Refresh" })).toBeInTheDocument();
+    });
+  });
+
+  describe("acting on a stale list", () => {
+    /*
+     * With nothing polling, a reviewer can sit on a decided queue indefinitely.
+     * Tapping Post it on a row somebody else already handled is not their
+     * mistake, so it reconciles rather than reporting a 409 at them.
+     */
+    function stubDecideConflict(status: number, message: string) {
+      apiMock.mockImplementation((path: string) => {
+        if (path === "/prayer-requests") return Promise.resolve({ prayerRequests: [] });
+        if (path === "/prayer-requests/pending") {
+          return Promise.resolve({
+            prayerRequests: [
+              request({ id: "pr-gone", status: "PENDING", postedAt: null, canDecide: true }),
+            ],
+          });
+        }
+        return Promise.reject(new ApiError(status, message));
+      });
+    }
+
+    it("refreshes instead of showing the server's 409", async () => {
+      meState.canApprove = true;
+      stubDecideConflict(409, "That request has already been reviewed");
+      renderWithProviders(<PrayerRequests />);
+
+      await userEvent.click(await screen.findByRole("button", { name: "Post it" }));
+
+      await waitFor(() =>
+        expect(screen.getByText(/Somebody else got there first/)).toBeInTheDocument()
+      );
+      // The server's wording would read as the reviewer having done something
+      // wrong, so it must not be what they see.
+      expect(screen.queryByText(/That request has already been reviewed/)).not.toBeInTheDocument();
+    });
+
+    it("still reports a real failure", async () => {
+      meState.canApprove = true;
+      stubDecideConflict(500, "Something went wrong");
+      renderWithProviders(<PrayerRequests />);
+
+      await userEvent.click(await screen.findByRole("button", { name: "Post it" }));
+
+      await waitFor(() => expect(screen.getByText(/Something went wrong/)).toBeInTheDocument());
+      expect(screen.queryByText(/Somebody else got there first/)).not.toBeInTheDocument();
     });
   });
 

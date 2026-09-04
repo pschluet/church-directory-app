@@ -37,6 +37,19 @@ export function hasRole(role: Role, floor: Role): boolean {
   return ROLE_RANK[role] >= ROLE_RANK[floor];
 }
 
+/**
+ * Every role at or above `floor`, for the queries that have to ask the question
+ * in SQL.
+ *
+ * Derived rather than written out, so `ROLE_RANK` stays the only ladder. The
+ * alternative -- a role list in a WHERE clause -- is a second copy of the
+ * hierarchy in a language where nobody will notice it drifting, which is the
+ * whole thing `hasRole` exists to prevent.
+ */
+export function rolesAtLeast(floor: Role): Role[] {
+  return ROLES.filter((role) => hasRole(role, floor));
+}
+
 export const USER_STATUSES = ["INVITED", "ACTIVE", "DISABLED"] as const;
 export const userStatusSchema = z.enum(USER_STATUSES);
 export type UserStatus = z.infer<typeof userStatusSchema>;
@@ -455,14 +468,21 @@ export interface PrayerRequestDto {
 // The bell in the nav. One row per recipient per event, so "unread" is a fact
 // about a person; see V9__notifications.sql.
 // ---------------------------------------------------------------------------
-export const NOTIFICATION_TYPES = ["PRAYER_REQUEST"] as const;
+export const NOTIFICATION_TYPES = ["PRAYER_REQUEST", "PRAYER_REQUEST_REVIEW"] as const;
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
 export type NotificationType = z.infer<typeof notificationTypeSchema>;
 
 export interface NotificationDto {
   id: string;
   type: NotificationType;
-  /** For a prayer request, its title -- which is the whole of the message. */
+  /**
+   * The prayer request's title.
+   *
+   * For `PRAYER_REQUEST` that is the whole of the message. For
+   * `PRAYER_REQUEST_REVIEW` the message is "this one needs you", so the type
+   * carries the meaning and the title only says which request -- the bell
+   * renders a different subtitle for each.
+   */
   title: string;
   prayerRequestId: string | null;
   createdAt: string;

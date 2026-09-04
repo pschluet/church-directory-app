@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { InboxDto } from "@shared";
+import type { InboxDto, NotificationType } from "@shared";
 import { NotificationBell } from "../src/components/NotificationBell";
 import { renderWithProviders } from "./utils";
 
@@ -20,17 +20,38 @@ function inbox(overrides: Partial<InboxDto> = {}): InboxDto {
   };
 }
 
-/** Answers the inbox read, and records the mark-read call. */
-function stub(value: InboxDto) {
+/**
+ * Answers the inbox read, and records the mark-read call.
+ *
+ * Stateful, because the bell now settles its optimistic update against the
+ * server: mark-read invalidates the inbox, so a stub that kept replying with
+ * the old unread count would be modelling a server that ignores the write, and
+ * the badge would correctly come back.
+ *
+ * `afterRead` overrides what the inbox reports once the write has happened, for
+ * the case where the two legitimately disagree.
+ */
+function stub(value: InboxDto, { afterRead }: { afterRead?: InboxDto } = {}) {
+  let current = value;
   apiMock.mockImplementation((path: string) => {
-    if (path === "/notifications") return Promise.resolve(value);
-    return Promise.resolve({ cleared: value.unreadCount });
+    if (path === "/notifications") return Promise.resolve(current);
+    const cleared = current.unreadCount;
+    current = afterRead ?? {
+      unreadCount: 0,
+      notifications: current.notifications.map((n) => ({ ...n, read: true })),
+    };
+    return Promise.resolve({ cleared });
   });
 }
 
-const notification = (id: string, title: string, read = false) => ({
+const notification = (
+  id: string,
+  title: string,
+  read = false,
+  type: NotificationType = "PRAYER_REQUEST"
+) => ({
   id,
-  type: "PRAYER_REQUEST" as const,
+  type,
   title,
   prayerRequestId: `pr-${id}`,
   createdAt: new Date().toISOString(),
@@ -93,8 +114,48 @@ describe("NotificationBell", () => {
       })
     );
     // Optimistically, so the badge goes with the tap rather than a round trip
-    // later.
+    // later -- and it stays gone once the settle refetch agrees.
     expect(await screen.findByRole("button", { name: "Notifications" })).toBeInTheDocument();
+  });
+
+  it("settles the badge against the server rather than trusting the guess", async () => {
+    /*
+     * The regression the onSettled refetch exists to stop. The optimistic
+     * update sets the badge to 0; here something arrives while the panel is
+     * open, so the server still reports one unread. With polling gone that
+     * refetch is the only thing that can correct the guess -- without it the
+     * bell would claim zero until the next window focus, and if the write had
+     * failed outright, indefinitely.
+     */
+    stub(inbox({ unreadCount: 2, notifications: [notification("1", "For Fr. John")] }), {
+      afterRead: inbox({
+        unreadCount: 1,
+        notifications: [notification("2", "For safe travels")],
+      }),
+    });
+    renderWithProviders(<NotificationBell />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /2 unread/ }));
+
+    expect(
+      await screen.findByRole("button", { name: "Notifications, 1 unread" })
+    ).toBeInTheDocument();
+  });
+
+  it("does not poll", async () => {
+    /*
+     * Asserted rather than assumed. The bell polled every 60s until push-driven
+     * invalidation replaced it, and an interval reintroduced here would cost
+     * real money at scale while no other test noticed. See the plan's costing.
+     */
+    stub(inbox());
+    renderWithProviders(<NotificationBell />);
+    await screen.findByRole("button", { name: "Notifications" });
+
+    const reads = () => apiMock.mock.calls.filter(([path]) => path === "/notifications").length;
+    const before = reads();
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    expect(reads()).toBe(before);
   });
 
   it("does not call mark-read when there was nothing unread", async () => {
@@ -104,6 +165,29 @@ describe("NotificationBell", () => {
     await userEvent.click(await screen.findByRole("button", { name: "Notifications" }));
     expect(screen.getByRole("dialog", { name: "Notifications" })).toBeInTheDocument();
     expect(apiMock).not.toHaveBeenCalledWith("/notifications/read", expect.anything());
+  });
+
+  it("distinguishes a request waiting for review from a posted one", async () => {
+    /*
+     * The title alone is the whole message for a posted request. For one
+     * waiting to be reviewed the title only says *which* request, so the label
+     * is what tells the reader it needs them.
+     */
+    stub(
+      inbox({
+        unreadCount: 2,
+        notifications: [
+          notification("1", "For Fr. John"),
+          notification("2", "For my mother", false, "PRAYER_REQUEST_REVIEW"),
+        ],
+      })
+    );
+    renderWithProviders(<NotificationBell />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /2 unread/ }));
+
+    expect(screen.getByText(/^Prayer request ·/)).toBeInTheDocument();
+    expect(screen.getByText(/^Waiting for review ·/)).toBeInTheDocument();
   });
 
   it("says so when the panel is empty", async () => {

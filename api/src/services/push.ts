@@ -92,6 +92,14 @@ export interface PushPayload {
   body: string;
   /** Where a tap lands. Read by the `notificationclick` handler in app/src/sw.ts. */
   url: string;
+  /**
+   * Which notification this one replaces.
+   *
+   * A fixed tag per *kind* is what stops them stacking, so "3 new prayer
+   * requests" supersedes "2 new prayer requests" -- but a request waiting for
+   * review must not displace a posted one, hence a tag rather than a constant.
+   */
+  tag: string;
 }
 
 interface SubscriptionRow {

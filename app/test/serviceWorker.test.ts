@@ -104,6 +104,25 @@ describe.skipIf(!built)("the built service worker", () => {
     expect(sw).toContain("showNotification");
   });
 
+  it("nudges open tabs, which is the app's only live update", () => {
+    /*
+     * Nothing polls, so this message is the only thing that refreshes the bell
+     * or the page without the member asking. It has to survive the build, and
+     * it has to reach pages this worker does not yet control -- the first
+     * install being the case that breaks without `includeUncontrolled`.
+     */
+    expect(sw).toContain("prayer-requests-changed");
+    expect(sw).toContain("matchAll");
+    expect(sw).toContain("includeUncontrolled");
+    expect(sw).toContain("postMessage");
+  });
+
+  it("takes its notification tag from the payload", () => {
+    // So a request waiting for review can replace the previous review
+    // notification without displacing a posted one.
+    expect(sw).toMatch(/tag:\s*\w+\.tag/);
+  });
+
   it("collapses prayer request notifications onto one tag rather than stacking them", () => {
     // The requirement is a single notification saying how many are new. Without
     // a fixed tag, three approvals leave three notifications each saying one.

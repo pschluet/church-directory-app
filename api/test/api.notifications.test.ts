@@ -25,6 +25,7 @@ describe.skipIf(!hasDb)("notifications", () => {
   let member: CreatedUser;
   let other: CreatedUser;
   let reviewer: CreatedUser;
+  let admin: CreatedUser;
   let outsider: CreatedUser;
 
   beforeEach(async () => {
@@ -39,6 +40,13 @@ describe.skipIf(!hasDb)("notifications", () => {
       organizationId: orgA,
       role: "PRAYER_REQUEST_ADMIN",
       email: "reviewer@a.test",
+    });
+    // An ADMIN reviews too -- the role is a floor -- so the review fan-out has
+    // to reach them without naming their role anywhere.
+    admin = await createUser(db(), {
+      organizationId: orgA,
+      role: "ADMIN",
+      email: "admin@a.test",
     });
     outsider = await createUser(db(), { organizationId: orgB, email: "outsider@b.test" });
   });
@@ -82,6 +90,13 @@ describe.skipIf(!hasDb)("notifications", () => {
     });
 
     it("does not tell the reviewer, who is the one who just posted it", async () => {
+      /*
+       * Load-bearing in two directions, so do not "simplify" it. The reviewer
+       * is excluded from the posted fan-out because they acted -- and they also
+       * held a PRAYER_REQUEST_REVIEW notification for this request, which is
+       * only invisible here because approval moved it out of PENDING. Reverse
+       * either half of NOTIFICATION_VISIBLE and this is the case that fails.
+       */
       await post();
       const { body } = await inbox(reviewer);
       expect(body).toMatchObject({ unreadCount: 0, notifications: [] });
@@ -93,13 +108,15 @@ describe.skipIf(!hasDb)("notifications", () => {
       expect(body.unreadCount).toBe(0);
     });
 
-    it("says nothing at all until the request is approved", async () => {
+    it("says nothing to the parish until the request is approved", async () => {
       await as(author).call("POST", "/api/prayer-requests", {
         title: "Still waiting",
         body: "Not yet reviewed.",
       });
       const { body } = await inbox(member);
       expect(body.unreadCount).toBe(0);
+      // The reviewers are a different matter -- see "waiting for review" below.
+      expect((await inbox(reviewer)).body.unreadCount).toBe(1);
     });
 
     it("says nothing when a request is declined", async () => {
@@ -168,6 +185,143 @@ describe.skipIf(!hasDb)("notifications", () => {
       );
       const { body } = await inbox(member);
       expect(body.unreadCount).toBe(1);
+    });
+  });
+
+  describe("waiting for review", () => {
+    /** A request that stays pending, so the review notifications survive. */
+    async function submit(title = "For my mother"): Promise<string> {
+      const { body } = await as(author).call("POST", "/api/prayer-requests", {
+        title,
+        body: "Surgery Thursday.",
+      });
+      return body.id;
+    }
+
+    it("tells every reviewer in the parish, by title", async () => {
+      await submit("For my mother");
+
+      for (const who of [reviewer, admin]) {
+        const { body } = await inbox(who);
+        expect(body.unreadCount).toBe(1);
+        expect(body.notifications[0]).toMatchObject({
+          type: "PRAYER_REQUEST_REVIEW",
+          title: "For my mother",
+          read: false,
+        });
+      }
+    });
+
+    it("does not tell the author, or anyone who cannot review", async () => {
+      await submit();
+      expect((await inbox(author)).body.unreadCount).toBe(0);
+      expect((await inbox(member)).body.unreadCount).toBe(0);
+    });
+
+    it("does not tell another parish's reviewer", async () => {
+      const elsewhere = await createUser(db(), {
+        organizationId: orgB,
+        role: "PRAYER_REQUEST_ADMIN",
+        email: "reviewer@b.test",
+      });
+      await submit();
+      expect((await inbox(elsewhere)).body.unreadCount).toBe(0);
+    });
+
+    it("does not tell a super admin with no home parish", async () => {
+      /*
+       * They may approve anywhere, but this is scoped to the parish -- so the
+       * bootstrap super admin from V3, whose organization_id is null, is not
+       * told. Asserted because it is a deliberate limitation, not an oversight.
+       */
+      const wandering = await createUser(db(), {
+        organizationId: null,
+        role: "SUPER_ADMIN",
+        email: "super@nowhere.test",
+      });
+      await submit();
+      expect((await inbox(wandering)).body.unreadCount).toBe(0);
+    });
+
+    it("respects a reviewer who has switched prayer requests off", async () => {
+      await as(reviewer).call("PUT", "/api/notifications/preferences", {
+        prayerRequests: false,
+      });
+      await submit();
+      expect((await inbox(reviewer)).body.unreadCount).toBe(0);
+      expect((await inbox(admin)).body.unreadCount).toBe(1);
+    });
+
+    it("clears itself once the request is approved, even by somebody else", async () => {
+      // The reviewer who acts is excluded from the posted fan-out, so Layla
+      // ends at zero; the admin swaps one kind of notification for the other.
+      const id = await submit();
+      expect((await inbox(admin)).body.unreadCount).toBe(1);
+
+      await as(reviewer).call("POST", `/api/prayer-requests/${id}/approve`);
+
+      expect((await inbox(reviewer)).body.unreadCount).toBe(0);
+      const { body } = await inbox(admin);
+      expect(body.unreadCount).toBe(1);
+      expect(body.notifications[0]!.type).toBe("PRAYER_REQUEST");
+    });
+
+    it("clears itself when the request is rejected, leaving nothing", async () => {
+      const id = await submit();
+      await as(reviewer).call("POST", `/api/prayer-requests/${id}/reject`);
+
+      for (const who of [reviewer, admin, author, member]) {
+        expect((await inbox(who)).body.unreadCount).toBe(0);
+      }
+    });
+
+    it("keeps the row -- it is the join that hides it, not a delete", async () => {
+      const id = await submit();
+      await as(reviewer).call("POST", `/api/prayer-requests/${id}/approve`);
+
+      const { rows } = await db().query<{ count: string }>(
+        "select count(*)::text as count from notifications where type = 'PRAYER_REQUEST_REVIEW'"
+      );
+      expect(Number(rows[0]!.count)).toBeGreaterThan(0);
+    });
+
+    it("says nothing when a reviewer posts their own, since it needs no review", async () => {
+      await as(reviewer).call("POST", "/api/prayer-requests", {
+        title: "From the reviewer",
+        body: "Posted straight away.",
+      });
+      // Nothing to review, so the admin hears about it as a *posted* request.
+      const { body } = await inbox(admin);
+      expect(body.unreadCount).toBe(1);
+      expect(body.notifications[0]!.type).toBe("PRAYER_REQUEST");
+    });
+
+    it("is idempotent, so a retry cannot double up", async () => {
+      const id = await submit();
+      await db().query(
+        `insert into notifications (app_user_id, organization_id, type, prayer_request_id)
+         values ($1, $2, 'PRAYER_REQUEST_REVIEW', $3)
+         on conflict do nothing`,
+        [reviewer.appUserId, orgA, id]
+      );
+      expect((await inbox(reviewer)).body.unreadCount).toBe(1);
+    });
+
+    it("can hold both kinds for one request without colliding", async () => {
+      /*
+       * The unique index is (app_user_id, type, prayer_request_id), so a
+       * reviewer legitimately holds a review row and a posted row for the same
+       * request. Exactly one is ever visible.
+       */
+      const id = await submit();
+      await as(admin).call("POST", `/api/prayer-requests/${id}/approve`);
+
+      const { rows } = await db().query<{ count: string }>(
+        "select count(*)::text as count from notifications where app_user_id = $1 and prayer_request_id = $2",
+        [reviewer.appUserId, id]
+      );
+      expect(rows[0]!.count).toBe("2");
+      expect((await inbox(reviewer)).body.notifications).toHaveLength(1);
     });
   });
 

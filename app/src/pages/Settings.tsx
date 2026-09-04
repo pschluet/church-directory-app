@@ -31,7 +31,7 @@ import { ErrorNotice, PageHeading, Spinner } from "../components/ui";
  * is a page somebody visits once.
  */
 export function Settings() {
-  const { me } = useMe();
+  const { me, canApprovePrayerRequests } = useMe();
   const queryClient = useQueryClient();
 
   const publicKey = me?.pushPublicKey ?? null;
@@ -154,7 +154,14 @@ export function Settings() {
           </h3>
           <Switch
             label="Prayer requests"
-            hint="Whenever one is posted for the parish."
+            hint={
+              // Reviewers get told about two different things through this one
+              // switch, so saying only "when one is posted" would be a half
+              // truth to exactly the people who most need the other half.
+              canApprovePrayerRequests
+                ? "When one is posted for the parish, and when one is waiting for your review."
+                : "Whenever one is posted for the parish."
+            }
             checked={prayerRequests}
             disabled={preferencesQuery.isPending || savePreferences.isPending}
             onChange={(next) => savePreferences.mutate({ prayerRequests: next })}

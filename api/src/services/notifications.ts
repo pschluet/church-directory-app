@@ -1,6 +1,6 @@
 import type { Queryable } from "../db";
 import { PRAYER_REQUEST_WINDOW } from "./prayer-requests";
-import type { NotificationDto } from "../types";
+import { rolesAtLeast, type NotificationDto, type NotificationType } from "../types";
 
 /**
  * The notification inbox behind the bell.
@@ -14,13 +14,43 @@ import type { NotificationDto } from "../types";
 export const NOTIFICATION_PAGE_SIZE = 30;
 
 /**
- * Everything a notification needs to be readable, and the window that decides
- * whether it is still worth showing.
+ * Whether a notification still leads anywhere, by type.
  *
- * The join is inner, not left, and repeats the one-month window from the feed:
- * a notification whose request has aged off the page is a link to nothing, so
- * it should neither be listed nor counted. Withdrawn requests take their
- * notifications with them through the FK cascade, so they need no clause here.
+ * Both branches exist so a notification can retire itself rather than needing
+ * to be marked read or deleted:
+ *
+ *   PRAYER_REQUEST         posted, and still inside the month the page shows.
+ *                          One that has aged off the feed is a link to nothing.
+ *   PRAYER_REQUEST_REVIEW  still waiting. The moment *anyone* decides the
+ *                          request -- including another reviewer getting there
+ *                          first -- it stops being something to review, and the
+ *                          badge drops on its own.
+ *
+ * Kept as one fragment because `loadInbox` and `unreadNotificationCounts` both
+ * need it and must not drift: the count on a push notification and the badge
+ * the member then sees come from these two queries, and the two disagreeing is
+ * the sort of thing nobody reports and everybody notices.
+ *
+ * It belongs in the `ON` clause, and the parentheses are not decoration.
+ * `loadInbox` composes its count by appending `and n.read_at is null` to the
+ * trailing WHERE; an unparenthesised `or` in that WHERE would bind as
+ * `(app_user_id and A) or (B and unread)` and start counting other people's
+ * notifications.
+ */
+const NOTIFICATION_VISIBLE = `(
+       (n.type = 'PRAYER_REQUEST'
+         and pr.status = 'APPROVED'
+         and pr.posted_at > now() - interval '${PRAYER_REQUEST_WINDOW}')
+    or (n.type = 'PRAYER_REQUEST_REVIEW' and pr.status = 'PENDING')
+  )`;
+
+/**
+ * Everything a notification needs to be readable.
+ *
+ * The join is inner, not left: a notification whose request is no longer
+ * visible under the rules above is neither listed nor counted. Withdrawn
+ * requests take their notifications with them through the FK cascade, so they
+ * need no clause here.
  */
 const NOTIFICATION_SELECT = `
   select n.id,
@@ -32,8 +62,7 @@ const NOTIFICATION_SELECT = `
     from notifications n
     join prayer_requests pr
       on pr.id = n.prayer_request_id
-     and pr.status = 'APPROVED'
-     and pr.posted_at > now() - interval '${PRAYER_REQUEST_WINDOW}'
+     and ${NOTIFICATION_VISIBLE}
    where n.app_user_id = $1
 `;
 
@@ -116,38 +145,76 @@ export async function markAllRead(q: Queryable, appUserId: string): Promise<numb
  * repeating the recipient rules in a second query.
  */
 /**
- * How many unread prayer request notifications each of these people has.
+ * How many unread notifications of one type each of these people has.
  *
- * This is the number the push notification reads out -- "3 new prayer
- * requests". Per recipient and not a single figure, because it means "three you
- * have not read": somebody who last opened the app this morning sees 1 where
- * somebody who has been away all week sees 6, from the same approval.
+ * This is the number the push notification reads out -- "3 new prayer requests",
+ * "2 requests waiting for review". Per recipient and not a single figure,
+ * because it means "three you have not read": somebody who last opened the app
+ * this morning sees 1 where somebody away all week sees 6, from the same
+ * approval.
  *
- * Repeats the feed's window through the same join as `loadInbox`, so the count
- * on the notification is the count the badge shows when they open the app. The
- * two disagreeing is the sort of thing nobody reports and everybody notices.
+ * Per *type* as well, and the two must never be added together: a reviewer with
+ * one of each has one thing to read and one thing to do, and a notification
+ * saying "2 new prayer requests" would be wrong about both.
  */
-export async function unreadPrayerRequestCounts(
+export async function unreadNotificationCounts(
   q: Queryable,
-  appUserIds: string[]
+  appUserIds: string[],
+  type: NotificationType
 ): Promise<Map<string, number>> {
   if (appUserIds.length === 0) return new Map();
 
   const { rows } = await q.query<{ app_user_id: string; count: string }>(
     `select n.app_user_id, count(*)::text as count
        from notifications n
-       join prayer_requests pr
-         on pr.id = n.prayer_request_id
-        and pr.status = 'APPROVED'
-        and pr.posted_at > now() - interval '${PRAYER_REQUEST_WINDOW}'
+       join prayer_requests pr on pr.id = n.prayer_request_id and ${NOTIFICATION_VISIBLE}
       where n.app_user_id = any($1::uuid[])
-        and n.type = 'PRAYER_REQUEST'
+        and n.type = $2
         and n.read_at is null
       group by n.app_user_id`,
-    [appUserIds]
+    [appUserIds, type]
   );
 
   return new Map(rows.map((row) => [row.app_user_id, Number(row.count)]));
+}
+
+/**
+ * Who is told that a request is waiting to be reviewed.
+ *
+ * Every reviewer in the parish, which is where the role floor gets asked in
+ * SQL. The list comes from `rolesAtLeast` rather than being written out here,
+ * so `ROLE_RANK` stays the only definition of the hierarchy -- a role list in a
+ * WHERE clause is a second copy of it somewhere nobody will notice it drifting.
+ *
+ * No author exclusion, deliberately. A request only reaches PENDING when its
+ * author *cannot* approve (a reviewer's own request is posted directly), so the
+ * author can never be in this set. Adding the exclusion would carry the subtle
+ * null-handling `fanOutPrayerRequest` needs for a case that cannot occur here.
+ *
+ * Scoped to the parish, with one consequence worth stating: a super admin whose
+ * `organization_id` is null -- the bootstrap account from V3 -- or who belongs
+ * to a different parish is not told, even though they may approve. This is
+ * "every reviewer in the parish", and a parish whose only reviewer is an
+ * outside super admin gets the on-page queue banner and nothing else.
+ */
+export async function fanOutPrayerRequestForReview(
+  q: Queryable,
+  options: { prayerRequestId: string; organizationId: string }
+): Promise<string[]> {
+  const { rows } = await q.query<{ app_user_id: string }>(
+    `insert into notifications (app_user_id, organization_id, type, prayer_request_id)
+     select u.id, $2, 'PRAYER_REQUEST_REVIEW', $1
+       from app_users u
+       left join notification_preferences p on p.app_user_id = u.id
+      where u.organization_id = $2
+        and u.status = 'ACTIVE'
+        and u.role = any($3::text[])
+        and coalesce(p.prayer_requests, true)
+     on conflict do nothing
+     returning app_user_id`,
+    [options.prayerRequestId, options.organizationId, rolesAtLeast("PRAYER_REQUEST_ADMIN")]
+  );
+  return rows.map((row) => row.app_user_id);
 }
 
 export async function fanOutPrayerRequest(

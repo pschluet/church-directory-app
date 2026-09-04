@@ -4,7 +4,11 @@ import { requireOrganizationId, requireRole, type AppEnv } from "../auth";
 import { one, type Queryable } from "../db";
 import { audit } from "../audit";
 import { deletePhoto, prayerRequestImagePrefix } from "../photos";
-import { fanOutPrayerRequest, unreadPrayerRequestCounts } from "../services/notifications";
+import {
+  fanOutPrayerRequest,
+  fanOutPrayerRequestForReview,
+  unreadNotificationCounts,
+} from "../services/notifications";
 import { sendToUsers, type PushPayload } from "../services/push";
 import {
   PRAYER_REQUEST_SELECT,
@@ -18,6 +22,7 @@ import {
   prayerRequestCreateSchema,
   prayerRequestRejectSchema,
   uuidSchema,
+  type NotificationType,
   type PrayerRequestDto,
 } from "../types";
 
@@ -43,10 +48,37 @@ const routes = new Hono<AppEnv>();
  * unreachable push service cannot turn a successful post into a 500 that
  * somebody retries.
  */
-async function pushToNotified(db: Queryable, notified: string[]): Promise<void> {
+type PushKind = "posted" | "review";
+
+/**
+ * What each kind of notification says, and which notification it replaces.
+ *
+ * Separate tags, because the two must not displace one another: a reviewer with
+ * a request waiting *and* something newly posted has two different things to do
+ * and needs to see both. Separate counts for the same reason -- adding them
+ * together would produce a number that is wrong about both.
+ */
+const PUSH_KINDS: Record<
+  PushKind,
+  { type: NotificationType; tag: string; body: (count: number) => string }
+> = {
+  posted: {
+    type: "PRAYER_REQUEST",
+    tag: "prayer-requests",
+    body: (count) => `${count} new prayer request${count === 1 ? "" : "s"}`,
+  },
+  review: {
+    type: "PRAYER_REQUEST_REVIEW",
+    tag: "prayer-requests-review",
+    body: (count) => `${count} prayer request${count === 1 ? "" : "s"} waiting for review`,
+  },
+};
+
+async function pushToNotified(db: Queryable, notified: string[], kind: PushKind): Promise<void> {
   if (notified.length === 0) return;
 
-  const counts = await unreadPrayerRequestCounts(db, notified);
+  const { type, tag, body } = PUSH_KINDS[kind];
+  const counts = await unreadNotificationCounts(db, notified, type);
   const payloads = new Map<string, PushPayload>(
     notified.map((appUserId) => {
       // At least one: the fan-out just inserted their row, so a zero here would
@@ -55,12 +87,13 @@ async function pushToNotified(db: Queryable, notified: string[]): Promise<void> 
       return [
         appUserId,
         {
-          // Deliberately just the number, per the requirement -- a prayer
-          // request can name somebody's illness, and a lock screen is not where
-          // that should be legible to whoever picks the phone up.
+          // Deliberately just a number, per the requirement -- a prayer request
+          // can name somebody's illness, and a lock screen is not where that
+          // should be legible to whoever picks the phone up.
           title: "Parish Directory",
-          body: `${count} new prayer request${count === 1 ? "" : "s"}`,
+          body: body(count),
           url: "/prayer-requests",
+          tag,
         },
       ];
     })
@@ -198,6 +231,15 @@ routes.post("/", async (c) => {
         organizationId,
         actingPersonId: caller.personId,
       });
+    } else {
+      // Waiting for review, so the people who can review it are told. Same
+      // transaction as the insert for the same reason: a request nobody was
+      // told about is indistinguishable from one nobody has written, and there
+      // is no second signal to reconcile them from later.
+      notified = await fanOutPrayerRequestForReview(tx, {
+        prayerRequestId: id,
+        organizationId,
+      });
     }
 
     return id;
@@ -210,7 +252,7 @@ routes.post("/", async (c) => {
     changes: { title: payload.title, images: payload.images.length },
   });
 
-  await pushToNotified(db, notified);
+  await pushToNotified(db, notified, postDirectly ? "posted" : "review");
 
   const row = await loadPrayerRequestRow(db, created, organizationId);
   const body: PrayerRequestDto = toPrayerRequest(row!, caller);
@@ -273,7 +315,7 @@ routes.post("/:id/:decision{approve|reject}", requireRole("PRAYER_REQUEST_ADMIN"
     }
   });
 
-  await pushToNotified(db, notified);
+  await pushToNotified(db, notified, "posted");
 
   await audit(db, caller, {
     action: approve ? "prayerRequest.approve" : "prayerRequest.reject",
