@@ -51,8 +51,16 @@ import { SearchField } from "../components/SearchField";
 const ROLE_LABELS: Record<Role, string> = {
   SUPER_ADMIN: "Super administrator",
   ADMIN: "Administrator",
+  PRAYER_REQUEST_ADMIN: "Prayer request administrator",
   USER: "Member",
 };
+
+/**
+ * The roles the actions menu will offer to switch someone to. Deliberately
+ * without SUPER_ADMIN: that one is granted when an account is invited or moved,
+ * not from a row menu, and it was never offered here.
+ */
+const ASSIGNABLE_ROLES: Role[] = ["ADMIN", "PRAYER_REQUEST_ADMIN", "USER"];
 
 /** Shared by the badge and the search, so typing what is on screen matches. */
 const STATUS_LABELS: Record<AppUserDto["status"], string> = {
@@ -451,16 +459,19 @@ function UserActions({
   const canManage = isSuperAdmin || user.role !== "SUPER_ADMIN";
 
   const items = [
-    canManage && user.role === "USER" && (
-      <MenuItem key="promote" onSelect={() => void onUpdate(user, { role: "ADMIN" })}>
-        Make administrator
-      </MenuItem>
-    ),
-    canManage && user.role === "ADMIN" && (
-      <MenuItem key="demote" onSelect={() => void onUpdate(user, { role: "USER" })}>
-        Make member
-      </MenuItem>
-    ),
+    /*
+     * One entry per role they are not already in, rather than a hand-written
+     * promote/demote pair. With three assignable roles a pair would have been
+     * six branches, and adding a fourth role later would mean editing this
+     * list again instead of just ASSIGNABLE_ROLES.
+     */
+    ...(canManage
+      ? ASSIGNABLE_ROLES.filter((role) => role !== user.role).map((role) => (
+          <MenuItem key={`role-${role}`} onSelect={() => void onUpdate(user, { role })}>
+            Make {ROLE_LABELS[role].toLowerCase()}
+          </MenuItem>
+        ))
+      : []),
     isSuperAdmin && (
       <MenuItem key="move" onSelect={() => onMove(user)}>
         Move church
@@ -604,9 +615,12 @@ function InviteModal({
               value={role}
               onChange={(event) => setRole(event.target.value as Role)}
             >
-              <option value="USER">Member</option>
-              <option value="ADMIN">Administrator</option>
-              {canInviteSuperAdmin && <option value="SUPER_ADMIN">Super administrator</option>}
+              <option value="USER">{ROLE_LABELS.USER}</option>
+              <option value="PRAYER_REQUEST_ADMIN">{ROLE_LABELS.PRAYER_REQUEST_ADMIN}</option>
+              <option value="ADMIN">{ROLE_LABELS.ADMIN}</option>
+              {canInviteSuperAdmin && (
+                <option value="SUPER_ADMIN">{ROLE_LABELS.SUPER_ADMIN}</option>
+              )}
             </select>
           </Field>
 

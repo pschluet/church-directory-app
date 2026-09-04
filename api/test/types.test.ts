@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   MAX_PHOTO_BYTES,
+  ROLES,
   daysInMonth,
   formatPhone,
+  hasRole,
   isLeapYear,
   isRealDate,
   normalizePhone,
@@ -12,6 +14,35 @@ import {
   photoAttachSchema,
   photoUploadSchema,
 } from "../src/types";
+
+describe("hasRole", () => {
+  it("treats every role as a floor rather than an exact match", () => {
+    expect(hasRole("SUPER_ADMIN", "ADMIN")).toBe(true);
+    expect(hasRole("ADMIN", "USER")).toBe(true);
+    expect(hasRole("USER", "ADMIN")).toBe(false);
+  });
+
+  it("puts PRAYER_REQUEST_ADMIN above USER and below ADMIN", () => {
+    expect(hasRole("PRAYER_REQUEST_ADMIN", "USER")).toBe(true);
+    expect(hasRole("PRAYER_REQUEST_ADMIN", "PRAYER_REQUEST_ADMIN")).toBe(true);
+    expect(hasRole("PRAYER_REQUEST_ADMIN", "ADMIN")).toBe(false);
+    expect(hasRole("USER", "PRAYER_REQUEST_ADMIN")).toBe(false);
+  });
+
+  it("lets both kinds of administrator approve prayer requests", () => {
+    expect(hasRole("ADMIN", "PRAYER_REQUEST_ADMIN")).toBe(true);
+    expect(hasRole("SUPER_ADMIN", "PRAYER_REQUEST_ADMIN")).toBe(true);
+  });
+
+  it("ranks every role, so no role can silently fall out of the ladder", () => {
+    // A role missing from ROLE_RANK would compare as undefined and every
+    // comparison against it would quietly be false -- i.e. fail open on the
+    // floor checks and closed on the grants. Assert the whole enum is covered.
+    for (const role of ROLES) {
+      expect(hasRole(role, "USER")).toBe(true);
+    }
+  });
+});
 
 describe("normalizePhone", () => {
   it("assumes +1 for a bare ten-digit number", () => {

@@ -1,7 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo } from "react";
 import type { ReactNode } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { MeDto } from "@shared";
+import { hasRole, type MeDto } from "@shared";
 import { api, ApiError, getActiveOrganizationId, setActiveOrganizationId } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 
@@ -25,6 +25,8 @@ interface MeContextValue {
   reload: () => Promise<void>;
   isAdmin: boolean;
   isSuperAdmin: boolean;
+  /** PRAYER_REQUEST_ADMIN and above; may approve or reject prayer requests. */
+  canApprovePrayerRequests: boolean;
   /** The organization the UI is currently showing. */
   organizationId: string | null;
   /** Super admins only; a no-op for everyone else. */
@@ -117,6 +119,10 @@ export function MeProvider({ children }: { children: ReactNode }) {
       reload,
       isAdmin: me?.appUser.role === "ADMIN" || me?.appUser.role === "SUPER_ADMIN",
       isSuperAdmin: me?.appUser.role === "SUPER_ADMIN",
+      // Through the shared helper rather than another hand-written comparison:
+      // this is the same ladder `requireRole` climbs on the server, and the
+      // point of `hasRole` is that there is only one of it.
+      canApprovePrayerRequests: me ? hasRole(me.appUser.role, "PRAYER_REQUEST_ADMIN") : false,
       organizationId: me?.organization?.id ?? null,
       switchOrganization,
     }),

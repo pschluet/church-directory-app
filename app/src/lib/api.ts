@@ -108,11 +108,58 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
  * Uploads a cropped photo: ask the API to presign one URL per rendition, PUT the
  * bytes straight to S3, then hand the key back so the caller can attach it. The
  * bytes never pass through the Lambda.
+ */
+/**
+ * Uploads one prayer request attachment.
+ *
+ * The same two-step dance as `uploadPhoto` -- presign, then PUT the bytes
+ * straight to S3 -- against the endpoint that scopes the key to the caller's
+ * own person record. Separate from `uploadPhoto` only because there is no owner
+ * to pass: an attachment always belongs to whoever is signed in, so there is
+ * nothing here to point at the wrong record.
+ */
+export async function uploadPrayerRequestImage(renditions: Renditions): Promise<string> {
+  const { photoKey, uploadUrls } = await api<PhotoUploadDto>("/uploads/prayer-request-image", {
+    method: "POST",
+    body: {
+      contentType: renditions.contentType,
+      renditions: {
+        thumb: { contentLength: renditions.blobs.thumb.size },
+        full: { contentLength: renditions.blobs.full.size },
+      },
+    },
+  });
+
+  await putRenditions(uploadUrls, renditions);
+  return photoKey;
+}
+
+/**
+ * The PUTs themselves, shared by both upload paths.
  *
  * The cache-control header is signed into the presigned URL, so it has to be
  * sent verbatim or S3 rejects the PUT. It is safe to make these immutable
  * because every upload gets a fresh ULID prefix -- nothing is ever overwritten.
  */
+async function putRenditions(
+  uploadUrls: Record<string, string>,
+  renditions: Renditions
+): Promise<void> {
+  await Promise.all(
+    PHOTO_RENDITIONS.map(async (rendition) => {
+      const put = await fetch(uploadUrls[rendition]!, {
+        method: "PUT",
+        headers: {
+          "content-type": renditions.contentType,
+          "cache-control": "public, max-age=31536000, immutable",
+        },
+        body: renditions.blobs[rendition],
+      });
+      if (!put.ok) throw new ApiError(put.status, "The photo could not be uploaded");
+    })
+  );
+}
+
 export async function uploadPhoto(
   owner: { personId: string } | { familyId: string },
   renditions: Renditions
@@ -129,19 +176,6 @@ export async function uploadPhoto(
     },
   });
 
-  await Promise.all(
-    PHOTO_RENDITIONS.map(async (rendition) => {
-      const put = await fetch(uploadUrls[rendition], {
-        method: "PUT",
-        headers: {
-          "content-type": renditions.contentType,
-          "cache-control": "public, max-age=31536000, immutable",
-        },
-        body: renditions.blobs[rendition],
-      });
-      if (!put.ok) throw new ApiError(put.status, "The photo could not be uploaded");
-    })
-  );
-
+  await putRenditions(uploadUrls, renditions);
   return photoKey;
 }

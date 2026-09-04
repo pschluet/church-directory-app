@@ -23,6 +23,7 @@ export default defineConfig({
       // No AWS calls from tests: photos are presigned to local paths and
       // Cognito account creation is stubbed.
       PHOTO_STORAGE: "local",
+      PUSH_MODE: "local",
       COGNITO_MODE: "local",
       EMAIL_MODE: "local",
       PHOTOS_BUCKET: "test-photos-bucket",

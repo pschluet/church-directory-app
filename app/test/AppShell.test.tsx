@@ -2,8 +2,10 @@ import { describe, expect, it, vi } from "vitest";
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
+import { QueryClientProvider } from "@tanstack/react-query";
 import type { MeDto, Role } from "@shared";
 import { AppShell } from "../src/components/AppShell";
+import { testQueryClient } from "./utils";
 
 /*
  * The contexts are stubbed rather than exercised: this file is about the shell's
@@ -11,6 +13,16 @@ import { AppShell } from "../src/components/AppShell";
  * Amplify and a live /api/me.
  */
 const signOut = vi.fn();
+
+/*
+ * The shell now renders the notification bell, which fetches its own count.
+ * Stubbed to an empty inbox: the bell's own behaviour is
+ * test/NotificationBell.test.tsx, and here it only has to be renderable.
+ */
+vi.mock("../src/lib/api", async () => {
+  const actual = await vi.importActual<typeof import("../src/lib/api")>("../src/lib/api");
+  return { ...actual, api: vi.fn(() => Promise.resolve({ unreadCount: 0, notifications: [] })) };
+});
 
 vi.mock("../src/context/AuthContext", () => ({
   useAuth: () => ({ signOut, email: "paul@example.com" }),
@@ -31,6 +43,7 @@ vi.mock("../src/context/MeContext", () => ({
     } as unknown as MeDto,
     isAdmin: meState.role === "ADMIN" || meState.role === "SUPER_ADMIN",
     isSuperAdmin: meState.role === "SUPER_ADMIN",
+    canApprovePrayerRequests: meState.role !== "USER",
     switchOrganization,
   }),
 }));
@@ -39,13 +52,15 @@ function renderShell(role: Role = "USER", orgs: { id: string; name: string }[] =
   meState.role = role;
   meState.availableOrganizations = orgs;
   return render(
-    <MemoryRouter initialEntries={["/"]}>
-      <Routes>
-        <Route element={<AppShell />}>
-          <Route index element={<p>Directory page</p>} />
-        </Route>
-      </Routes>
-    </MemoryRouter>
+    <QueryClientProvider client={testQueryClient()}>
+      <MemoryRouter initialEntries={["/"]}>
+        <Routes>
+          <Route element={<AppShell />}>
+            <Route index element={<p>Directory page</p>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>
+    </QueryClientProvider>
   );
 }
 
@@ -60,10 +75,28 @@ describe("AppShell navigation", () => {
     renderShell("USER");
     expect(screen.getByRole("link", { name: "Directory" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Special Dates" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Prayer Requests" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "Families" })).toBeInTheDocument();
     expect(screen.getByRole("link", { name: "My Details" })).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: /people & accounts/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "Churches" })).not.toBeInTheDocument();
+  });
+
+  it("puts a notifications bell and a settings gear in the top right at both sizes", () => {
+    renderShell();
+    // Twice each: once beside the hamburger on a phone, once in the account row
+    // from md up. Both are in the document; CSS hides one.
+    expect(screen.getAllByRole("button", { name: "Notifications" })).toHaveLength(2);
+    expect(screen.getAllByRole("link", { name: "Settings" })).toHaveLength(2);
+  });
+
+  it("keeps settings out of the main navigation", () => {
+    // It is a page somebody visits once, reached from the gear. In the nav it
+    // would sit alongside Directory and Families as though it were somewhere
+    // people go.
+    renderShell();
+    const nav = screen.getByTestId("main-nav");
+    expect(nav.textContent).not.toMatch(/settings/i);
   });
 
   it("gives an admin the accounts page but not the churches page", () => {
@@ -134,7 +167,11 @@ describe("AppShell responsive behaviour", () => {
     expect(nav.className).toContain("md:block");
     expect(nav.className).not.toContain("md:hidden");
 
-    expect(screen.getByRole("button", { name: /open menu/i }).className).toContain("md:hidden");
+    // `md:hidden` sits on the group that holds the phone-side bell and the
+    // hamburger, not on the button itself -- both disappear together at md,
+    // where the desktop copies take over.
+    const phoneControls = screen.getByRole("button", { name: /open menu/i }).parentElement;
+    expect(phoneControls?.className).toContain("md:hidden");
   });
 
   it("keeps the hamburger a full-size touch target", () => {

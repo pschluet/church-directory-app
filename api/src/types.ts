@@ -7,11 +7,35 @@
 import { z } from "zod";
 
 // ---------------------------------------------------------------------------
-// Enums -- these mirror the CHECK constraints in db/migrations/V1__init.sql.
+// Enums -- these mirror the CHECK constraints in db/migrations/V1__init.sql
+// (and, for the role list, V7__prayer_request_admin_role.sql).
 // ---------------------------------------------------------------------------
-export const ROLES = ["SUPER_ADMIN", "ADMIN", "USER"] as const;
+export const ROLES = ["SUPER_ADMIN", "ADMIN", "PRAYER_REQUEST_ADMIN", "USER"] as const;
 export const roleSchema = z.enum(ROLES);
 export type Role = z.infer<typeof roleSchema>;
+
+/**
+ * The role hierarchy, as a rank -- because it is a hierarchy and not a set of
+ * independent permissions. A Super Admin can do everything an Admin can, an
+ * Admin everything a User can, and a Prayer Request Admin is a User with one
+ * extra privilege, so it slots in between.
+ *
+ * Written once here and shared, because the same question is asked in three
+ * places -- `requireRole` on the server, the nav and route guards in the SPA,
+ * and `MeContext` -- and a hierarchy spelled out separately in each is a
+ * hierarchy that will eventually disagree with itself.
+ */
+const ROLE_RANK: Record<Role, number> = {
+  USER: 0,
+  PRAYER_REQUEST_ADMIN: 1,
+  ADMIN: 2,
+  SUPER_ADMIN: 3,
+};
+
+/** Whether `role` is at least `floor` in the hierarchy above. */
+export function hasRole(role: Role, floor: Role): boolean {
+  return ROLE_RANK[role] >= ROLE_RANK[floor];
+}
 
 export const USER_STATUSES = ["INVITED", "ACTIVE", "DISABLED"] as const;
 export const userStatusSchema = z.enum(USER_STATUSES);
@@ -333,6 +357,166 @@ export interface PersonMergeResultDto {
 }
 
 // ---------------------------------------------------------------------------
+// Prayer requests
+//
+// A member asks the parish to pray for someone; a PRAYER_REQUEST_ADMIN decides
+// whether it is posted. See V8__prayer_requests.sql for why the two timestamps
+// are not interchangeable.
+// ---------------------------------------------------------------------------
+export const PRAYER_REQUEST_STATUSES = ["PENDING", "APPROVED", "REJECTED"] as const;
+export const prayerRequestStatusSchema = z.enum(PRAYER_REQUEST_STATUSES);
+export type PrayerRequestStatus = z.infer<typeof prayerRequestStatusSchema>;
+
+/**
+ * Four images. Not a technical limit -- a request is a short paragraph asking
+ * for prayer, and the page has to stay readable when a dozen of them are
+ * stacked on a phone. Enforced here so the browser and the server agree.
+ */
+export const PRAYER_REQUEST_MAX_IMAGES = 4;
+export const PRAYER_REQUEST_TITLE_MAX = 120;
+export const PRAYER_REQUEST_BODY_MAX = 4000;
+
+/**
+ * One already-uploaded attachment. `photoKey` is the rendition prefix the
+ * browser got back from `POST /uploads/prayer-request-image`; the server checks
+ * it belongs to this caller before storing it.
+ *
+ * Dimensions are required rather than optional, unlike `photoAttachSchema`:
+ * there are no legacy attachments to be tolerant of, and the page needs them to
+ * reserve each image's box.
+ */
+export const prayerRequestImageSchema = z.object({
+  photoKey: z
+    .string()
+    .min(1)
+    .max(500)
+    .endsWith("/", "A photo key must be the rendition prefix, ending in /"),
+  width: z.number().int().positive().max(20000),
+  height: z.number().int().positive().max(20000),
+});
+export type PrayerRequestImage = z.infer<typeof prayerRequestImageSchema>;
+
+export const prayerRequestCreateSchema = z.object({
+  title: z.string().trim().min(1, "A title is required").max(PRAYER_REQUEST_TITLE_MAX),
+  body: z.string().trim().min(1, "Say what you would like prayed for").max(PRAYER_REQUEST_BODY_MAX),
+  images: z.array(prayerRequestImageSchema).max(PRAYER_REQUEST_MAX_IMAGES).default([]),
+});
+export type PrayerRequestCreate = z.infer<typeof prayerRequestCreateSchema>;
+
+/**
+ * Rejecting a request. The reason is optional and is shown only to the author --
+ * a reviewer should not have to justify declining something, but "the family
+ * asked us not to share this yet" is worth being able to say.
+ */
+export const prayerRequestRejectSchema = z.object({
+  reason: trimmedOptional(500),
+});
+export type PrayerRequestReject = z.infer<typeof prayerRequestRejectSchema>;
+
+export interface PrayerRequestImageDto {
+  id: string;
+  /** Permanent same-origin paths, as for every other photo. */
+  thumbUrl: string | null;
+  fullUrl: string | null;
+  width: number | null;
+  height: number | null;
+}
+
+export interface PrayerRequestDto {
+  id: string;
+  title: string;
+  body: string;
+  status: PrayerRequestStatus;
+  authorPersonId: string;
+  authorName: string;
+  /** When the author wrote it. */
+  submittedAt: string;
+  /** When it was approved, which is what the page is ordered by. Null until then. */
+  postedAt: string | null;
+  decidedAt: string | null;
+  /** Only ever set on a REJECTED request, and only sent to its author. */
+  rejectionReason: string | null;
+  images: PrayerRequestImageDto[];
+  /**
+   * Per-row capability flags, as on PersonDto.canEdit and
+   * MergeRequestDto.canDecide -- the SPA renders off these rather than
+   * re-deriving the rules, so one endpoint serves the member's page and the
+   * reviewer's queue.
+   */
+  canDecide: boolean;
+  canDelete: boolean;
+  /** True when the caller wrote it; what puts a row in the "Yours" section. */
+  isMine: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Notifications
+//
+// The bell in the nav. One row per recipient per event, so "unread" is a fact
+// about a person; see V9__notifications.sql.
+// ---------------------------------------------------------------------------
+export const NOTIFICATION_TYPES = ["PRAYER_REQUEST"] as const;
+export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
+export type NotificationType = z.infer<typeof notificationTypeSchema>;
+
+export interface NotificationDto {
+  id: string;
+  type: NotificationType;
+  /** For a prayer request, its title -- which is the whole of the message. */
+  title: string;
+  prayerRequestId: string | null;
+  createdAt: string;
+  read: boolean;
+}
+
+export interface InboxDto {
+  /** What the badge shows. Zero means no badge at all, not a badge reading 0. */
+  unreadCount: number;
+  notifications: NotificationDto[];
+}
+
+/**
+ * The two switches on the settings page.
+ *
+ * `push` is about this browser holding a subscription at all; `prayerRequests`
+ * is whether to be told about prayer requests. Both are optional so the page
+ * can send just the one that changed.
+ */
+export const notificationPreferencesSchema = z.object({
+  prayerRequests: z.boolean().optional(),
+});
+export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>;
+
+export interface NotificationPreferencesDto {
+  prayerRequests: boolean;
+}
+
+/**
+ * A Web Push subscription, exactly as `PushManager.subscribe()` hands it over.
+ *
+ * The shape is the browser's, not ours, which is why it nests `keys` -- the SPA
+ * passes `subscription.toJSON()` straight through and nothing has to know how
+ * RFC 8291 names its two secrets.
+ */
+export const pushSubscribeSchema = z.object({
+  endpoint: z.string().url().max(1000).startsWith("https://"),
+  keys: z.object({
+    p256dh: z.string().min(1).max(400),
+    auth: z.string().min(1).max(400),
+  }),
+});
+export type PushSubscribe = z.infer<typeof pushSubscribeSchema>;
+
+export const pushUnsubscribeSchema = z.object({
+  endpoint: z.string().url().max(1000),
+});
+export type PushUnsubscribe = z.infer<typeof pushUnsubscribeSchema>;
+
+export interface PushSubscriptionDto {
+  subscribed: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Special dates
 //
 // The refinements here intentionally mirror the CHECK constraints in
@@ -529,6 +713,12 @@ export interface MeDto {
   organization: { id: string; name: string } | null;
   /** Super admins may switch organizations; everyone else gets an empty list. */
   availableOrganizations: { id: string; name: string }[];
+  /**
+   * The VAPID public key for Web Push, or null when this deployment has no
+   * keypair -- local development, or a stack deployed before the keys existed.
+   * Null is what the settings page reads as "push is not available here".
+   */
+  pushPublicKey: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -595,6 +785,20 @@ export const photoUploadSchema = z
     message: "Provide exactly one of personId or familyId",
   });
 export type PhotoUpload = z.infer<typeof photoUploadSchema>;
+
+/**
+ * Presigning the renditions for one prayer request attachment.
+ *
+ * No owner field, unlike `photoUploadSchema`: an attachment always belongs to
+ * the caller's own person record, so there is nothing here to aim at somebody
+ * else. See buildPhotoKey in api/src/photos.ts for why the key is scoped to the
+ * author rather than to the request.
+ */
+export const prayerRequestImageUploadSchema = z.object({
+  contentType: z.enum(PHOTO_UPLOAD_TYPES),
+  renditions: z.object({ thumb: renditionSizeSchema, full: renditionSizeSchema }),
+});
+export type PrayerRequestImageUpload = z.infer<typeof prayerRequestImageUploadSchema>;
 
 export interface PhotoUploadDto {
   /**

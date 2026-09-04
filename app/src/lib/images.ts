@@ -46,13 +46,20 @@ export const MAX_CANVAS_PIXELS = 16_777_216;
  */
 export const MAX_WORKING_PIXELS = 8_000_000;
 
+/** What a photo is for, which is what decides how large its renditions are. */
+export type RenditionOwner = "person" | "family" | "attachment";
+
 /** The long edge each rendition is allowed, per owner kind. */
-export const RENDITION_LIMITS: Record<"person" | "family", Record<PhotoRendition, number>> = {
+export const RENDITION_LIMITS: Record<RenditionOwner, Record<PhotoRendition, number>> = {
   // Square, and shown at 144px at most -- 320 covers that at 2x with headroom.
   // The full size is for the lightbox.
   person: { thumb: 320, full: 1024 },
   // Free-form, and shown considerably larger than an avatar.
   family: { thumb: 800, full: 1600 },
+  // A prayer request attachment. The thumbnail is a strip tile on a card, so it
+  // is smaller than a family photo's; the full size matches, because both end
+  // up in the same lightbox.
+  attachment: { thumb: 480, full: 1600 },
 };
 
 export const RENDITION_QUALITY: Record<PhotoRendition, number> = {
@@ -113,11 +120,7 @@ export function clampCrop(crop: CropRect, source: Size): CropRect {
 }
 
 /** The output size for one rendition of a crop. */
-export function renditionSize(
-  crop: Size,
-  owner: "person" | "family",
-  rendition: PhotoRendition
-): Size {
+export function renditionSize(crop: Size, owner: RenditionOwner, rendition: PhotoRendition): Size {
   return fitWithin(crop, RENDITION_LIMITS[owner][rendition]);
 }
 
@@ -249,7 +252,7 @@ export interface Renditions {
 export async function renderRenditions(
   source: WorkingImage,
   rawCrop: CropRect,
-  owner: "person" | "family"
+  owner: RenditionOwner
 ): Promise<Renditions> {
   const crop = clampCrop(rawCrop, { width: source.width, height: source.height });
   const contentType = encodeType();

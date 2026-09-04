@@ -44,7 +44,56 @@ function readPhotoKeys(): { publicKeyPem: string; privateKeyPem: string } {
   return { publicKeyPem: fs.readFileSync(publicKeyPath, "utf8"), privateKeyPem };
 }
 
+/**
+ * The VAPID keypair for Web Push. Created once by scripts/create-push-key.sh.
+ *
+ * Unlike the photo keypair, having no keys at all is fine: a parish without them
+ * posts prayer requests that simply arrive without a notification, and the API
+ * treats empty values as "push is not configured".
+ *
+ * The committed public key is what decides whether push is switched on, and the
+ * two cases are deliberately not symmetric.
+ *
+ * A public key with no secret behind it *throws*: browsers would happily
+ * subscribe against it to a sender that can never send, and nothing downstream
+ * would look wrong.
+ *
+ * A secret with no public key committed does not, because the setup is two
+ * steps in two different places -- `gh secret set` and a commit -- and the order
+ * they land in should not be able to break a deploy. Until the public key
+ * arrives, push is simply off. It is warned about rather than ignored, so a
+ * misplaced file is visible in the deploy log instead of silently costing
+ * everyone their notifications.
+ */
+function readPushKeys(): { publicKey: string; privateKey: string } {
+  const publicKeyPath = path.join(__dirname, "..", "push-public-key.txt");
+  const privateKey = app.node.tryGetContext("vapidPrivateKey") ?? process.env.VAPID_PRIVATE_KEY;
+
+  if (!fs.existsSync(publicKeyPath)) {
+    if (privateKey) {
+      console.warn(
+        "A VAPID private key was supplied but infra/push-public-key.txt is missing, " +
+          "so Web Push is being deployed switched off. Run ./scripts/create-push-key.sh " +
+          "and commit the public key it writes."
+      );
+    }
+    return { publicKey: "", privateKey: "" };
+  }
+
+  if (!privateKey) {
+    throw new Error(
+      'Missing the VAPID private key. Pass -c vapidPrivateKey="$(cat key.txt)" or set ' +
+        "VAPID_PRIVATE_KEY. Without it browsers could subscribe to push that can never be sent."
+    );
+  }
+  return {
+    publicKey: fs.readFileSync(publicKeyPath, "utf8").trim(),
+    privateKey: privateKey.trim(),
+  };
+}
+
 const photoKeys = readPhotoKeys();
+const pushKeys = readPushKeys();
 
 new ChurchDirectoryStack(app, "ChurchDirectoryStack", {
   env: { account, region },
@@ -56,6 +105,11 @@ new ChurchDirectoryStack(app, "ChurchDirectoryStack", {
     "arn:aws:acm:us-east-1:435432815368:certificate/e2fec70c-b80c-4143-b853-105c118d4749",
   photoPublicKeyPem: photoKeys.publicKeyPem,
   photoPrivateKeyPem: photoKeys.privateKeyPem,
+  vapidPublicKey: pushKeys.publicKey,
+  vapidPrivateKey: pushKeys.privateKey,
+  // The address a push service contacts if it has a problem with our sends.
+  // Reuses the SES sender rather than inventing a mailbox nobody reads.
+  vapidSubject: "mailto:no-reply@pauldev.io",
 });
 
 // Every resource is tagged so this project's cost can be tracked on its own.

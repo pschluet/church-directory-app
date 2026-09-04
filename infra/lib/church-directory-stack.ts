@@ -42,6 +42,28 @@ export interface ChurchDirectoryStackProps extends StackProps {
    */
   readonly photoPublicKeyPem: string;
   readonly photoPrivateKeyPem: string;
+  /**
+   * The VAPID keypair Web Push is signed with, base64url. Generated once, out
+   * of band, by scripts/create-push-key.sh -- for the same two reasons as the
+   * photo keypair above, and delivered the same way: the public half committed,
+   * the private half from a GitHub Actions secret into a Lambda environment
+   * variable that the runtime decrypts with no network call.
+   *
+   * Both empty when the parish has no keypair yet. That is a supported state,
+   * not a broken one: prayer requests still work, they simply arrive without a
+   * push notification. `assertPushConfig` in api/src/services/push.ts is what
+   * refuses the half-configured case.
+   *
+   * There is nothing to add to the network for this. Web Push reaches
+   * web.push.apple.com, fcm.googleapis.com and Mozilla's endpoint over IPv6 --
+   * all three publish AAAA records -- so it works through the egress-only
+   * gateway below with no NAT and no interface endpoint. See the networking
+   * comment.
+   */
+  readonly vapidPublicKey: string;
+  readonly vapidPrivateKey: string;
+  /** `mailto:` or a URL, so a push service can reach the sender. */
+  readonly vapidSubject: string;
 }
 
 /**
@@ -66,6 +88,9 @@ export class ChurchDirectoryStack extends Stack {
       certificateArn,
       photoPublicKeyPem,
       photoPrivateKeyPem,
+      vapidPublicKey,
+      vapidPrivateKey,
+      vapidSubject,
     } = props;
 
     // -------------------------------------------------------------------
@@ -88,6 +113,11 @@ export class ChurchDirectoryStack extends Stack {
     //
     // If a future feature needs an AWS API that has no IPv6 endpoint, add an
     // interface endpoint for it rather than reaching for NAT.
+    //
+    // Web Push is the one call out of here that is not to AWS at all, and it
+    // needed nothing: `web.push.apple.com`, `fcm.googleapis.com` and
+    // `updates.push.services.mozilla.com` all publish AAAA records, so the
+    // sends go out over IPv6 like the Cognito calls do.
     // -------------------------------------------------------------------
     const vpc = new ec2.Vpc(this, "Vpc", {
       maxAzs: 2,
@@ -329,6 +359,13 @@ export class ChurchDirectoryStack extends Stack {
         // way a secret can work in this VPC. See the props comment.
         CLOUDFRONT_PRIVATE_KEY: photoPrivateKeyPem,
         CLOUDFRONT_KEY_PAIR_ID: photoPublicKey.publicKeyId,
+        // Web Push. Same delivery as CLOUDFRONT_PRIVATE_KEY above and for the
+        // same reason -- Secrets Manager and SSM are both unreachable from
+        // this VPC. Empty when no keypair has been created yet, which the API
+        // reads as "push is not configured here".
+        VAPID_PUBLIC_KEY: vapidPublicKey,
+        VAPID_PRIVATE_KEY: vapidPrivateKey,
+        VAPID_SUBJECT: vapidSubject,
       },
     });
 

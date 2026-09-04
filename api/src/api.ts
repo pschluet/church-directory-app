@@ -5,6 +5,7 @@ import { HTTPException } from "hono/http-exception";
 import { ZodError } from "zod";
 import { authMiddleware, type AppEnv } from "./auth";
 import { assertPhotoCookieConfig } from "./photo-cookies";
+import { assertPushConfig } from "./services/push";
 import type { Queryable } from "./db";
 import meRoutes from "./routes/me";
 import directoryRoutes from "./routes/directory";
@@ -12,6 +13,9 @@ import personRoutes from "./routes/persons";
 import familyRoutes from "./routes/families";
 import mergeRoutes from "./routes/merges";
 import specialDateRoutes from "./routes/special-dates";
+import prayerRequestRoutes from "./routes/prayer-requests";
+import notificationRoutes from "./routes/notifications";
+import pushRoutes from "./routes/push";
 import uploadRoutes from "./routes/uploads";
 import adminRoutes from "./routes/admin";
 import organizationRoutes from "./routes/organizations";
@@ -44,6 +48,9 @@ export function createApp(queryable?: Queryable) {
   // every image on the site 403s, and a 403 from CloudFront leaves nothing in
   // the API's logs to explain it.
   assertPhotoCookieConfig();
+  // Same reasoning, one step weaker: push is optional, so this only complains
+  // about a *half*-configured keypair. See assertPushConfig.
+  assertPushConfig();
 
   const app = new Hono<AppEnv>();
 
@@ -99,6 +106,9 @@ export function createApp(queryable?: Queryable) {
   app.route("/api/families", familyRoutes);
   app.route("/api/merges", mergeRoutes);
   app.route("/api/special-dates", specialDateRoutes);
+  app.route("/api/prayer-requests", prayerRequestRoutes);
+  app.route("/api/notifications", notificationRoutes);
+  app.route("/api/push", pushRoutes);
   app.route("/api/uploads", uploadRoutes);
   app.route("/api/admin", adminRoutes);
   app.route("/api/organizations", organizationRoutes);

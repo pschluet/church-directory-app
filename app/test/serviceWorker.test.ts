@@ -7,13 +7,19 @@ import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 /*
- * Assertions about the generated service worker, not about any module in src/.
+ * Assertions about the built service worker, not about any module in src/.
  *
  * The risk this covers is entirely in the build output: a plausible-looking
- * `runtimeCaching` entry added to vite.config.ts would put the parish's phone
- * numbers, addresses and everyone's face into the Cache API on disk, which is
- * the exposure lib/queryClient.ts refuses a localStorage persister to avoid.
+ * cache route added to app/src/sw.ts would put the parish's phone numbers,
+ * addresses and everyone's face into the Cache API on disk, which is the
+ * exposure lib/queryClient.ts refuses a localStorage persister to avoid.
  * Nothing in the app would look different, and no existing test would fail.
+ *
+ * The worker is hand-written now (`strategies: "injectManifest"`), which it had
+ * to become to host a `push` listener -- so these assertions cover more than
+ * they used to: the precache and navigation behaviour Workbox used to generate
+ * is now code somebody could edit, and the push handlers are code somebody
+ * could break.
  *
  * A jsdom test could not see it: jsdom has neither `caches` nor
  * `navigator.serviceWorker`, so it would only ever assert against its own
@@ -31,10 +37,17 @@ if (!built) {
   );
 }
 
-describe.skipIf(!built)("the generated service worker", () => {
+describe.skipIf(!built)("the built service worker", () => {
   const sw = readFileSync(SW, "utf8");
-  // Workbox minifies the precache manifest, so the keys are unquoted.
-  const precached = [...sw.matchAll(/url:"([^"]+)"/g)].flatMap(([, url]) => (url ? [url] : []));
+  /*
+   * The manifest entries, however the bundler happened to write them: quoted
+   * (`"url":"index.html"`) under injectManifest, unquoted (`url:"index.html"`)
+   * under the generateSW build this replaced. Matching both because a regex
+   * that silently stops matching turns every assertion below into a check on
+   * an empty array -- which is exactly what happened when the strategy
+   * changed, and why the first case here asserts the list is not empty.
+   */
+  const precached = [...sw.matchAll(/"?url"?:"([^"]+)"/g)].flatMap(([, url]) => (url ? [url] : []));
 
   it("never precaches the API or anyone's photo", () => {
     expect(precached).not.toHaveLength(0);
@@ -74,6 +87,41 @@ describe.skipIf(!built)("the generated service worker", () => {
     // 96KB of downloads that no browser able to run this app would make.
     expect(precached.some((url) => url.endsWith(".woff2"))).toBe(true);
     expect(precached.filter((url) => url.endsWith(".woff"))).toEqual([]);
+  });
+
+  /*
+   * The push half. These are string checks on a minified bundle, which is
+   * coarse -- but the alternative is no coverage at all, since a service worker
+   * cannot be instantiated under jsdom (no `ServiceWorkerGlobalScope`, no
+   * `registration`), and the failure mode being guarded against is blunt: a
+   * listener that did not survive the build at all.
+   */
+  it("listens for pushes and for taps on them", () => {
+    // Quote-agnostic: the bundler emits backticks, and which quote character a
+    // minifier happens to pick is not what these cases are about.
+    expect(sw).toMatch(/addEventListener\((["'`])push\1/);
+    expect(sw).toMatch(/addEventListener\((["'`])notificationclick\1/);
+    expect(sw).toContain("showNotification");
+  });
+
+  it("collapses prayer request notifications onto one tag rather than stacking them", () => {
+    // The requirement is a single notification saying how many are new. Without
+    // a fixed tag, three approvals leave three notifications each saying one.
+    expect(sw).toContain("prayer-requests");
+    expect(sw).toMatch(/renotify/);
+  });
+
+  it("keeps the app shell available offline", () => {
+    // createHandlerBoundToURL throws at install time if index.html is not in
+    // the precache, so this pairs with the manifest assertions above.
+    expect(sw).toContain("index.html");
+  });
+
+  it("takes over immediately, since standalone display has no reload button", () => {
+    // registerType: "autoUpdate". A worker that waited for every tab to close
+    // is one some installed copies would never get past.
+    expect(sw).toMatch(/skipWaiting/);
+    expect(sw).toMatch(/clientsClaim|claim\(\)/);
   });
 
   it("is installable: standalone, scoped to the whole app, with a maskable icon", () => {

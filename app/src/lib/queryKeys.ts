@@ -16,6 +16,19 @@ export const qk = {
   me: () => ["me"] as const,
   organizations: () => ["organizations"] as const,
 
+  /**
+   * Not org-namespaced, and deliberately so: a notification belongs to an
+   * account. The only caller who can act outside their own parish is a super
+   * admin, whose notifications still come from their home one, so keying these
+   * by the active organization would empty their bell every time they looked at
+   * somebody else's parish.
+   *
+   * Siblings rather than nested, so refreshing the bell does not also refetch
+   * the settings page's switches.
+   */
+  notifications: () => ["notifications"] as const,
+  notificationPreferences: () => ["notification-preferences"] as const,
+
   org: (orgId: string | null) => ["org", orgId] as const,
 
   directoryRoot: (orgId: string | null) => [...qk.org(orgId), "directory"] as const,
@@ -54,6 +67,14 @@ export const qk = {
   pendingMerges: (orgId: string | null) => [...qk.persons(orgId), "merges", "pending"] as const,
 
   adminUsers: (orgId: string | null) => [...qk.org(orgId), "admin", "users"] as const,
+
+  prayerRequests: (orgId: string | null) => [...qk.org(orgId), "prayer-requests"] as const,
+  /**
+   * Nested under the feed, so approving something can invalidate both the page
+   * and the review queue with one prefix match.
+   */
+  pendingPrayerRequests: (orgId: string | null) =>
+    [...qk.prayerRequests(orgId), "pending"] as const,
 
   specialDates: (orgId: string | null) => [...qk.org(orgId), "special-dates"] as const,
   upcomingDates: (orgId: string | null, start: string, days: number) =>
