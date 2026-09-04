@@ -44,7 +44,43 @@ function readPhotoKeys(): { publicKeyPem: string; privateKeyPem: string } {
   return { publicKeyPem: fs.readFileSync(publicKeyPath, "utf8"), privateKeyPem };
 }
 
+/**
+ * The VAPID keypair for Web Push. Created once by scripts/create-push-key.sh.
+ *
+ * Unlike the photo keypair, both halves being absent is fine: a parish with no
+ * keys posts prayer requests that simply arrive without a notification, and the
+ * API treats empty values as "push is not configured". What is *not* fine is
+ * one without the other -- a committed public key with no secret behind it
+ * would let browsers subscribe to something that can never send -- so that
+ * combination throws here rather than deploying quietly.
+ */
+function readPushKeys(): { publicKey: string; privateKey: string } {
+  const publicKeyPath = path.join(__dirname, "..", "push-public-key.txt");
+  const hasPublicKey = fs.existsSync(publicKeyPath);
+  const privateKey = app.node.tryGetContext("vapidPrivateKey") ?? process.env.VAPID_PRIVATE_KEY;
+
+  if (!hasPublicKey && !privateKey) return { publicKey: "", privateKey: "" };
+
+  if (!hasPublicKey) {
+    throw new Error(
+      "A VAPID private key was supplied but infra/push-public-key.txt is missing. " +
+        "Run ./scripts/create-push-key.sh and commit the public key."
+    );
+  }
+  if (!privateKey) {
+    throw new Error(
+      'Missing the VAPID private key. Pass -c vapidPrivateKey="$(cat key.txt)" or set ' +
+        "VAPID_PRIVATE_KEY. Without it browsers could subscribe to push that can never be sent."
+    );
+  }
+  return {
+    publicKey: fs.readFileSync(publicKeyPath, "utf8").trim(),
+    privateKey: privateKey.trim(),
+  };
+}
+
 const photoKeys = readPhotoKeys();
+const pushKeys = readPushKeys();
 
 new ChurchDirectoryStack(app, "ChurchDirectoryStack", {
   env: { account, region },
@@ -56,6 +92,11 @@ new ChurchDirectoryStack(app, "ChurchDirectoryStack", {
     "arn:aws:acm:us-east-1:435432815368:certificate/e2fec70c-b80c-4143-b853-105c118d4749",
   photoPublicKeyPem: photoKeys.publicKeyPem,
   photoPrivateKeyPem: photoKeys.privateKeyPem,
+  vapidPublicKey: pushKeys.publicKey,
+  vapidPrivateKey: pushKeys.privateKey,
+  // The address a push service contacts if it has a problem with our sends.
+  // Reuses the SES sender rather than inventing a mailbox nobody reads.
+  vapidSubject: "mailto:no-reply@pauldev.io",
 });
 
 // Every resource is tagged so this project's cost can be tracked on its own.

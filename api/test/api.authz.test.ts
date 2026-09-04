@@ -123,6 +123,58 @@ describe.skipIf(!hasDb)("authorization", () => {
     });
   });
 
+  /*
+   * PRAYER_REQUEST_ADMIN is a rung between USER and ADMIN, which is easy to get
+   * wrong in the direction that matters: a reviewer who accidentally inherits
+   * the People & Accounts screen can invite, disable and delete accounts. These
+   * assert the ladder from both ends.
+   */
+  describe("the prayer request admin rung", () => {
+    let reviewer: CreatedUser;
+
+    beforeAll(async () => {
+      reviewer = await createUser(db(), {
+        organizationId: orgA,
+        role: "PRAYER_REQUEST_ADMIN",
+        email: "reviewer-rung@a.test",
+        firstName: "Nikolai",
+      });
+    });
+
+    it("is not an admin: no access to the accounts list", async () => {
+      const { status } = await as(reviewer).call("GET", "/api/admin/users");
+      expect(status).toBe(403);
+    });
+
+    it("is not an admin: cannot invite", async () => {
+      const { status } = await as(reviewer).call("POST", "/api/admin/users", {
+        email: "nope@a.test",
+        firstName: "Nope",
+        role: "USER",
+      });
+      expect(status).toBe(403);
+    });
+
+    it("is not a super admin: no access to the organization list", async () => {
+      const { status } = await as(reviewer).call("GET", "/api/organizations");
+      expect(status).toBe(403);
+    });
+
+    it("keeps every ordinary member privilege", async () => {
+      const { status, body } = await as(reviewer).call("GET", "/api/me");
+      expect(status).toBe(200);
+      expect(body.appUser.role).toBe("PRAYER_REQUEST_ADMIN");
+      const directory = await as(reviewer).call("GET", "/api/directory");
+      expect(directory.status).toBe(200);
+    });
+
+    it("cannot be given an organization-less account, as the CHECK constraint requires", async () => {
+      await expect(
+        createUser(db(), { organizationId: null, role: "PRAYER_REQUEST_ADMIN" })
+      ).rejects.toThrow();
+    });
+  });
+
   describe("reading the directory", () => {
     it("shows a user everyone in their own organization", async () => {
       const { status, body } = await as(user).call("GET", "/api/directory");
@@ -260,6 +312,17 @@ describe.skipIf(!hasDb)("authorization", () => {
       });
       expect(status).toBe(403);
       expect(body.error).toMatch(/super admin/i);
+    });
+
+    it("lets an admin invite a prayer request admin", async () => {
+      const { status, body } = await as(admin).call("POST", "/api/admin/users", {
+        email: "reviewer@a.test",
+        firstName: "Reviewer",
+        role: "PRAYER_REQUEST_ADMIN",
+      });
+      expect(status).toBe(201);
+      expect(body.role).toBe("PRAYER_REQUEST_ADMIN");
+      expect(body.organizationId).toBe(orgA);
     });
 
     it("lets a super admin invite anywhere, in any role", async () => {

@@ -56,6 +56,36 @@ export function formatRelativeDay(iso: string): string | null {
   return null;
 }
 
+/**
+ * How long ago something was posted -- "2 hours ago", "Yesterday", "4 May".
+ *
+ * Instant-based, unlike the rest of this file, which deals in plain calendar
+ * dates: a prayer request is posted at a moment, and "3 hours ago" is what a
+ * reader wants from a page that turns over within a month. Past a week the
+ * relative form stops being useful ("23 days ago" needs counting back), so it
+ * gives way to the date.
+ *
+ * `now` is injectable so this is testable without freezing the clock.
+ */
+export function formatPostedAt(iso: string, now: Date = new Date()): string {
+  const then = new Date(iso);
+  const minutes = Math.floor((now.getTime() - then.getTime()) / 60_000);
+
+  // A clock skew between the browser and the server can put a fresh post a few
+  // seconds in the future; read that as "just now" rather than as a negative.
+  if (minutes < 1) return "Just now";
+  if (minutes < 60) return `${minutes} minute${minutes === 1 ? "" : "s"} ago`;
+
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} hour${hours === 1 ? "" : "s"} ago`;
+
+  const days = Math.floor(hours / 24);
+  if (days === 1) return "Yesterday";
+  if (days < 7) return `${days} days ago`;
+
+  return then.toLocaleDateString(undefined, { month: "long", day: "numeric" });
+}
+
 /** "4 May" or "4 May 1985". */
 export function formatMonthDay(month: number, day: number, year?: number | null): string {
   const name = MONTHS[month - 1] ?? "";

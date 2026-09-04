@@ -4,7 +4,7 @@ import { requireOrganizationId, type AppEnv } from "../auth";
 import { one } from "../db";
 import { assertCanEditFamily, assertCanEditPerson } from "../services/access";
 import { buildPhotoKey, presignUploads } from "../photos";
-import { photoUploadSchema, type PhotoUploadDto } from "../types";
+import { photoUploadSchema, prayerRequestImageUploadSchema, type PhotoUploadDto } from "../types";
 
 /**
  * Presigned photo uploads.
@@ -59,6 +59,41 @@ routes.post("/photo", async (c) => {
 
   const owner = payload.personId ? { personId: payload.personId } : { familyId: payload.familyId! };
   const photoKey = buildPhotoKey(organizationId, owner);
+  const uploadUrls = await presignUploads(photoKey, payload.contentType, {
+    thumb: payload.renditions.thumb.contentLength,
+    full: payload.renditions.full.contentLength,
+  });
+
+  const body: PhotoUploadDto = { photoKey, uploadUrls };
+  return c.json(body);
+});
+
+/**
+ * An image for a prayer request the caller has not written yet.
+ *
+ * Deliberately takes no owner. The key is scoped to the caller's own person
+ * record (`prayerRequestImagePrefix`), so the only thing to check is that they
+ * have one -- and `POST /prayer-requests` re-checks the prefix against the same
+ * person before it stores anything, so a key obtained here cannot be attached
+ * to somebody else's request.
+ *
+ * That scoping is what keeps creation a single request: the images go up first,
+ * the row is written once with their keys, and an author who abandons the form
+ * leaves two orphaned objects in S3 rather than a half-built request in the
+ * database that a reviewer would see.
+ */
+routes.post("/prayer-request-image", async (c) => {
+  const caller = c.get("caller");
+  const organizationId = requireOrganizationId(c);
+  const payload = prayerRequestImageUploadSchema.parse(await c.req.json());
+
+  if (!caller.personId) {
+    throw new HTTPException(400, { message: "Your own directory record is missing" });
+  }
+
+  const photoKey = buildPhotoKey(organizationId, {
+    prayerRequestAuthorPersonId: caller.personId,
+  });
   const uploadUrls = await presignUploads(photoKey, payload.contentType, {
     thumb: payload.renditions.thumb.contentLength,
     full: payload.renditions.full.contentLength,

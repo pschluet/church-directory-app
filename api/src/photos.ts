@@ -52,18 +52,39 @@ function s3(): S3Client {
   return client;
 }
 
+/** What a stored photo belongs to, and so what its key is scoped by. */
+export type PhotoOwner =
+  | { personId: string }
+  | { familyId: string }
+  /**
+   * A prayer request attachment, scoped to the *author* rather than to the
+   * request. That is what lets the images be uploaded before the
+   * `prayer_requests` row exists, so creating a request stays a single POST
+   * with no draft state to clean up if the author changes their mind. The
+   * ownership check at attach time is unaffected -- the author is exactly who
+   * it needs to verify.
+   */
+  | { prayerRequestAuthorPersonId: string };
+
+/** The path prefix a prayer request attachment's key must start with. */
+export function prayerRequestImagePrefix(organizationId: string, authorPersonId: string): string {
+  return `photos/${organizationId}/prayer-request/${authorPersonId}/`;
+}
+
 /**
  * The prefix both renditions live under, ending in "/" -- this is what goes in
  * `photo_key`. The organization and owner are baked into it so the attach
  * endpoints can verify a caller is not pointing their record at someone else's
  * upload, and the ULID makes every upload a fresh path.
  */
-export function buildPhotoKey(
-  organizationId: string,
-  owner: { personId: string } | { familyId: string }
-): string {
-  const scope = "personId" in owner ? `person/${owner.personId}` : `family/${owner.familyId}`;
-  return `photos/${organizationId}/${scope}/${ulid()}/`;
+export function buildPhotoKey(organizationId: string, owner: PhotoOwner): string {
+  if ("personId" in owner) {
+    return `photos/${organizationId}/person/${owner.personId}/${ulid()}/`;
+  }
+  if ("familyId" in owner) {
+    return `photos/${organizationId}/family/${owner.familyId}/${ulid()}/`;
+  }
+  return `${prayerRequestImagePrefix(organizationId, owner.prayerRequestAuthorPersonId)}${ulid()}/`;
 }
 
 /**

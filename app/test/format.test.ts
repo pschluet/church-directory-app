@@ -4,6 +4,7 @@ import {
   formatMonthDay,
   formatMonthDayShort,
   formatMultilineAddress,
+  formatPostedAt,
   initials,
   specialDateDetail,
   specialDateLabel,
@@ -142,5 +143,45 @@ describe("formatMonthDayShort", () => {
   it("is shorter than the full form for every month but the three-letter ones", () => {
     // The whole reason it exists: the pill has to fit beside a name.
     expect(formatMonthDayShort(9, 6).length).toBeLessThan(formatMonthDay(9, 6).length);
+  });
+});
+
+describe("formatPostedAt", () => {
+  const now = new Date("2026-09-04T12:00:00.000Z");
+  const ago = (ms: number) => new Date(now.getTime() - ms).toISOString();
+
+  const MINUTE = 60_000;
+  const HOUR = 60 * MINUTE;
+  const DAY = 24 * HOUR;
+
+  it("reads a fresh post as just now", () => {
+    expect(formatPostedAt(ago(0), now)).toBe("Just now");
+    expect(formatPostedAt(ago(30_000), now)).toBe("Just now");
+  });
+
+  it("does not go negative when the browser clock is behind the server's", () => {
+    expect(formatPostedAt(new Date(now.getTime() + 5 * MINUTE).toISOString(), now)).toBe(
+      "Just now"
+    );
+  });
+
+  it("counts minutes, then hours, and gets the singular right", () => {
+    expect(formatPostedAt(ago(MINUTE), now)).toBe("1 minute ago");
+    expect(formatPostedAt(ago(45 * MINUTE), now)).toBe("45 minutes ago");
+    expect(formatPostedAt(ago(HOUR), now)).toBe("1 hour ago");
+    expect(formatPostedAt(ago(5 * HOUR), now)).toBe("5 hours ago");
+  });
+
+  it("names yesterday, then counts days up to a week", () => {
+    expect(formatPostedAt(ago(DAY), now)).toBe("Yesterday");
+    expect(formatPostedAt(ago(3 * DAY), now)).toBe("3 days ago");
+    expect(formatPostedAt(ago(6 * DAY), now)).toBe("6 days ago");
+  });
+
+  it("gives way to a date past a week, where counting back stops helping", () => {
+    // The one-month window means the oldest thing on the page is ~30 days old,
+    // and "27 days ago" is not something anyone converts to a date in their head.
+    expect(formatPostedAt(ago(10 * DAY), now)).not.toMatch(/ago/);
+    expect(formatPostedAt(ago(10 * DAY), now)).toMatch(/2[45]/);
   });
 });

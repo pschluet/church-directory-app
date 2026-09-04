@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation } from "react-router";
 import { useAuth } from "../context/AuthContext";
 import { useMe } from "../context/MeContext";
+import { NotificationBell } from "./NotificationBell";
+import { SettingsLink } from "./SettingsLink";
 
 /**
  * The frame every page sits in, following allsaintsorthodox.org's structure:
@@ -23,6 +25,7 @@ interface NavItem {
 const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Directory" },
   { to: "/dates", label: "Special Dates" },
+  { to: "/prayer-requests", label: "Prayer Requests" },
   { to: "/families", label: "Families" },
   { to: "/me", label: "My Details" },
   { to: "/admin/users", label: "People & Accounts", adminOnly: true },
@@ -92,40 +95,54 @@ export function AppShell() {
             {organizationName}
           </NavLink>
 
-          <button
-            ref={toggleRef}
-            type="button"
-            className="tap-target -mr-2 flex shrink-0 items-center justify-center text-ink md:hidden"
-            aria-expanded={drawerOpen}
-            aria-controls="main-nav"
-            aria-label={drawerOpen ? "Close menu" : "Open menu"}
-            onClick={() => setDrawerOpen((open) => !open)}
-          >
-            {/*
-              Three bars that fold into a cross, rather than swapping one icon
-              for another. The outer two sit 7px either side of the middle and
-              animate purely by transform -- translating to the centre and
-              rotating -- which the compositor can handle without a reflow. The
-              middle bar just fades.
-            */}
-            <span aria-hidden="true" className="relative block h-4 w-6">
-              <span
-                className={`absolute left-0 top-0 block h-0.5 w-full rounded-full bg-current transition-transform duration-200 ease-out ${
-                  drawerOpen ? "translate-y-[7px] rotate-45" : ""
-                }`}
-              />
-              <span
-                className={`absolute left-0 top-1/2 block h-0.5 w-full -translate-y-1/2 rounded-full bg-current transition-opacity duration-200 ease-out ${
-                  drawerOpen ? "opacity-0" : "opacity-100"
-                }`}
-              />
-              <span
-                className={`absolute bottom-0 left-0 block h-0.5 w-full rounded-full bg-current transition-transform duration-200 ease-out ${
-                  drawerOpen ? "-translate-y-[7px] -rotate-45" : ""
-                }`}
-              />
-            </span>
-          </button>
+          {/*
+            The bell has to appear twice, because this row is not the same row at
+            both sizes: under `md` it is [parish name | controls], and from `md`
+            up the container turns `md:flex-col` and centres, which would drop
+            anything here underneath the title. So the phone copy sits next to
+            the hamburger and the desktop copy lives in the account row below,
+            each hidden at the other breakpoint. Restructuring the header to
+            share one is a bigger change than a bell warrants.
+          */}
+          <div className="flex shrink-0 items-center gap-0.5 md:hidden">
+            <NotificationBell />
+            <SettingsLink />
+
+            <button
+              ref={toggleRef}
+              type="button"
+              className="tap-target -mr-2 flex shrink-0 items-center justify-center text-ink"
+              aria-expanded={drawerOpen}
+              aria-controls="main-nav"
+              aria-label={drawerOpen ? "Close menu" : "Open menu"}
+              onClick={() => setDrawerOpen((open) => !open)}
+            >
+              {/*
+                Three bars that fold into a cross, rather than swapping one icon
+                for another. The outer two sit 7px either side of the middle and
+                animate purely by transform -- translating to the centre and
+                rotating -- which the compositor can handle without a reflow.
+                The middle bar just fades.
+              */}
+              <span aria-hidden="true" className="relative block h-4 w-6">
+                <span
+                  className={`absolute left-0 top-0 block h-0.5 w-full rounded-full bg-current transition-transform duration-200 ease-out ${
+                    drawerOpen ? "translate-y-[7px] rotate-45" : ""
+                  }`}
+                />
+                <span
+                  className={`absolute left-0 top-1/2 block h-0.5 w-full -translate-y-1/2 rounded-full bg-current transition-opacity duration-200 ease-out ${
+                    drawerOpen ? "opacity-0" : "opacity-100"
+                  }`}
+                />
+                <span
+                  className={`absolute bottom-0 left-0 block h-0.5 w-full rounded-full bg-current transition-transform duration-200 ease-out ${
+                    drawerOpen ? "-translate-y-[7px] -rotate-45" : ""
+                  }`}
+                />
+              </span>
+            </button>
+          </div>
 
           {/* From md up this is the horizontal bar; below md it is the drawer,
               toggled by the button above. */}
@@ -193,6 +210,8 @@ export function AppShell() {
 
         {/* The desktop account row; on a phone this lives inside the drawer. */}
         <div className="mx-auto hidden max-w-6xl items-center justify-end gap-4 px-4 pb-2 text-sm text-ink-muted md:flex">
+          <NotificationBell />
+          <SettingsLink />
           <span>{email ?? me?.appUser.email}</span>
           <button
             type="button"

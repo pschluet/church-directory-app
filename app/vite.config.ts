@@ -39,6 +39,18 @@ export default defineConfig(({ mode }) => {
        */
       VitePWA({
         registerType: "autoUpdate",
+        /*
+         * injectManifest, not the default generateSW: a `push` listener cannot
+         * be expressed in generateSW's configuration at all, and its escape
+         * hatch (`workbox.importScripts`) would add a second fixed-name file to
+         * keep in step with deploy.yml's exclude, no-cache and invalidation
+         * lists. app/src/sw.ts explains the trade-off in full; it reproduces
+         * what generateSW used to emit, and test/serviceWorker.test.ts holds it
+         * to that.
+         */
+        strategies: "injectManifest",
+        srcDir: "src",
+        filename: "sw.ts",
         // Both favicons and the iOS icon live in public/ and are referenced
         // only from index.html, so Workbox would not otherwise precache them.
         includeAssets: ["favicon.ico", "favicon.svg", "apple-touch-icon-180x180.png"],
@@ -80,40 +92,18 @@ export default defineConfig(({ mode }) => {
             },
           ],
         },
-        workbox: {
+        /*
+         * Only what goes *into* the manifest is configurable now. The
+         * navigation fallback and the emphatically empty set of runtime caches
+         * moved into app/src/sw.ts, which is the file that has to make those
+         * decisions once a worker is hand-written -- see the comments there,
+         * particularly the one about caching nothing.
+         */
+        injectManifest: {
           // Deliberately no `woff`: @fontsource emits both, every browser that
           // can run this app takes the woff2, and precaching the pair would
           // download 96KB nobody ever requests.
           globPatterns: ["**/*.{js,css,html,woff2,svg,ico,png,webmanifest}"],
-
-          // A deep link like /dates has no extension and so no precache entry;
-          // serve the shell and let the router take it. This mirrors the
-          // CloudFront SpaFallback function, which rewrites any URI without a
-          // dot to /index.html.
-          navigateFallback: "/index.html",
-          // Both are same-origin (see server.proxy below), so a document
-          // request under either prefix has to reach the network rather than
-          // being answered with the shell. Matched by prefix and not by
-          // extension on purpose: photo renditions are extensionless, e.g.
-          // /photos/<org>/person/<id>/<ulid>/thumb.
-          navigateFallbackDenylist: [/^\/api\//, /^\/photos\//],
-
-          /*
-           * Empty, and it has to stay empty. generateSW only intercepts what
-           * it has a route for, so with no runtime routes every /api/* fetch,
-           * every /photos/* <img> and every presigned S3 upload falls straight
-           * through to the network and nothing personal is written to disk.
-           *
-           * This is the same decision lib/queryClient.ts makes about a
-           * localStorage persister, for the same reason: the alternative is
-           * the parish's phone numbers and addresses sitting on whatever phone
-           * last signed in. A runtimeCaching entry for either prefix would
-           * undo it silently, which is what test/serviceWorker.test.ts
-           * watches for. Photos are already cached by the browser and the
-           * CloudFront edge -- their paths are permanent ULIDs -- so there is
-           * nothing to gain here either.
-           */
-          runtimeCaching: [],
         },
         // The dev server proxies /api and /photos to the Hono server; a worker
         // sitting in front of that only makes local debugging harder.

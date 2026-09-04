@@ -3,7 +3,9 @@
 A multi-tenant parish directory at **directory.pauldev.io**. Members keep their own
 contact details up to date, manage their family — including children and others who have
 no account of their own — record birthdays, name days and wedding anniversaries, and
-browse or search everyone else in their parish. Phone numbers are tappable to call.
+browse or search everyone else in their parish. Phone numbers are tappable to call. They can
+also ask the parish to pray for someone: a prayer request is reviewed before anyone else sees
+it, and once posted it notifies everyone who wants to hear about it.
 
 There is no password: everyone signs in with a one-time code sent to their email address.
 Accounts are invite-only, created by a parish administrator.
@@ -20,18 +22,21 @@ Accounts are invite-only, created by a parish administrator.
   key that left it out would serve one parish's directory to another.
 - **Installable:** a PWA, so the directory can live on a home screen — this is the app
   someone opens standing in the parking lot after a service, and one tap beats recalling a
-  URL. It is also what would make Web Push possible later, since iOS only delivers it to a
-  site added to the home screen. The service worker (`vite-plugin-pwa`, Workbox
-  `generateSW`) precaches the app shell and **nothing else**: `workbox.runtimeCaching` is
-  empty, so `/api/*`, `/photos/*` and the presigned S3 uploads all fall straight through
-  to the network. That is the same decision as *Client cache* above, for the same reason —
-  a `runtimeCaching` entry would put the parish's phone numbers on disk in the Cache API
-  instead of `localStorage`, which is no better. `app/test/serviceWorker.test.ts` asserts
-  it against the built `dist/sw.js`, because nothing in the app would look different if it
-  regressed. The icons in `app/public` are generated from `favicon.svg`; see
-  `app/pwa-assets.config.js` for the command. One deploy consequence: `sw.js` must never
-  be uploaded `immutable`, or every installed copy is pinned to that build with no address
-  bar to reload from.
+  URL. It is also what makes Web Push work at all, since iOS only delivers it to a site
+  added to the home screen (see *Notifications*). The service worker is hand-written
+  (`app/src/sw.ts`, `vite-plugin-pwa` in `injectManifest` mode) and precaches the app shell
+  and **nothing else**: there is no runtime cache route, so `/api/*`, `/photos/*` and the
+  presigned S3 uploads all fall straight through to the network. That is the same decision
+  as *Client cache* above, for the same reason — a cache route would put the parish's phone
+  numbers on disk in the Cache API instead of `localStorage`, which is no better.
+  `app/test/serviceWorker.test.ts` asserts it against the built `dist/sw.js`, because
+  nothing in the app would look different if it regressed. It was `generateSW` until push
+  arrived; that mode cannot host a `push` listener, and its escape hatch
+  (`workbox.importScripts`) would add a second fixed-name file to keep in step with three
+  separate lists in `deploy.yml`. The icons in `app/public` are generated from
+  `favicon.svg`; see `app/pwa-assets.config.js` for the command. One deploy consequence:
+  `sw.js` must never be uploaded `immutable`, or every installed copy is pinned to that
+  build with no address bar to reload from.
 - **Auth:** Cognito user pool (Essentials tier), email-OTP passwordless sign-in. Self
   sign-up is disabled; administrators invite people and the API sends the invitation
   through SES. Cognito's own invitation is suppressed, because a custom Cognito template
@@ -62,8 +67,37 @@ Accounts are invite-only, created by a parish administrator.
   transaction commits before the Cognito user is deleted, because the reverse order can
   leave an account row whose `cognito_sub` names a user that no longer exists — it looks
   intact, can never sign in, and `bindByEmail` will not re-bind it.
-- **Roles:** Super Admin, Admin and User, stored in Postgres rather than in Cognito
-  groups — a group cannot express which organization an admin is scoped to.
+- **Roles:** Super Admin, Admin, Prayer Request Admin and User, stored in Postgres rather
+  than in Cognito groups — a group cannot express which organization an admin is scoped to.
+  They form a hierarchy rather than a set of independent permissions, and the ladder is
+  written once, in `hasRole` (`api/src/types.ts`), so `requireRole` on the server and the
+  guards in the SPA cannot disagree about it. A Prayer Request Admin is a member with one
+  extra privilege and sits between User and Admin, which is why an Admin can review prayer
+  requests without being granted anything.
+- **Notifications:** two things, deliberately separate. A bell in the nav counts rows in a
+  `notifications` table, one per recipient per event, fanned out in the same transaction
+  that approves a prayer request — so "unread" is a fact about a person, which a
+  high-water-mark timestamp could count but could not list by title. On top of that, **Web
+  Push**: `web-push` in the API, a VAPID keypair from `scripts/create-push-key.sh`
+  delivered exactly like the photo signing key, and the `push` listener in `app/src/sw.ts`.
+  The push body is only ever a count — "3 new prayer requests", that recipient's own unread
+  count — because a prayer request can name somebody's illness and a lock screen is not
+  where that should be legible to whoever picks the phone up. A fixed notification `tag`
+  makes each push replace the last rather than stacking. Sends go out after the approval
+  commits and cannot fail it; a 404 or 410 back from a push service deletes that
+  subscription, which is also how the table cleans itself up after a key rotation.
+  Notably this needed **nothing** added to the network: all three push services publish
+  AAAA records, so they are reachable over IPv6 through the egress-only gateway (see *Why
+  there is no NAT gateway*). Push is optional — a deployment with no keypair posts prayer
+  requests that simply arrive without a notification, and the settings page is careful to
+  say that it is *push* that is unavailable rather than notifications as a whole, since the
+  bell is unaffected.
+
+  Everyone active in the parish is told, the author included: being told your request is
+  now up is the most useful notification here, and until it arrives the author has no
+  signal at all. The one exclusion is whoever just posted it — the reviewer who approved
+  it, or a Prayer Request Admin posting their own request, which goes up without review
+  because they are the person who would otherwise approve it.
 - **Tags:** every resource carries `Project=all-saints` for cost tracking.
 
 ### Why there is no NAT gateway
@@ -113,8 +147,13 @@ npm run dev:app     # SPA on :5173, proxying /api to :3000
 
 Neither needs any environment: the connection settings default to the docker-compose
 Postgres, and `api`'s `dev` script supplies the local-only ones (`DEV_AUTH_EMAIL`,
-`DB_PASSWORD`, `PHOTO_STORAGE=local`, `COGNITO_MODE=local`). Any of them can be overridden
-from your shell — `DEV_AUTH_EMAIL=someone@example.com npm run dev:api`.
+`DB_PASSWORD`, `PHOTO_STORAGE=local`, `COGNITO_MODE=local`, `PUSH_MODE=local`). Any of them
+can be overridden from your shell — `DEV_AUTH_EMAIL=someone@example.com npm run dev:api`.
+
+`PUSH_MODE=local` makes push a no-op, so everything except the notification itself works
+with no VAPID keys. The in-app bell is unaffected and is the part worth exercising locally;
+Web Push needs `npm run build:app && npm run preview` (the only local server that runs the
+service worker) and, on iOS, an app added to the home screen.
 
 `DEV_AUTH_EMAIL` makes every request act as that person. The seed prints two addresses to
 try: `paul@example.com` (an administrator) and the super administrator.
@@ -135,7 +174,7 @@ codes arrive in your actual inbox.
 ```sh
 npm run ci:check                        # Biome lint + format
 npm run typecheck --workspaces
-npm test                                # 459 tests across api, app and infra
+npm test                                # 815 tests across api, app and infra
 ```
 
 The API tests run against a real Postgres (`directory_test`, migrated automatically by
@@ -222,7 +261,29 @@ normal `git push`.
    Re-running the script rotates the key. Deploy afterwards; browsers holding an old cookie
    get a 403 on photos until their next `GET /me`, which is one page load.
 
-7. **Create the first parish** from *Churches*, then invite an administrator for it.
+7. **Create the VAPID keypair for Web Push.** Optional, and skippable: without it prayer
+   requests still work and the in-app bell still counts them, they just arrive without a
+   notification on anyone's phone. The settings page says so in as many words.
+
+   ```sh
+   ./scripts/create-push-key.sh
+   ```
+
+   Commit the public key it writes to `infra/push-public-key.txt`, and store the private key
+   as the `VAPID_PRIVATE_KEY` repository secret. Same reasoning as the photo key: CDK cannot
+   generate a keypair, and a private key in the template would be readable by anyone who can
+   describe the stack.
+
+   Setting the secret without committing the public key — or the reverse — fails the synth on
+   purpose (`readPushKeys` in `infra/bin/app.ts`), because a public key browsers can
+   subscribe against with no private key behind it is worse than no push at all.
+
+   Re-running the script **rotates** the keypair and invalidates every existing subscription.
+   Nobody has to clean anything up — a send to a stale subscription answers 410 and the row
+   is deleted — but every member has to turn notifications back on from the settings page
+   before they hear anything again.
+
+8. **Create the first parish** from *Churches*, then invite an administrator for it.
 
 ## CI/CD
 

@@ -1,5 +1,6 @@
 import { HTTPException } from "hono/http-exception";
 import type { Caller } from "../auth";
+import type { Role } from "../types";
 
 /**
  * Who may change what.
@@ -75,13 +76,17 @@ export function assertCanEditFamily(
 }
 
 /**
- * Which roles a caller may hand out. An admin may create admins and users
- * inside their own organization; only a super admin may mint another super
- * admin, or place someone in a different organization.
+ * Which roles a caller may hand out. An admin may create admins, prayer
+ * request admins and users inside their own organization; only a super admin
+ * may mint another super admin, or place someone in a different organization.
+ *
+ * PRAYER_REQUEST_ADMIN needs no arm of its own: it is a member with one extra
+ * privilege, so the rule that covers USER and ADMIN covers it too. Spelling it
+ * out would only invite the two to drift apart.
  */
 export function assertCanGrantRole(
   caller: Caller,
-  role: "SUPER_ADMIN" | "ADMIN" | "USER",
+  role: Role,
   organizationId: string | null
 ): void {
   if (role === "SUPER_ADMIN") {

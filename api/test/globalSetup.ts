@@ -37,6 +37,20 @@ declare module "vitest" {
   }
 }
 
+/**
+ * Migration order, the way Flyway reads it: by the number after the V, not as a
+ * string.
+ *
+ * A plain `.sort()` is right up to nine migrations and wrong from ten, because
+ * "V10__" sorts before "V1__" -- '0' is below '_' in ASCII. The symptom is the
+ * tenth migration running first and failing on a table V1 has not created yet,
+ * which says nothing at all about the real problem.
+ */
+function byVersion(a: string, b: string): number {
+  const version = (file: string) => Number(file.match(/^V(\d+)__/)?.[1] ?? 0);
+  return version(a) - version(b);
+}
+
 export default async function setup(project: TestProject): Promise<void> {
   const admin = new Pool({ ...CONNECTION, database: "postgres", connectionTimeoutMillis: 3000 });
   try {
@@ -63,7 +77,7 @@ export default async function setup(project: TestProject): Promise<void> {
     for (const file of fs
       .readdirSync(MIGRATIONS_DIR)
       .filter((f) => f.endsWith(".sql"))
-      .sort()) {
+      .sort(byVersion)) {
       const sql = fs
         .readFileSync(path.join(MIGRATIONS_DIR, file), "utf8")
         .replace(/\$\{(\w+)\}/g, (match, name: string) => PLACEHOLDERS[name] ?? match);

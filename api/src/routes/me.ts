@@ -7,6 +7,7 @@ import { audit } from "../audit";
 import { loadPerson } from "../services/persons";
 import { setAccountOrganization } from "../services/membership";
 import { PHOTO_COOKIE_TTL_SECONDS, signPhotoCookies } from "../photo-cookies";
+import { pushPublicKey } from "../services/push";
 import { fullName, setMyOrganizationSchema, type MeDto, type OrganizationMoveDto } from "../types";
 
 /**
@@ -75,6 +76,16 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
     person,
     organization: org,
     availableOrganizations,
+    /*
+     * The VAPID public key the browser needs to subscribe for push.
+     *
+     * Served here rather than baked into the SPA as a VITE_ variable: rotating
+     * the keypair then needs no rebuild and no new wiring in CI, and the
+     * settings page can tell "push is not set up for this deployment" (null)
+     * from "this browser cannot do push" without a second request. It is public
+     * by definition -- it is what identifies the sender to the push service.
+     */
+    pushPublicKey: pushPublicKey(),
   };
 }
 

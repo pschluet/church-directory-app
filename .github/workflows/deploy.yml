@@ -74,11 +74,19 @@ jobs:
 
       - name: Deploy infrastructure
         working-directory: infra
-        # The photo signing key cannot live in the template -- anyone who can
-        # describe the stack could read it -- so it arrives here and lands in a
-        # KMS-encrypted Lambda environment variable. See scripts/create-photo-key.sh.
+        # Neither private key can live in the template -- anyone who can
+        # describe the stack could read it -- so both arrive here and land in
+        # KMS-encrypted Lambda environment variables. See
+        # scripts/create-photo-key.sh and scripts/create-push-key.sh.
+        #
+        # VAPID_PRIVATE_KEY may be unset: a parish with no keypair posts prayer
+        # requests that arrive without a push notification, which the API treats
+        # as a supported state. Setting it while infra/push-public-key.txt is
+        # missing (or the reverse) fails the synth on purpose -- see
+        # readPushKeys in infra/bin/app.ts.
         env:
           CLOUDFRONT_PRIVATE_KEY: ${{ secrets.CLOUDFRONT_PRIVATE_KEY }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
         run: npx cdk deploy --require-approval never --outputs-file outputs.json
 
       # Migrations run after the infrastructure (so a new column's table

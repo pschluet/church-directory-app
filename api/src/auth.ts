@@ -2,7 +2,7 @@ import type { Context, MiddlewareHandler } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { APIGatewayProxyEventV2WithJWTAuthorizer } from "aws-lambda";
 import { db, one, type Queryable } from "./db";
-import type { Role, UserStatus } from "./types";
+import { hasRole, type Role, type UserStatus } from "./types";
 
 /**
  * Authentication and the caller's effective permissions.
@@ -48,6 +48,8 @@ export interface Caller {
   isSuperAdmin: boolean;
   /** True for ADMIN and SUPER_ADMIN. */
   isAdmin: boolean;
+  /** True for PRAYER_REQUEST_ADMIN and everything above it. */
+  canApprovePrayerRequests: boolean;
 }
 
 export type AppEnv = {
@@ -232,6 +234,7 @@ export function authMiddleware(queryable: Queryable = db): MiddlewareHandler<App
       organizationId,
       isSuperAdmin: user.role === "SUPER_ADMIN",
       isAdmin: user.role === "SUPER_ADMIN" || user.role === "ADMIN",
+      canApprovePrayerRequests: hasRole(user.role, "PRAYER_REQUEST_ADMIN"),
     });
 
     await next();
@@ -242,13 +245,11 @@ export function authMiddleware(queryable: Queryable = db): MiddlewareHandler<App
 export function requireRole(...roles: Role[]): MiddlewareHandler<AppEnv> {
   return async (c, next) => {
     const caller = c.get("caller");
-    // A super admin can do anything an admin can, and an admin anything a
-    // user can, so treat the check as a floor rather than an exact match.
-    const allowed = roles.some((role) => {
-      if (role === "USER") return true;
-      if (role === "ADMIN") return caller.isAdmin;
-      return caller.isSuperAdmin;
-    });
+    // A floor, not an exact match: a super admin can do anything an admin can,
+    // and an admin anything a user can. The hierarchy itself lives in
+    // `hasRole` (types.ts) so the SPA's guards agree with this one by
+    // construction rather than by a second copy of the same ladder.
+    const allowed = roles.some((role) => hasRole(caller.role, role));
     if (!allowed) throw new HTTPException(403, { message: "Not allowed" });
     await next();
   };

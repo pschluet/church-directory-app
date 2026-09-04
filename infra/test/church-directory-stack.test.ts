@@ -43,6 +43,9 @@ describe("ChurchDirectoryStack", () => {
       certificateArn: "arn:aws:acm:us-east-1:123456789012:certificate/test",
       photoPublicKeyPem: TEST_PHOTO_PUBLIC_KEY,
       photoPrivateKeyPem: "-----BEGIN RSA PRIVATE KEY-----\ntest\n-----END RSA PRIVATE KEY-----",
+      vapidPublicKey: "test-vapid-public-key",
+      vapidPrivateKey: "test-vapid-private-key",
+      vapidSubject: "mailto:no-reply@example.com",
     });
     cdk.Tags.of(app).add("Project", "all-saints");
     template = Template.fromStack(stack);
@@ -167,6 +170,39 @@ describe("ChurchDirectoryStack", () => {
     it("connects to Postgres with IAM authentication", () => {
       template.hasResourceProperties("AWS::Lambda::Function", {
         Environment: { Variables: Match.objectLike({ DB_AUTH: "iam", DB_USER: "directory_app" }) },
+      });
+    });
+
+    it("is handed the VAPID keypair for Web Push", () => {
+      /*
+       * In a Lambda environment variable rather than from Secrets Manager,
+       * which is unreachable from this VPC -- the same delivery as
+       * CLOUDFRONT_PRIVATE_KEY. Asserted because the failure mode is silent:
+       * with the key missing the API decides push is "not configured", every
+       * settings page says so, and nothing appears in any log.
+       */
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        Environment: {
+          Variables: Match.objectLike({
+            VAPID_PUBLIC_KEY: "test-vapid-public-key",
+            VAPID_PRIVATE_KEY: "test-vapid-private-key",
+            VAPID_SUBJECT: "mailto:no-reply@example.com",
+          }),
+        },
+      });
+    });
+
+    it("needs nothing added to the network to send a push", () => {
+      /*
+       * Web Push goes to Apple, Google and Mozilla, none of them AWS -- the
+       * only such call this stack makes. All three publish AAAA records, so the
+       * egress-only gateway covers it. This pins that: a NAT gateway or an
+       * interface endpoint appearing here would mean somebody concluded
+       * otherwise, and it would cost ~$32/month to be wrong.
+       */
+      template.resourceCountIs("AWS::EC2::NatGateway", 0);
+      template.hasResourceProperties("AWS::EC2::SecurityGroup", {
+        SecurityGroupEgress: Match.arrayWith([Match.objectLike({ CidrIpv6: "::/0" })]),
       });
     });
 
