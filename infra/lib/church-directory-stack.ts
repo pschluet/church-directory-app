@@ -487,6 +487,120 @@ export class ChurchDirectoryStack extends Stack {
     });
 
     // -------------------------------------------------------------------
+    // Bastion -- the only route a database client on a laptop has to the
+    // instance, which sits in an isolated subnet by design.
+    //
+    // Deliberately kept stopped: ~$3/month running, ~$0.64/month for the root
+    // volume when it is not. scripts/db-tunnel.sh starts it, forwards a local
+    // port to Postgres and stops it again on exit; the idle timer in the user
+    // data below is the backstop for when that script is killed before its
+    // trap can run.
+    // -------------------------------------------------------------------
+    const bastionSecurityGroup = new ec2.SecurityGroup(this, "BastionSecurityGroup", {
+      vpc,
+      description: "Bastion; no inbound rules at all -- access is via SSM",
+      allowAllOutbound: true,
+    });
+
+    const bastionUserData = ec2.UserData.forLinux();
+    bastionUserData.addCommands(
+      // Stops the instance once nothing is using it, so a tunnel script that
+      // was killed without running its trap cannot leave it billing. `set -e`
+      // is left off on purpose: a probe that fails should not abort the check
+      // and quietly disable the shutdown.
+      `cat >/usr/local/bin/bastion-idle-stop <<'SCRIPT'
+#!/usr/bin/env bash
+set -uo pipefail
+
+IDLE_LIMIT=1200
+MARKER=/run/bastion-idle-since
+
+busy=no
+if pgrep -f ssm-session-worker >/dev/null 2>&1; then
+  busy=yes
+elif [ -n "$(ss -Htn state established '( sport = :5432 or dport = :5432 )' 2>/dev/null || true)" ]; then
+  busy=yes
+fi
+
+if [ "$busy" = yes ]; then
+  rm -f "$MARKER"
+  exit 0
+fi
+
+now="$(date +%s)"
+if [ ! -f "$MARKER" ]; then
+  echo "$now" >"$MARKER"
+  exit 0
+fi
+
+idle_for=$(( now - $(cat "$MARKER") ))
+if [ "$idle_for" -ge "$IDLE_LIMIT" ]; then
+  logger -t bastion-idle-stop "idle for $idle_for seconds, stopping"
+  shutdown -h now
+fi
+SCRIPT`,
+      "chmod +x /usr/local/bin/bastion-idle-stop",
+      `cat >/etc/systemd/system/bastion-idle-stop.service <<'UNIT'
+[Unit]
+Description=Stop the bastion when nothing is using it
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/bastion-idle-stop
+UNIT`,
+      `cat >/etc/systemd/system/bastion-idle-stop.timer <<'UNIT'
+[Unit]
+Description=Check every five minutes whether the bastion is idle
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+
+[Install]
+WantedBy=timers.target
+UNIT`,
+      // The units live on the root volume, so enabling the timer once is
+      // enough -- it comes back on its own after every stop/start.
+      "systemctl daemon-reload",
+      "systemctl enable --now bastion-idle-stop.timer"
+    );
+
+    const bastion = new ec2.Instance(this, "Bastion", {
+      vpc,
+      // A public subnet with a public IP, for the same reason the Flyway task
+      // runs there: the SSM agent has to reach ssmmessages, and the only other
+      // way out of this VPC over IPv4 would be three interface endpoints at
+      // ~$7/month each. `mapPublicIpOnLaunch` is false on the subnet, so the
+      // address has to be asked for here -- without it the agent never
+      // registers and `start-session` fails with TargetNotConnected.
+      vpcSubnets: { subnetType: ec2.SubnetType.PUBLIC },
+      associatePublicIpAddress: true,
+      securityGroup: bastionSecurityGroup,
+      instanceType: ec2.InstanceType.of(
+        ec2.InstanceClass.BURSTABLE4_GRAVITON,
+        ec2.InstanceSize.NANO
+      ),
+      machineImage: ec2.MachineImage.latestAmazonLinux2023({
+        cpuType: ec2.AmazonLinuxCpuType.ARM_64,
+      }),
+      // Session Manager only: no key pair, no inbound rule, nothing to rotate.
+      ssmSessionPermissions: true,
+      httpTokens: ec2.HttpTokens.REQUIRED,
+      instanceName: "church-directory-bastion",
+      // The idle timer runs `shutdown -h now`. Without this an
+      // instance-initiated shutdown would terminate the instance instead, and
+      // nothing would say so until the next tunnel failed.
+      instanceInitiatedShutdownBehavior: ec2.InstanceInitiatedShutdownBehavior.STOP,
+      userData: bastionUserData,
+    });
+
+    dbSecurityGroup.addIngressRule(
+      bastionSecurityGroup,
+      ec2.Port.tcp(5432),
+      "Bastion tunnel to Postgres"
+    );
+
+    // -------------------------------------------------------------------
     // HTTP API
     // -------------------------------------------------------------------
     const issuer = `https://cognito-idp.${this.region}.amazonaws.com/${userPool.userPoolId}`;
@@ -637,6 +751,7 @@ function handler(event) {
     new CfnOutput(this, "GitHubDeployRoleArn", { value: deployRole.roleArn });
     new CfnOutput(this, "DatabaseEndpoint", { value: database.dbInstanceEndpointAddress });
     new CfnOutput(this, "DatabaseSecretArn", { value: database.secret!.secretArn });
+    new CfnOutput(this, "BastionInstanceId", { value: bastion.instanceId });
     new CfnOutput(this, "ClusterName", { value: cluster.clusterName });
     new CfnOutput(this, "MigrationTaskArn", { value: migrationTask.taskDefinitionArn });
     new CfnOutput(this, "MigrationSubnetIds", {

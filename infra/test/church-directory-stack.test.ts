@@ -143,12 +143,12 @@ describe("ChurchDirectoryStack", () => {
       });
     });
 
-    it("only accepts connections from the API and the migration task", () => {
+    it("only accepts connections from the API, the migration task and the bastion", () => {
       const ingress = template.findResources("AWS::EC2::SecurityGroupIngress");
       const postgres = Object.values(ingress).filter(
         (r) => (r.Properties as { FromPort?: number }).FromPort === 5432
       );
-      expect(postgres).toHaveLength(2);
+      expect(postgres).toHaveLength(3);
       for (const rule of postgres) {
         const props = rule.Properties as Record<string, unknown>;
         // Sourced from a security group, never a CIDR.
@@ -156,6 +156,74 @@ describe("ChurchDirectoryStack", () => {
         expect(props.CidrIp).toBeUndefined();
         expect(props.CidrIpv6).toBeUndefined();
       }
+    });
+  });
+
+  describe("bastion", () => {
+    // Its logical id, so the tests below can prove nothing points inbound at it.
+    const bastionSecurityGroupLogicalId = () => {
+      const groups = Object.entries(template.findResources("AWS::EC2::SecurityGroup")).filter(
+        ([, group]) =>
+          /access is via SSM$/.test(
+            (group.Properties as { GroupDescription?: string }).GroupDescription ?? ""
+          )
+      );
+      expect(groups).toHaveLength(1);
+      return groups[0][0];
+    };
+
+    it("is a t4g.nano, and the only instance in the stack", () => {
+      template.resourceCountIs("AWS::EC2::Instance", 1);
+      template.hasResourceProperties("AWS::EC2::Instance", {
+        InstanceType: "t4g.nano",
+      });
+    });
+
+    it("gets a public IP, without which the SSM agent never registers", () => {
+      // The subnet does not hand one out, and there is no NAT, so an instance
+      // that loses this is simply unreachable -- discoverable only by trying
+      // to open a tunnel and waiting for TargetNotConnected.
+      template.hasResourceProperties("AWS::EC2::Instance", {
+        NetworkInterfaces: Match.arrayWith([
+          Match.objectLike({ AssociatePublicIpAddress: true, DeviceIndex: "0" }),
+        ]),
+      });
+    });
+
+    it("requires IMDSv2", () => {
+      template.hasResourceProperties("AWS::EC2::Instance", {
+        MetadataOptions: { HttpTokens: "required" },
+      });
+    });
+
+    it("stops rather than terminates when its idle timer fires", () => {
+      // The timer runs `shutdown -h now`; on the other setting that destroys
+      // the bastion, and nothing says so until the next tunnel fails.
+      template.hasResourceProperties("AWS::EC2::Instance", {
+        InstanceInitiatedShutdownBehavior: "stop",
+      });
+    });
+
+    it("accepts no inbound traffic of its own", () => {
+      const logicalId = bastionSecurityGroupLogicalId();
+
+      const group = template.findResources("AWS::EC2::SecurityGroup")[logicalId];
+      expect(
+        (group.Properties as { SecurityGroupIngress?: unknown[] }).SecurityGroupIngress
+      ).toBeUndefined();
+
+      const inbound = Object.values(
+        template.findResources("AWS::EC2::SecurityGroupIngress")
+      ).filter((rule) =>
+        JSON.stringify((rule.Properties as { GroupId?: unknown }).GroupId ?? null).includes(
+          logicalId
+        )
+      );
+      expect(inbound).toHaveLength(0);
+    });
+
+    it("publishes its instance id, which the tunnel script looks up", () => {
+      template.hasOutput("BastionInstanceId", {});
     });
   });
 

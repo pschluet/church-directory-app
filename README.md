@@ -139,7 +139,9 @@ S3 gateway endpoint. SES does have a dual-stack endpoint, so `api/src/email.ts` 
 `useDualstackEndpoint: true` — without it the invitation email hangs until the function
 times out. If a future feature needs an AWS API with no IPv6 endpoint at all, add an
 interface endpoint for it rather than reaching for NAT — `infra/test` asserts that no NAT
-gateway and no interface endpoints exist.
+gateway and no interface endpoints exist. Anything that genuinely needs the IPv4 internet
+runs in a public subnet with a public IP instead: the Flyway task, to pull its image, and the
+bastion, so its SSM agent can register (see *Inspecting the deployed database*).
 
 ### Cost
 
@@ -147,8 +149,9 @@ RDS is the only meaningful line item, at roughly **$13–15/month** ($0 for the 
 months if the account is still free-tier eligible). Everything else is effectively free at
 parish scale: no NAT gateway, Lambda and CloudFront free tiers, HTTP API at about
 $1/million requests, Cognito Essentials free under 10,000 monthly actives, SES at
-$0.10/1,000 emails, a few cents of S3, and pennies per deploy for the Fargate migration
-task.
+$0.10/1,000 emails, a few cents of S3, pennies per deploy for the Fargate migration task, and
+about $0.60/month for the stopped bastion's root volume (see *Inspecting the deployed
+database*).
 
 ## Local development
 
@@ -205,6 +208,30 @@ The API tests run against a real Postgres (`directory_test`, migrated automatica
 `api/test/globalSetup.ts`) rather than a fake query layer, because the inheritance
 resolution view and the special-date CHECK constraints carry a lot of the logic. If
 Postgres is not running they skip with a warning, so `npm test` still works offline.
+
+### Inspecting the deployed database
+
+The instance is in an isolated subnet and admits only the API Lambda, the Flyway task and a
+bastion, so a database client cannot reach it directly. `npm run db:tunnel` forwards a local
+port through the bastion with Session Manager, which needs the plugin the AWS CLI shells out
+to:
+
+```sh
+brew install --cask session-manager-plugin
+npm run db:tunnel
+```
+
+It prints the connection details — `localhost:15432`, database `directory`, user `postgres`
+— and puts the master password on the clipboard rather than in your scrollback
+(`SHOW_PASSWORD=1` prints it instead). Set SSL mode to **require**, not verify-full: the
+server certificate is issued for the RDS hostname while the client connects to localhost, and
+the parameter group will not accept a plaintext connection either.
+
+The bastion is a `t4g.nano` that is normally stopped, so it costs its root volume and nothing
+else. The script starts it, stops it again when you quit, and leaves it alone if it was
+already running for a tunnel in another terminal. It also stops itself after twenty idle
+minutes, so a script killed before its trap ran cannot leave it billing. `LOCAL_PORT=5433 npm
+run db:tunnel` moves the local end if something already holds the default.
 
 ## One-time setup
 
@@ -279,8 +306,9 @@ normal `git push`.
    Commit the public key it writes to `infra/photo-public-key.pem`, and store the private
    key as the `CLOUDFRONT_PRIVATE_KEY` repository secret. The deploy passes it to CDK,
    which puts it in a Lambda environment variable -- encrypted at rest and decrypted by the
-   runtime with no network call, which is the only way a secret works in this VPC (see
-   *Why there is no NAT gateway*: Secrets Manager and SSM are both unreachable).
+   runtime with no network call, which is the only way a secret works in the Lambda's subnet
+   (see *Why there is no NAT gateway*: from there, Secrets Manager and SSM are both
+   unreachable).
 
    Re-running the script rotates the key. Deploy afterwards; browsers holding an old cookie
    get a 403 on photos until their next `GET /me`, which is one page load.

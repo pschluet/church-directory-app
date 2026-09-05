@@ -13,6 +13,7 @@
     "dev:app": "npm run dev -w app",
     "db:migrate:local": "./scripts/migrate-local.sh",
     "db:seed": "npm run seed -w api",
+    "db:tunnel": "./scripts/db-tunnel.sh",
     "synth": "npm run synth -w infra",
     "deploy": "npm run deploy -w infra",
     "build:app": "npm run build -w app",
