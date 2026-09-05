@@ -39,7 +39,11 @@ Accounts are invite-only, created by a parish administrator.
   build with no address bar to reload from.
 - **Auth:** Cognito user pool (Essentials tier), email-OTP passwordless sign-in. Self
   sign-up is disabled; administrators invite people and the API sends the invitation
-  through SES. Cognito's own invitation is suppressed, because a custom Cognito template
+  through SES. Both messages come from the same display name, defined once as
+  `EMAIL_FROM_NAME` in the stack and passed to the Lambda as `FROM_NAME`: the code comes
+  from Cognito and the invitation from the API, and they used to disagree — a named sender
+  for one, a bare `no-reply@` for the other, which is two different-looking emails for the
+  first two a member ever receives. Cognito's own invitation is suppressed, because a custom Cognito template
   must embed the `{####}` temporary-password placeholder — a live credential nobody needs
   when sign-in is a one-time code.
 - **API:** API Gateway HTTP API with a Cognito JWT authorizer and one Lambda (Hono router,
@@ -88,7 +92,10 @@ Accounts are invite-only, created by a parish administrator.
   delivered exactly like the photo signing key, and the `push` listener in `app/src/sw.ts`.
   The push body is only ever a count — "3 new prayer requests", that recipient's own unread
   count — because a prayer request can name somebody's illness and a lock screen is not
-  where that should be legible to whoever picks the phone up. A fixed notification `tag`
+  where that should be legible to whoever picks the phone up. The *title* says what the
+  notification is about ("Prayer Requests", "Approval Needed") and deliberately never the
+  app's own name: iOS composes the bold line as `{title} from {app name}` with no way to
+  suppress the second half, so naming the app there printed it twice. A fixed notification `tag`
   makes each push replace the last rather than stacking. Sends go out after the approval
   commits and cannot fail it; a 404 or 410 back from a push service deletes that
   subscription, which is also how the table cleans itself up after a key rotation.
@@ -191,7 +198,7 @@ codes arrive in your actual inbox.
 ```sh
 npm run ci:check                        # Biome lint + format
 npm run typecheck --workspaces
-npm test                                # 865 tests across api, app and infra
+npm test                                # 878 tests across api, app and infra
 ```
 
 The API tests run against a real Postgres (`directory_test`, migrated automatically by

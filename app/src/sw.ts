@@ -136,7 +136,14 @@ self.addEventListener("push", (event) => {
 
   event.waitUntil(
     (async () => {
-      await self.registration.showNotification(payload.title ?? "Parish Directory", {
+      /*
+       * The fallback is not the app's name, and must not become it: iOS renders
+       * "{title} from {app name}" and cannot be told not to, so "Parish
+       * Directory" here read as "Parish Directory from Directory". Prayer
+       * requests are the only thing this app pushes, so that is what an
+       * unreadable payload can safely claim to be about.
+       */
+      await self.registration.showNotification(payload.title ?? "Prayer Requests", {
         body: payload.body ?? "Something new in the parish directory",
         // From the payload, so a request waiting for review can replace the
         // previous *review* notification without displacing a posted one.

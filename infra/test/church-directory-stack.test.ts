@@ -206,6 +206,40 @@ describe("ChurchDirectoryStack", () => {
       });
     });
 
+    it("sends every email under the same name as Cognito", () => {
+      /*
+       * The property the single EMAIL_FROM_NAME constant exists to guarantee.
+       * The two messages a new member receives come from different places --
+       * Cognito sends the one-time code, the API sends the invitation itself --
+       * and they used to disagree: a named sender for one, a bare address for
+       * the other. Neither value was asserted anywhere, and the drift would only
+       * ever show up in somebody's inbox.
+       */
+      const pools = template.findResources("AWS::Cognito::UserPool");
+      const from = Object.values(pools)[0]?.Properties?.EmailConfiguration?.From as string;
+      expect(from).toBeDefined();
+
+      /*
+       * Selected by FROM_EMAIL rather than by handler name: CDK adds its own
+       * functions for log retention and bucket auto-delete, and those share
+       * `index.handler`. FROM_EMAIL is uniquely ours and is FROM_NAME's
+       * sibling, so a missing FROM_NAME still finds the function and fails on
+       * the assertion rather than silently matching the wrong one.
+       */
+      const functions = template.findResources("AWS::Lambda::Function", {
+        Properties: {
+          Environment: { Variables: Match.objectLike({ FROM_EMAIL: Match.anyValue() }) },
+        },
+      });
+      expect(Object.keys(functions)).toHaveLength(1);
+      const fromName = Object.values(functions)[0]?.Properties?.Environment?.Variables
+        ?.FROM_NAME as string;
+
+      expect(fromName).toBeTruthy();
+      // Cognito renders it as `Name <address>`, so the API's name must be its prefix.
+      expect(from.startsWith(`${fromName} <`)).toBe(true);
+    });
+
     it("is granted rds-db:connect and nothing broader", () => {
       template.hasResourceProperties("AWS::IAM::Policy", {
         PolicyDocument: {

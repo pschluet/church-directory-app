@@ -74,6 +74,20 @@ const DEPLOY_ROLE_NAME = "church-directory-github-deploy";
 
 /** The Postgres role the API connects as; created by V2__app_role.sql. */
 const APP_DB_ROLE = "directory_app";
+
+/**
+ * The sender name on every message this app sends.
+ *
+ * Defined once and used twice -- Cognito's one-time sign-in code, and the
+ * invitation the API sends itself through SES -- because the whole point is
+ * that a new member sees the same sender on both. They used to disagree: the
+ * code came from "Parish Directory" and the invitation from a bare address with
+ * no display name at all.
+ *
+ * It matches the installed app's name deliberately, so a member who has the
+ * directory on their home screen recognises the email as coming from it.
+ */
+const EMAIL_FROM_NAME = "Directory";
 const DB_NAME = "directory";
 
 export class ChurchDirectoryStack extends Stack {
@@ -291,7 +305,7 @@ export class ChurchDirectoryStack extends Stack {
       },
       email: cognito.UserPoolEmail.withSES({
         fromEmail: `no-reply@${hostedZoneName}`,
-        fromName: "Parish Directory",
+        fromName: EMAIL_FROM_NAME,
         sesRegion: "us-east-1",
         sesVerifiedDomain: hostedZoneName,
       }),
@@ -354,6 +368,9 @@ export class ChurchDirectoryStack extends Stack {
         USER_POOL_CLIENT_ID: userPoolClient.userPoolClientId,
         SITE_URL: `https://${domainName}`,
         FROM_EMAIL: `no-reply@${hostedZoneName}`,
+        // Passed rather than duplicated in api/src/email.ts, so this stack is
+        // the only place the sender name is written down.
+        FROM_NAME: EMAIL_FROM_NAME,
         // Encrypted at rest with the AWS-managed Lambda key and decrypted by
         // the runtime, so reading it costs no network call -- which is the only
         // way a secret can work in this VPC. See the props comment.

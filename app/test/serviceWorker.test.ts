@@ -117,6 +117,16 @@ describe.skipIf(!built)("the built service worker", () => {
     expect(sw).toContain("postMessage");
   });
 
+  it("never falls back to naming the app in the title", () => {
+    /*
+     * iOS renders the bold line as "{title} from {app name}", so a fallback of
+     * "Parish Directory" showed the name twice. Asserted against the built
+     * worker because the fallback is only reached by a malformed payload --
+     * nothing else exercises it, and the symptom only appears on a phone.
+     */
+    expect(sw).not.toContain("Parish Directory");
+  });
+
   it("takes its notification tag from the payload", () => {
     // So a request waiting for review can replace the previous review
     // notification without displacing a posted one.

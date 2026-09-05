@@ -67,8 +67,8 @@ const subscription = (id: string, appUserId: string) => ({
   auth: "auth",
 });
 
-const payload = (body: string, tag = "prayer-requests") => ({
-  title: "Parish Directory",
+const payload = (body: string, tag = "prayer-requests", title = "Prayer Requests") => ({
+  title,
   body,
   url: "/prayer-requests",
   tag,

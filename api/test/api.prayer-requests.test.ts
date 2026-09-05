@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, inject, it } from "vitest";
 import { closeDatabase, resetTables, testDb } from "./helpers/testDb";
 import { client } from "./helpers/request";
 import { createOrganization, createUser, type CreatedUser } from "./helpers/fixtures";
+import { PUSH_KINDS } from "../src/routes/prayer-requests";
 
 /**
  * Prayer requests, and the moderation that gates them.
@@ -13,6 +14,54 @@ import { createOrganization, createUser, type CreatedUser } from "./helpers/fixt
  */
 
 const hasDb = inject("hasDatabase");
+
+/**
+ * The words on the lock screen.
+ *
+ * Pure copy, no database -- outside the skipIf below so it runs even with
+ * Postgres down. It earns a test because every one of these strings is only
+ * ever seen on a phone: the bug it guards against rendered as "Parish Directory
+ * from Directory" on iOS and was completely invisible on a laptop.
+ */
+describe("push notification copy", () => {
+  it("never puts the app's name in the title", () => {
+    /*
+     * iOS renders the bold line as "{title} from {app name}" and cannot be told
+     * not to, so a title naming the app says it twice. The obvious "tidy-up" is
+     * to put a friendly-looking app name back here, which is why this asserts
+     * rather than trusting the comment.
+     */
+    for (const { title } of Object.values(PUSH_KINDS)) {
+      expect(title).not.toMatch(/directory/i);
+      expect(title).not.toMatch(/parish/i);
+    }
+  });
+
+  it("says what each notification is about", () => {
+    expect(PUSH_KINDS.posted.title).toBe("Prayer Requests");
+    expect(PUSH_KINDS.review.title).toBe("Approval Needed");
+  });
+
+  it("keeps the two kinds distinct, so neither replaces the other", () => {
+    // An approver can have something waiting *and* something newly posted, and
+    // they are different things to do. A shared title or tag would collapse
+    // them into one notification on the lock screen.
+    expect(PUSH_KINDS.posted.title).not.toBe(PUSH_KINDS.review.title);
+    expect(PUSH_KINDS.posted.tag).not.toBe(PUSH_KINDS.review.tag);
+  });
+
+  it("counts posted requests, singular and plural", () => {
+    expect(PUSH_KINDS.posted.body(1)).toBe("1 new prayer request");
+    expect(PUSH_KINDS.posted.body(3)).toBe("3 new prayer requests");
+  });
+
+  it("agrees the noun *and* the verb on the approval body", () => {
+    // Two agreements, and getting one right while missing the other is the easy
+    // mistake: "1 new prayer requests needs approval".
+    expect(PUSH_KINDS.review.body(1)).toBe("1 new prayer request needs approval");
+    expect(PUSH_KINDS.review.body(3)).toBe("3 new prayer requests need approval");
+  });
+});
 
 describe.skipIf(!hasDb)("prayer requests", () => {
   const db = () => testDb();

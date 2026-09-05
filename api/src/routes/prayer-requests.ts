@@ -53,31 +53,48 @@ type PushKind = "posted" | "review";
 /**
  * What each kind of notification says, and which notification it replaces.
  *
- * Separate tags, because the two must not displace one another: a reviewer with
- * a request waiting *and* something newly posted has two different things to do
- * and needs to see both. Separate counts for the same reason -- adding them
- * together would produce a number that is wrong about both.
+ * Separate tags, because the two must not displace one another: an approver
+ * with a request waiting *and* something newly posted has two different things
+ * to do and needs to see both. Separate counts for the same reason -- adding
+ * them together would produce a number that is wrong about both.
+ *
+ * **The title must never be the app's name.** iOS composes the bold line itself
+ * as "{title} from {app name}" and there is no way to suppress the "from" half,
+ * so a title of "Parish Directory" rendered as "Parish Directory from
+ * Directory" -- the app's name twice, which is what this used to do. Letting the
+ * title say what the notification is *about* makes iOS read as a sentence
+ * ("Prayer Requests from Directory") and loses nothing on Android, which shows
+ * the app name on its own line above.
+ *
+ * Exported so the copy can be asserted: all four strings are user-facing, only
+ * ever seen on a phone, and the one bug they had was invisible on a laptop.
  */
-const PUSH_KINDS: Record<
+export const PUSH_KINDS: Record<
   PushKind,
-  { type: NotificationType; tag: string; body: (count: number) => string }
+  { type: NotificationType; tag: string; title: string; body: (count: number) => string }
 > = {
   posted: {
     type: "PRAYER_REQUEST",
     tag: "prayer-requests",
+    title: "Prayer Requests",
     body: (count) => `${count} new prayer request${count === 1 ? "" : "s"}`,
   },
   review: {
     type: "PRAYER_REQUEST_REVIEW",
     tag: "prayer-requests-review",
-    body: (count) => `${count} prayer request${count === 1 ? "" : "s"} waiting for review`,
+    title: "Approval Needed",
+    // Two agreements, not one: "1 new prayer request needs approval" against
+    // "3 new prayer requests need approval".
+    body: (count) =>
+      `${count} new prayer request${count === 1 ? "" : "s"} ` +
+      `${count === 1 ? "needs" : "need"} approval`,
   },
 };
 
 async function pushToNotified(db: Queryable, notified: string[], kind: PushKind): Promise<void> {
   if (notified.length === 0) return;
 
-  const { type, tag, body } = PUSH_KINDS[kind];
+  const { type, tag, title, body } = PUSH_KINDS[kind];
   const counts = await unreadNotificationCounts(db, notified, type);
   const payloads = new Map<string, PushPayload>(
     notified.map((appUserId) => {
@@ -87,10 +104,11 @@ async function pushToNotified(db: Queryable, notified: string[], kind: PushKind)
       return [
         appUserId,
         {
-          // Deliberately just a number, per the requirement -- a prayer request
-          // can name somebody's illness, and a lock screen is not where that
-          // should be legible to whoever picks the phone up.
-          title: "Parish Directory",
+          // The body is deliberately just a number, per the requirement -- a
+          // prayer request can name somebody's illness, and a lock screen is
+          // not where that should be legible to whoever picks the phone up. The
+          // title is deliberately not the app's name; see PUSH_KINDS.
+          title,
           body: body(count),
           url: "/prayer-requests",
           tag,

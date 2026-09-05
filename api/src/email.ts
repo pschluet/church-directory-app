@@ -17,7 +17,31 @@ import { SendEmailCommand, SESv2Client } from "@aws-sdk/client-sesv2";
 
 const MODE = (process.env.EMAIL_MODE ?? "aws") as "aws" | "local";
 const FROM_EMAIL = process.env.FROM_EMAIL ?? "";
+const FROM_NAME = process.env.FROM_NAME ?? "";
 const SITE_URL = process.env.SITE_URL ?? "";
+
+/**
+ * The From header, with a display name when one is configured.
+ *
+ * This message used to go out from a bare `no-reply@` while Cognito's one-time
+ * code came from a named sender, so an invited member's first two emails looked
+ * like they were from two different places. The name comes from the stack
+ * (`FROM_NAME`, set alongside Cognito's `fromName`) rather than being written
+ * here, so the two cannot drift.
+ *
+ * Falls back to the bare address when unset, which is what a stack deployed
+ * before that variable existed will do -- and is exactly the previous
+ * behaviour, so nothing breaks in the gap between the two deploys.
+ *
+ * The name is quoted, because an unquoted display name containing a comma or a
+ * colon is not a valid RFC 5322 address and SES will reject the whole send.
+ * Any quote or backslash inside it has to be escaped for the same reason.
+ */
+export function fromHeader(name = FROM_NAME, email = FROM_EMAIL): string {
+  if (!name) return email;
+  const escaped = name.replace(/([\\"])/g, "\\$1");
+  return `"${escaped}" <${email}>`;
+}
 
 let client: SESv2Client | undefined;
 function ses(): SESv2Client {
@@ -35,7 +59,7 @@ async function send(to: string, subject: string, text: string, html: string): Pr
   }
   await ses().send(
     new SendEmailCommand({
-      FromEmailAddress: FROM_EMAIL,
+      FromEmailAddress: fromHeader(),
       Destination: { ToAddresses: [to] },
       Content: {
         Simple: {
