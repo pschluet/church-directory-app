@@ -17,6 +17,9 @@ concurrency:
 permissions:
   id-token: write
   contents: read
+  # To read this workflow's own run history -- see "Check whether the schema
+  # changed" below.
+  actions: read
 
 env:
   AWS_REGION: us-east-1
@@ -39,6 +42,53 @@ jobs:
         uses: actions/checkout@v4
         with:
           ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+          # The check below diffs this commit against the one the last
+          # successful deploy shipped, which can be a long way back.
+          fetch-depth: 0
+
+      # Flyway skips a migration it has already applied, so running the task
+      # when nothing changed costs a couple of minutes; skipping one that was
+      # needed leaves production on the wrong schema. So this errs towards
+      # running -- anything it cannot establish for certain counts as changed.
+      #
+      # The baseline is the commit the last *successful* deploy shipped, not
+      # HEAD^: a push can carry several commits, and a deploy can fail (or be
+      # skipped) after this step, so the previous commit on main is not
+      # necessarily the schema that is live.
+      - name: Check whether the schema changed
+        id: schema
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          set -euo pipefail
+
+          # This run is still in progress, so it cannot match itself.
+          BASE_SHA=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/actions/workflows/deploy.yml/runs?branch=main&status=success&per_page=1" \
+            --jq '.workflow_runs[0].head_sha // empty')
+
+          if [ -z "$BASE_SHA" ]; then
+            echo "No successful deploy to compare against -- running the migrations."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A force-push can leave that commit unreachable from here.
+          if ! git cat-file -e "${BASE_SHA}^{commit}" 2>/dev/null; then
+            echo "::warning::$BASE_SHA is no longer in the history -- running the migrations."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if git diff --quiet "$BASE_SHA" "$HEAD_SHA" -- db; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "db/ is unchanged since $BASE_SHA -- skipping the migrations."
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            echo "db/ changed since $BASE_SHA:"
+            git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- db
+          fi
 
       - name: Set up Node
         uses: actions/setup-node@v4
@@ -94,6 +144,7 @@ jobs:
       # exists) and before the SPA is published (so the frontend is never
       # serving against a schema that has not been applied).
       - name: Run database migrations
+        if: steps.schema.outputs.changed == 'true'
         working-directory: infra
         run: |
           set -euo pipefail
