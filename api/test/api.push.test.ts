@@ -150,6 +150,92 @@ describe.skipIf(!hasDb)("push subscriptions", () => {
     expect((await stored()).rows).toHaveLength(0);
   });
 
+  describe("staying inside one parish", () => {
+    /*
+     * The guarantee somebody will want to check before trusting this with a
+     * second parish: a prayer request posted in one must never reach a phone
+     * belonging to another.
+     *
+     * It holds by composition rather than by a filter in the sender --
+     * `sendToUsers` selects `where app_user_id = any(...)`, and that array comes
+     * from a fan-out scoped to `u.organization_id = $2`. Both halves are tested
+     * separately (see "does not tell another parish" in
+     * api.notifications.test.ts, and "does not send to a device whose owner is
+     * not in the payload map" in push.test.ts), which means nobody reading
+     * either file alone can see the property. This asserts it in one place.
+     */
+    async function registerDeviceFor(user: CreatedUser, organizationId: string): Promise<void> {
+      await db().query(
+        `insert into push_subscriptions
+           (app_user_id, organization_id, endpoint, p256dh, auth)
+         values ($1, $2, $3, 'p256dh-key', 'auth-key')`,
+        [user.appUserId, organizationId, `https://push.example.test/${user.appUserId}`]
+      );
+    }
+
+    it("never selects another parish's device for a request posted here", async () => {
+      const orgB = await createOrganization(db(), "St. George", "st-george");
+      const author = await createUser(db(), { organizationId: orgA, email: "author@a.test" });
+      const reviewer = await createUser(db(), {
+        organizationId: orgA,
+        role: "PRAYER_REQUEST_ADMIN",
+        email: "reviewer@a.test",
+      });
+      const elsewhere = await createUser(db(), { organizationId: orgB, email: "elsewhere@b.test" });
+
+      // A phone in each parish, both of them subscribed and opted in.
+      await registerDeviceFor(member, orgA);
+      await registerDeviceFor(elsewhere, orgB);
+
+      const { body: created } = await as(author).call("POST", "/api/prayer-requests", {
+        title: "Only this parish",
+        body: "Nobody in St. George should hear about it.",
+      });
+      await as(reviewer).call("POST", `/api/prayer-requests/${created.id}/approve`);
+
+      /*
+       * The recipients are exactly the accounts holding a notification, since
+       * that is the list `pushToNotified` is handed. So the question "could a
+       * push reach the wrong parish" is the question "does the sender's own
+       * query, given those ids, return a device from the wrong parish".
+       */
+      const { rows } = await db().query<{ email: string; organization_id: string }>(
+        `select u.email::text as email, s.organization_id
+           from push_subscriptions s
+           join app_users u on u.id = s.app_user_id
+          where s.app_user_id = any(
+            select distinct app_user_id from notifications
+          )`
+      );
+
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every((row) => row.organization_id === orgA)).toBe(true);
+      expect(rows.map((row) => row.email)).not.toContain("elsewhere@b.test");
+    });
+
+    it("tells nobody in the other parish, on the bell either", async () => {
+      const orgB = await createOrganization(db(), "St. George", "st-george");
+      const author = await createUser(db(), { organizationId: orgA, email: "author2@a.test" });
+      const reviewer = await createUser(db(), {
+        organizationId: orgA,
+        role: "PRAYER_REQUEST_ADMIN",
+        email: "reviewer2@a.test",
+      });
+      await createUser(db(), { organizationId: orgB, email: "elsewhere2@b.test" });
+
+      const { body: created } = await as(author).call("POST", "/api/prayer-requests", {
+        title: "Only this parish",
+        body: "Nobody in St. George should hear about it.",
+      });
+      await as(reviewer).call("POST", `/api/prayer-requests/${created.id}/approve`);
+
+      const { rows } = await db().query<{ organization_id: string }>(
+        "select distinct organization_id from notifications"
+      );
+      expect(rows).toEqual([{ organization_id: orgA }]);
+    });
+  });
+
   it("reports no VAPID key on /me when push is not configured", async () => {
     // The suite runs with PUSH_MODE=local, so this is the "push is unavailable
     // here" answer the settings page reads.
