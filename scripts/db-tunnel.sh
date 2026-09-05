@@ -9,11 +9,10 @@
 #
 # The bastion is kept stopped -- ~$3/month running, ~$0.64/month for its root
 # volume when it is not -- so this starts it, waits for Session Manager to pick
-# it up, and stops it again when you quit. The instance also stops itself after
-# twenty idle minutes, in case this script is killed before its trap can run.
-#
-# Leaves the bastion alone on exit if it was already running when the script
-# started, since that usually means a second tunnel is open elsewhere.
+# it up, and stops it again when you quit. It stops the bastion on exit even if
+# something else started it, on the grounds that a bastion left running is the
+# expensive mistake. The instance also stops itself after twenty idle minutes,
+# in case this script is killed before its trap can run.
 #
 #   ./scripts/db-tunnel.sh
 #   LOCAL_PORT=5433 ./scripts/db-tunnel.sh
@@ -82,22 +81,12 @@ instance_state() {
     --output text
 }
 
-was_running=no
-if [ "$(instance_state)" = "running" ]; then
-  was_running=yes
-fi
-
 stopped=no
 stop_bastion() {
   if [ "$stopped" = yes ]; then
     return 0
   fi
   stopped=yes
-
-  if [ "$was_running" = yes ]; then
-    echo "Leaving $instance_id running: it was already up before this tunnel." >&2
-    return 0
-  fi
 
   echo "Stopping $instance_id ..." >&2
   if ! aws ec2 stop-instances \
@@ -116,8 +105,8 @@ trap stop_bastion EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
-if [ "$was_running" = yes ]; then
-  echo "Bastion $instance_id is already running."
+if [ "$(instance_state)" = "running" ]; then
+  echo "Bastion $instance_id is already running; this tunnel will still stop it on exit."
 else
   echo "Starting bastion $instance_id ..."
   aws ec2 start-instances \

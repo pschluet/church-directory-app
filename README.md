@@ -228,10 +228,11 @@ server certificate is issued for the RDS hostname while the client connects to l
 the parameter group will not accept a plaintext connection either.
 
 The bastion is a `t4g.nano` that is normally stopped, so it costs its root volume and nothing
-else. The script starts it, stops it again when you quit, and leaves it alone if it was
-already running for a tunnel in another terminal. It also stops itself after twenty idle
-minutes, so a script killed before its trap ran cannot leave it billing. `LOCAL_PORT=5433 npm
-run db:tunnel` moves the local end if something already holds the default.
+else. The script starts it and stops it again when you quit, including when it found the
+bastion already running, so a second tunnel in another terminal loses its bastion when the
+first one closes. It also stops itself after twenty idle minutes, so a script killed before
+its trap ran cannot leave it billing. `LOCAL_PORT=5433 npm run db:tunnel` moves the local end
+if something already holds the default.
 
 ## One-time setup
 
