@@ -108,6 +108,56 @@ describe.skipIf(!hasDb)("families and the gated join flow", () => {
       const { body } = await as(outsider).call("GET", `/api/families/${schlueters}`);
       expect(body.canEdit).toBe(false);
       expect(body.pendingJoinRequests).toEqual([]);
+      // Somebody else's request is not theirs to see either.
+      expect(body.myPendingJoinRequestId).toBeNull();
+    });
+
+    it("tells the asker their own request is outstanding", async () => {
+      const created = await as(joiner).call("POST", `/api/families/${schlueters}/join-requests`);
+
+      const { body } = await as(joiner).call("GET", `/api/families/${schlueters}`);
+      expect(body.myPendingJoinRequestId).toBe(created.body.id);
+      // Their own, without opening the list of everyone else's: who else has
+      // asked to join a family is not a would-be member's business.
+      expect(body.pendingJoinRequests).toEqual([]);
+      expect(body.isMember).toBe(false);
+    });
+
+    it("reports the two sides of the same request separately", async () => {
+      await as(joiner).call("POST", `/api/families/${schlueters}/join-requests`);
+
+      const { body } = await as(member).call("GET", `/api/families/${schlueters}`);
+      expect(body.pendingJoinRequests).toHaveLength(1);
+      // The member is being asked, not asking.
+      expect(body.myPendingJoinRequestId).toBeNull();
+    });
+
+    it("stops saying a request is waiting once it is approved", async () => {
+      const created = await as(joiner).call("POST", `/api/families/${schlueters}/join-requests`);
+      await as(member).call("POST", `/api/families/join-requests/${created.body.id}/approve`);
+
+      const { body } = await as(joiner).call("GET", `/api/families/${schlueters}`);
+      expect(body.myPendingJoinRequestId).toBeNull();
+      expect(body.isMember).toBe(true);
+    });
+
+    it("stops saying a request is waiting once it is denied", async () => {
+      const created = await as(joiner).call("POST", `/api/families/${schlueters}/join-requests`);
+      await as(member).call("POST", `/api/families/join-requests/${created.body.id}/deny`);
+
+      // Deliberately null rather than a DENIED row: the requester is told
+      // nothing about a refusal, which is its own decision to make later.
+      const { body } = await as(joiner).call("GET", `/api/families/${schlueters}`);
+      expect(body.myPendingJoinRequestId).toBeNull();
+      expect(body.isMember).toBe(false);
+    });
+
+    it("has nothing to report for an admin, who never has to ask", async () => {
+      await as(admin).call("POST", `/api/families/${schlueters}/join-requests`);
+
+      const { body } = await as(admin).call("GET", `/api/families/${schlueters}`);
+      expect(body.myPendingJoinRequestId).toBeNull();
+      expect(body.isMember).toBe(true);
     });
 
     it("adds the person once a family member approves", async () => {

@@ -91,14 +91,39 @@ describe("Families", () => {
     expect(screen.getAllByRole("button", { name: /ask to join/i })).toHaveLength(1);
   });
 
-  it("remembers a request that is already outstanding", async () => {
+  it("remembers a request that is already outstanding, and says what it waits on", async () => {
     api.mockResolvedValue({
       families: [{ ...HADDAD, pendingJoinRequestId: "req-1" }, NASSIF],
     });
     renderPage();
 
-    expect(await screen.findByText("Requested")).toBeInTheDocument();
+    expect(await screen.findByText("Waiting for approval")).toBeInTheDocument();
     expect(screen.getAllByRole("button", { name: /ask to join/i })).toHaveLength(1);
+    // The badge alone is a silent swap in the space the button occupied.
+    expect(screen.getByText(/You have asked to join the Haddad family/)).toBeInTheDocument();
+  });
+
+  it("names every family it is waiting on", async () => {
+    api.mockResolvedValue({
+      families: [
+        { ...HADDAD, pendingJoinRequestId: "req-1" },
+        { ...NASSIF, pendingJoinRequestId: "req-2" },
+      ],
+    });
+    renderPage();
+
+    // A pending request is unique per family, not per person, so several at
+    // once is a real state and the copy has to be plural.
+    expect(await screen.findByText(/You have asked to join 2 families/)).toBeInTheDocument();
+    expect(screen.getByText(/Haddad, Nassif/)).toBeInTheDocument();
+    expect(screen.getAllByText("Waiting for approval")).toHaveLength(2);
+  });
+
+  it("says nothing about waiting when nothing is outstanding", async () => {
+    renderPage();
+
+    await screen.findAllByRole("button", { name: /ask to join/i });
+    expect(screen.queryByText(/You have asked to join/)).not.toBeInTheDocument();
   });
 
   it("asks to join and refreshes who the caller is", async () => {

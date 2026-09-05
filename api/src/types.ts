@@ -293,7 +293,21 @@ export interface FamilyDto {
   members: FamilyMemberDto[];
   /** Every couple in this family, for marking who is married to whom. */
   anniversaries: FamilyAnniversaryDto[];
+  /** Requests waiting on the caller to decide. Empty unless `canEdit`. */
   pendingJoinRequests: JoinRequestDto[];
+  /**
+   * The caller's *own* undecided request to join this family, if any -- the
+   * other side of `pendingJoinRequests`, and never set at the same time as it:
+   * `canEditFamily` is admin-or-member, an admin's request is approved on the
+   * spot, and a member cannot ask to join the family they are already in.
+   *
+   * Its own field rather than a row in that list, because the list is only
+   * populated for someone who can decide: a would-be member has no business
+   * seeing who else has asked, but they must be able to see that *they* have.
+   * Without it, asking twice is the only way to find out, and that answers
+   * with a 409.
+   */
+  myPendingJoinRequestId: string | null;
   canEdit: boolean;
   /** True when the caller is a member, so the UI can offer "request to join". */
   isMember: boolean;

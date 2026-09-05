@@ -79,6 +79,7 @@ function buildFamily(overrides: Partial<FamilyDto> = {}): FamilyDto {
     members: [SELF, CHILD],
     anniversaries: [],
     pendingJoinRequests: [],
+    myPendingJoinRequestId: null,
     canEdit: true,
     isMember: true,
     ...overrides,
@@ -191,6 +192,55 @@ describe("FamilyDetail", () => {
       expect(
         await screen.findByRole("button", { name: /ask to join this family/i })
       ).toBeInTheDocument();
+      expect(screen.queryByText(/you have asked to join/i)).not.toBeInTheDocument();
+    });
+
+    it("tells an outsider their request is waiting instead of offering it again", async () => {
+      respondWith(
+        buildFamily({ canEdit: false, isMember: false, myPendingJoinRequestId: "req-1" })
+      );
+      renderPage();
+
+      expect(await screen.findByText("Waiting for approval")).toBeInTheDocument();
+      expect(screen.getByText(/someone already in it/i)).toBeInTheDocument();
+      // Asking twice was the only way to find out, and it answered with a 409.
+      expect(
+        screen.queryByRole("button", { name: /ask to join this family/i })
+      ).not.toBeInTheDocument();
+    });
+
+    it("swaps the button for the badge as soon as the request is sent", async () => {
+      let family = buildFamily({ canEdit: false, isMember: false });
+      api.mockImplementation((path: string, options?: { method?: string }) => {
+        if (options?.method === "POST") {
+          family = { ...family, myPendingJoinRequestId: "req-1" };
+          return Promise.resolve({ status: "PENDING", id: "req-1" });
+        }
+        return path.startsWith("/special-dates/upcoming")
+          ? Promise.resolve(NO_DATES)
+          : Promise.resolve(family);
+      });
+      renderPage();
+
+      await userEvent.click(
+        await screen.findByRole("button", { name: /ask to join this family/i })
+      );
+
+      expect(await screen.findByText("Waiting for approval")).toBeInTheDocument();
+      expect(screen.getByText(/you have asked to join this family/i)).toBeInTheDocument();
+      // The swap is silent to a screen reader -- focus was on the control that
+      // just disappeared -- so it is announced too.
+      expect(screen.getByRole("status")).toHaveTextContent(
+        /your request to join the Haddad family has been sent/i
+      );
+    });
+
+    it("does not tell a member of the family that they are waiting", async () => {
+      respondWith(buildFamily({ myPendingJoinRequestId: "req-1" }));
+      renderPage();
+
+      expect(await screen.findByRole("heading", { name: "Haddad" })).toBeInTheDocument();
+      expect(screen.queryByText(/you have asked to join/i)).not.toBeInTheDocument();
     });
 
     it("renames the family", async () => {

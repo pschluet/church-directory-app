@@ -11,6 +11,7 @@ import { usePhotoPicker } from "../components/usePhotoPicker";
 import { FamilyPhoto } from "../components/FamilyPhoto";
 import { SpecialDateList } from "../components/SpecialDateList";
 import {
+  Badge,
   Button,
   ConfirmDialog,
   EmptyState,
@@ -71,6 +72,13 @@ export function FamilyDetail() {
    * which on a phone reads as the drag having failed.
    */
   const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
+  /*
+   * Whether *this visit* is the one that sent the request, purely so it can be
+   * announced. The notice below renders from the server's answer instead, so it
+   * survives a reload; a live region cannot, because it has to fire on the
+   * change rather than on arriving to find it already true.
+   */
+  const [asked, setAsked] = useState(false);
 
   const myPersonId = me?.appUser.personId ?? null;
   // Fixed for the life of the render so the age the API computes and the window
@@ -186,8 +194,12 @@ export function FamilyDetail() {
 
   async function requestToJoin(): Promise<void> {
     setBusy(true);
+    // The only mutation here that used to skip this, so a stale failure from
+    // some earlier action sat above the request that had just succeeded.
+    setActionError(null);
     try {
       await api(`/families/${family!.id}/join-requests`, { method: "POST" });
+      setAsked(true);
       await reload();
       await reloadMe();
     } catch (err) {
@@ -238,11 +250,19 @@ export function FamilyDetail() {
             )}
             {/* Not in the menu: for someone who is not in this family, this is
                 the whole reason they opened the page. */}
-            {!family.isMember && !family.canEdit && myPersonId && (
-              <Button onClick={() => void requestToJoin()} disabled={busy}>
-                Ask to join this family
-              </Button>
-            )}
+            {!family.isMember &&
+              !family.canEdit &&
+              myPersonId &&
+              (family.myPendingJoinRequestId ? (
+                // Not a disabled button: that keeps a control in the way that
+                // says nothing back, and drops out of the tab order with no
+                // accessible reason why.
+                <Badge tone="accent">Waiting for approval</Badge>
+              ) : (
+                <Button onClick={() => void requestToJoin()} disabled={busy}>
+                  Ask to join this family
+                </Button>
+              ))}
           </>
         }
       />
@@ -271,6 +291,30 @@ export function FamilyDetail() {
       {photoPicker.error && (
         <p role="alert" className="mb-4 font-bold text-primary">
           {photoPicker.error}
+        </p>
+      )}
+
+      {/*
+        The badge that replaced the button is a silent swap: focus was on the
+        control that just disappeared, and nothing announces a badge. Always
+        mounted and empty until it has something to say -- assistive tech is
+        unreliable about live regions that appear along with their text, and
+        Spinner above is a status too. Same reasoning as Directory.
+      */}
+      <p role="status" className="sr-only">
+        {asked ? `Your request to join the ${family.name} family has been sent.` : ""}
+      </p>
+
+      {/*
+        The other side of "Waiting to join" below. Quiet rather than the accent
+        panel, because there is nothing here for the reader to do -- the same
+        distinction PersonDetail draws between a merge waiting on you and one
+        waiting on somebody else.
+      */}
+      {family.myPendingJoinRequestId && !family.isMember && (
+        <p className="mb-6 rounded-lg border border-line bg-surface-muted p-4 text-ink-muted">
+          You have asked to join this family. Someone already in it — or a parish administrator —
+          has to approve that before you are added.
         </p>
       )}
 

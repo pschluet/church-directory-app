@@ -279,7 +279,7 @@ routes.get("/:id", async (c) => {
   const family = await loadFamilyRow(db, id, organizationId);
   const canEdit = canEditFamily(caller, { id: family.id, organizationId: family.organization_id });
 
-  const [{ rows: memberRows }, ages, anniversaries, pending] = await Promise.all([
+  const [{ rows: memberRows }, ages, anniversaries, pending, myRequestId] = await Promise.all([
     db.query<PersonRow>(
       `select ${PERSON_COLUMNS}
          from persons_resolved r
@@ -299,6 +299,19 @@ routes.get("/:id", async (c) => {
           )
           .then(({ rows }) => rows.map(toJoinRequest))
       : Promise.resolve<JoinRequestDto[]>([]),
+    // The mirror of that gate: an editor never has a request of their own, so
+    // this is only ever asked on behalf of somebody outside the family. No
+    // organization clause -- loadFamilyRow has already established this family
+    // is in the caller's parish, and family_join_requests_one_pending_idx
+    // makes (family_id, person_id) at most one PENDING row.
+    !canEdit && caller.personId
+      ? one<{ id: string }>(
+          db,
+          `select id from family_join_requests
+            where family_id = $1 and person_id = $2 and status = 'PENDING'`,
+          [id, caller.personId]
+        ).then((row) => row?.id ?? null)
+      : Promise.resolve<string | null>(null),
   ]);
 
   const members: FamilyMemberDto[] = toSummaries(caller, memberRows).map((member) => ({
@@ -314,6 +327,7 @@ routes.get("/:id", async (c) => {
     members,
     anniversaries,
     pendingJoinRequests: pending,
+    myPendingJoinRequestId: myRequestId,
     canEdit,
     isMember: caller.familyId === family.id,
   };

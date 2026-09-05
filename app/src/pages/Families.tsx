@@ -52,6 +52,9 @@ export function Families() {
   const myPersonId = me?.appUser.personId ?? null;
   const myFamilyId = me?.person?.familyId ?? null;
   const myFamilyName = families.find((f) => f.id === myFamilyId)?.name ?? null;
+  // A list, not one: the pending index is unique per (family, person), so
+  // somebody with no family can have asked several at once.
+  const outstanding = families.filter((f) => f.pendingJoinRequestId !== null);
 
   async function requestToJoin(family: FamilySummaryDto): Promise<void> {
     setBusyId(family.id);
@@ -72,7 +75,10 @@ export function Families() {
   function rowAction(family: FamilySummaryDto) {
     if (!myPersonId) return null;
     if (family.id === myFamilyId) return <Badge tone="accent">Your family</Badge>;
-    if (family.pendingJoinRequestId) return <Badge tone="primary">Requested</Badge>;
+    // Accent, matching a prayer request that is waiting for review. `primary`
+    // is what that page uses for the request it turned down, and this is not
+    // that. "Requested" was a past-tense fact; this says who it is on.
+    if (family.pendingJoinRequestId) return <Badge tone="accent">Waiting for approval</Badge>;
 
     // Leaving a family behind is worth a warning; joining from nowhere is not.
     const needsWarning = myFamilyId !== null;
@@ -105,6 +111,21 @@ export function Families() {
 
       {!myPersonId && (
         <ErrorNotice message="Your directory record is missing, so you cannot join a family. Ask a parish administrator to look into it." />
+      )}
+
+      {/*
+        The row badge says a request is waiting; this says what it is waiting
+        on, once, rather than in every row -- and it is the acknowledgement the
+        flow never had, since asking otherwise just swaps a button for a badge
+        in the same few pixels. Both sentences are written out rather than
+        assembled from fragments so the punctuation cannot come apart.
+      */}
+      {outstanding.length > 0 && (
+        <p className="mb-6 rounded-lg border border-line bg-surface-muted p-4 text-ink-muted">
+          {outstanding.length === 1
+            ? `You have asked to join the ${outstanding[0]!.name} family. Someone already in it — or a parish administrator — has to approve that before you are added.`
+            : `You have asked to join ${outstanding.length} families — ${outstanding.map((f) => f.name).join(", ")}. Someone already in each — or a parish administrator — has to approve that before you are added.`}
+        </p>
       )}
 
       {loading ? (
