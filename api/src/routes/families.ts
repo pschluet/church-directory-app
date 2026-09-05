@@ -8,6 +8,7 @@ import { clearInheritanceFor } from "../services/inheritance";
 import { cancelPendingJoinRequests } from "../services/membership";
 import {
   FAMILY_MEMBER_ORDER,
+  FAMILY_MEMBER_SORT,
   PERSON_COLUMNS,
   toSummaries,
   type PersonRow,
@@ -230,6 +231,12 @@ routes.get("/", async (c) => {
   // The caller's own pending request comes from a scalar subquery rather than a
   // join: joining family_join_requests alongside the persons join would fan the
   // rows out and make member_count look wrong, even where it isn't.
+  //
+  // Over persons_resolved rather than persons, so the preview and the family
+  // page agree on more than family_order. `persons.last_name` is null for
+  // anyone inheriting it, and `nulls last` then sorted every one of them behind
+  // the members who spell theirs out -- while the family page, reading the
+  // resolved name, saw one shared surname and fell through to first names.
   const { rows } = await db.query<{
     id: string;
     name: string;
@@ -239,10 +246,10 @@ routes.get("/", async (c) => {
   }>(
     `select f.id,
             f.name,
-            count(p.id) filter (where p.deleted_at is null) as member_count,
+            count(r.id) filter (where r.deleted_at is null) as member_count,
             array_remove(
-              array_agg(p.first_name order by p.last_name nulls last, p.first_name)
-                filter (where p.deleted_at is null),
+              array_agg(r.first_name order by ${FAMILY_MEMBER_SORT})
+                filter (where r.deleted_at is null),
               null
             ) as member_names,
             (select jr.id
@@ -251,7 +258,7 @@ routes.get("/", async (c) => {
                 and jr.person_id = $2
                 and jr.status = 'PENDING') as pending_join_request_id
        from families f
-       left join persons p on p.family_id = f.id
+       left join persons_resolved r on r.family_id = f.id
       where f.organization_id = $1
       group by f.id, f.name
       order by f.name`,

@@ -98,11 +98,18 @@ export const PERSON_ORDER = `
  * `nulls last` is what makes a family nobody has ordered read exactly as it did
  * before this existed, and what keeps a newly added member at the end rather
  * than jumping to the front.
+ *
+ * The keys are exported apart from the `order by` because the families list
+ * sorts by them *inside* an `array_agg`, where the keyword is not allowed. Two
+ * copies of this expression is what put the members preview in a different
+ * order from the family page it previews.
  */
-export const FAMILY_MEMBER_ORDER = `
-  order by r.family_order asc nulls last,
-           r.last_name asc nulls last, r.first_name asc, r.id asc
+export const FAMILY_MEMBER_SORT = `
+  r.family_order asc nulls last,
+  r.last_name asc nulls last, r.first_name asc, r.id asc
 `;
+
+export const FAMILY_MEMBER_ORDER = `order by ${FAMILY_MEMBER_SORT}`;
 
 export function toSummaries(caller: Caller, rows: PersonRow[]): PersonSummaryDto[] {
   return rows.map((row) => toSummary(caller, row));

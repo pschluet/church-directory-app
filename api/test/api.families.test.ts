@@ -375,7 +375,28 @@ describe.skipIf(!hasDb)("families and the gated join flow", () => {
       const { body } = await as(joiner).call("GET", "/api/families");
       const row = body.families.find((f: any) => f.id === schlueters);
       expect(row.memberCount).toBe(2);
-      expect(row.memberNames).toEqual(expect.arrayContaining(["Paul", "Anna"]));
+      expect(row.memberNames).toEqual(["Paul", "Anna"]);
+    });
+
+    // Both of these compare the preview against the family page rather than
+    // against a literal alone: the bug was not that either order was wrong on
+    // its own terms, but that the two disagreed.
+    it("previews an inherited surname where the family page puts it", async () => {
+      const anastasia = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Anastasia",
+      });
+      await setInheritance(db(), anastasia, { lastName: member.personId! });
+
+      const { body } = await as(member).call("GET", "/api/families");
+      const row = body.families.find((f: any) => f.id === schlueters);
+      const page = await as(member).call("GET", `/api/families/${schlueters}`);
+
+      // She shares Paul's surname, so first names decide -- she does not sort
+      // behind him for holding a null `persons.last_name`.
+      expect(row.memberNames).toEqual(["Anastasia", "Paul"]);
+      expect(row.memberNames).toEqual(page.body.members.map((m: any) => m.firstName));
     });
   });
 
@@ -725,6 +746,16 @@ describe.skipIf(!hasDb)("families and the gated join flow", () => {
       (await as(u).call("GET", `/api/families/${schlueters}`)).body.members.map(
         (m: any) => m.firstName
       );
+
+    const previewNames = async (u: CreatedUser) =>
+      (await as(u).call("GET", "/api/families")).body.families.find((f: any) => f.id === schlueters)
+        .memberNames;
+
+    it("previews the family in the order it was arranged into", async () => {
+      await order(member, [zoe, member.personId!, anna]);
+      expect(await previewNames(member)).toEqual(["Zoe", "Paul", "Anna"]);
+      expect(await previewNames(member)).toEqual(await names(member));
+    });
 
     it("lets a member arrange the family, and the order sticks", async () => {
       const { status } = await order(member, [zoe, member.personId!, anna]);
