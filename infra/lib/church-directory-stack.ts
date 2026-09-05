@@ -1,6 +1,8 @@
 import * as path from "node:path";
 import { Stack, type StackProps, RemovalPolicy, Duration, CfnOutput } from "aws-cdk-lib";
 import type { Construct } from "constructs";
+import * as cloudwatch from "aws-cdk-lib/aws-cloudwatch";
+import * as cloudwatchActions from "aws-cdk-lib/aws-cloudwatch-actions";
 import * as cognito from "aws-cdk-lib/aws-cognito";
 import * as ec2 from "aws-cdk-lib/aws-ec2";
 import * as ecs from "aws-cdk-lib/aws-ecs";
@@ -8,6 +10,8 @@ import * as ecrAssets from "aws-cdk-lib/aws-ecr-assets";
 import * as logs from "aws-cdk-lib/aws-logs";
 import * as rds from "aws-cdk-lib/aws-rds";
 import * as s3 from "aws-cdk-lib/aws-s3";
+import * as sns from "aws-cdk-lib/aws-sns";
+import * as snsSubscriptions from "aws-cdk-lib/aws-sns-subscriptions";
 import * as lambda from "aws-cdk-lib/aws-lambda";
 import { NodejsFunction } from "aws-cdk-lib/aws-lambda-nodejs";
 import * as apigwv2 from "aws-cdk-lib/aws-apigatewayv2";
@@ -224,6 +228,75 @@ export class ChurchDirectoryStack extends Stack {
       cloudwatchLogsExports: ["postgresql"],
       cloudwatchLogsRetention: logs.RetentionDays.ONE_MONTH,
     });
+
+    // -------------------------------------------------------------------
+    // Storage alarm -- the one thing that can stop every write at once.
+    //
+    // `maxAllocatedStorage` above is disabled on purpose, which makes 20 GiB a
+    // hard ceiling rather than a soft one. Postgres does not degrade gracefully
+    // when it arrives: RDS moves the instance to `storage-full` and writes
+    // start failing, so nobody can save a phone number or post a prayer request
+    // until somebody resizes the volume. Growth is slow, entirely invisible
+    // from inside the app, and nothing prunes -- notifications, audit_log and
+    // prayer_requests only ever get longer -- so "somebody notices" has to be a
+    // notification rather than a habit of checking.
+    //
+    // This does not contradict the blueprint in requirements/database.md. What
+    // that switches off, Performance Insights and Enhanced Monitoring, is
+    // billed per instance per month. `FreeStorageSpace` is a metric RDS already
+    // publishes for free, and CloudWatch's perpetual free tier covers ten
+    // standard alarms, so this is monitoring that costs nothing to keep.
+    //
+    // Nothing is needed from the VPC for it either. The alarm is evaluated by
+    // CloudWatch and published by SNS, both outside the network, so this works
+    // despite the private subnets having no route to either service.
+    // -------------------------------------------------------------------
+    const dbStorageAlarmTopic = new sns.Topic(this, "DatabaseStorageAlarmTopic", {
+      displayName: "Church directory database storage",
+    });
+
+    // Email, to the address the stack already requires: there is no on-call
+    // rotation for a parish directory, and the super admin is the person who
+    // would have to act on this anyway.
+    //
+    // One manual step comes with it. SNS sends a confirmation link that has to
+    // be clicked once, and until it is, the alarm fires into nothing -- an
+    // unconfirmed subscription looks identical to a working one from the alarm
+    // view, so this is worth verifying after the first deploy rather than
+    // assuming.
+    dbStorageAlarmTopic.addSubscription(new snsSubscriptions.EmailSubscription(superAdminEmail));
+
+    // 20% of the 20 GiB allocated above, picked for lead time rather than
+    // urgency. At the tens of megabytes a year this database actually grows,
+    // 4 GiB is years of warning; and it still leaves room to react if a
+    // migration or a runaway table consumes the volume much faster than that.
+    const dbFreeStorageThresholdBytes = 4 * 1024 ** 3;
+
+    const dbStorageAlarm = database
+      .metricFreeStorageSpace({
+        // The low-water mark over the hour, not the average. A volume that dips
+        // below the threshold while a migration or a vacuum runs is exactly the
+        // event this exists to catch, and averaging would smooth it away.
+        statistic: "Minimum",
+        period: Duration.hours(1),
+      })
+      .createAlarm(this, "DatabaseFreeStorageAlarm", {
+        alarmName: "church-directory-database-storage-low",
+        alarmDescription:
+          "Less than 4 GiB free on the church directory database. Storage autoscaling is " +
+          "disabled, so this will not resolve itself: raise allocatedStorage in " +
+          "infra/lib/church-directory-stack.ts, or prune the notifications table.",
+        threshold: dbFreeStorageThresholdBytes,
+        evaluationPeriods: 1,
+        comparisonOperator: cloudwatch.ComparisonOperator.LESS_THAN_THRESHOLD,
+        // A metric that stops arriving means the instance is not reporting,
+        // which is an availability problem and not this alarm's job. Treating
+        // it as breaching would turn every maintenance window into a storage
+        // warning nobody should act on.
+        treatMissingData: cloudwatch.TreatMissingData.NOT_BREACHING,
+      });
+
+    dbStorageAlarm.addAlarmAction(new cloudwatchActions.SnsAction(dbStorageAlarmTopic));
 
     // -------------------------------------------------------------------
     // Buckets

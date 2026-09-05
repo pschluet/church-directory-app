@@ -157,6 +157,37 @@ describe("ChurchDirectoryStack", () => {
         expect(props.CidrIpv6).toBeUndefined();
       }
     });
+
+    it("alarms before the volume fills, since autoscaling is disabled", () => {
+      // Running out of storage takes every write down at once, and nothing in
+      // the app surfaces it. 4 GiB is 20% of the allocated 20 GiB.
+      template.hasResourceProperties("AWS::CloudWatch::Alarm", {
+        Namespace: "AWS/RDS",
+        MetricName: "FreeStorageSpace",
+        // Minimum, not Average: a dip during a migration is the event to catch.
+        Statistic: "Minimum",
+        Period: 3600,
+        Threshold: 4 * 1024 ** 3,
+        ComparisonOperator: "LessThanThreshold",
+        EvaluationPeriods: 1,
+        // A silent instance is an availability problem, not a storage one.
+        TreatMissingData: "notBreaching",
+      });
+    });
+
+    it("sends that alarm somewhere, which is the part that fails silently", () => {
+      // An alarm with no action is indistinguishable from a working one until
+      // the day it matters, so assert the wiring and not just the threshold.
+      const alarms = Object.values(template.findResources("AWS::CloudWatch::Alarm"));
+      expect(alarms).toHaveLength(1);
+      const actions = (alarms[0].Properties as { AlarmActions?: unknown[] }).AlarmActions;
+      expect(actions).toHaveLength(1);
+
+      template.hasResourceProperties("AWS::SNS::Subscription", {
+        Protocol: "email",
+        Endpoint: "test@example.com",
+      });
+    });
   });
 
   describe("bastion", () => {
