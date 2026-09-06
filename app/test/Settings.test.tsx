@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { MeDto } from "@shared";
@@ -69,6 +69,53 @@ describe("Settings", () => {
     pushState.subscribeResult = SUBSCRIPTION;
     meState.pushPublicKey = "vapid-public-key";
     meState.canApprove = false;
+  });
+
+  /*
+   * The only reason this page knows about maps: the choice is made in the
+   * sheet on the address, and without this row there is nowhere to take it
+   * back. See the note in maps.test.ts for why the store has to be supplied.
+   */
+  describe("the remembered maps app", () => {
+    function fakeStorage(seed?: string): void {
+      const entries = new Map<string, string>();
+      if (seed) entries.set("directory.mapsProvider", seed);
+      Object.defineProperty(globalThis, "localStorage", {
+        configurable: true,
+        value: {
+          getItem: (key: string) => entries.get(key) ?? null,
+          setItem: (key: string, value: string) => void entries.set(key, value),
+          removeItem: (key: string) => void entries.delete(key),
+        },
+      });
+    }
+
+    afterEach(() => {
+      Reflect.deleteProperty(globalThis, "localStorage");
+    });
+
+    it("is not mentioned at all by somebody who never made a choice", async () => {
+      fakeStorage();
+      renderWithProviders(<Settings />);
+      await screen.findByRole("heading", { name: "Notifications" });
+
+      // A row saying there is nothing to reset is a row nobody needs.
+      expect(screen.queryByRole("heading", { name: "Maps" })).not.toBeInTheDocument();
+      expect(screen.getByText("Choose what the directory tells you about.")).toBeInTheDocument();
+    });
+
+    it("names the app and offers to start asking again", async () => {
+      fakeStorage("apple");
+      renderWithProviders(<Settings />);
+
+      expect(await screen.findByRole("heading", { name: "Maps" })).toBeInTheDocument();
+      expect(screen.getByText(/addresses open in Apple Maps without asking/i)).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: /ask me again/i }));
+
+      expect(screen.queryByRole("heading", { name: "Maps" })).not.toBeInTheDocument();
+      expect(localStorage.getItem("directory.mapsProvider")).toBeNull();
+    });
   });
 
   it("offers both switches when push is available", async () => {

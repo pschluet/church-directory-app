@@ -180,6 +180,29 @@ export function formatMultilineAddress(person: Partial<PersonSummaryDto>): strin
   ].filter((line): line is string => Boolean(line?.trim()));
 }
 
+/**
+ * The same address on one line, for a maps query.
+ *
+ * Commas between the lines but spaces inside the city/state/postcode one, which
+ * is how an address is written and how both providers' search parses it. Built
+ * on `formatMultilineAddress` rather than beside it so the two can never
+ * disagree about which fields count or in what order.
+ */
+export function formatSingleLineAddress(person: Partial<PersonSummaryDto>): string {
+  return formatMultilineAddress(person).join(", ");
+}
+
+/**
+ * Whether an address is specific enough to be worth handing to a map.
+ *
+ * The street line is the bar. A city and state on their own resolve to the
+ * middle of the city, and a link that drops somebody four miles from the house
+ * is worse than plain text, because it looks like it knew where it was going.
+ */
+export function hasMappableAddress(person: Partial<PersonSummaryDto>): boolean {
+  return Boolean(person.addressLine1?.trim());
+}
+
 /** Initials for the placeholder shown when someone has no photo. */
 export function initials(person: { firstName: string; lastName: string | null }): string {
   return [person.firstName?.[0], person.lastName?.[0]].filter(Boolean).join("").toUpperCase();

@@ -15,6 +15,7 @@ import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
 import { PersonForm } from "../components/PersonForm";
 import { PhoneLink } from "../components/PhoneLink";
+import { AddressLink } from "../components/AddressLink";
 import { usePhotoPicker } from "../components/usePhotoPicker";
 import { SpecialDateForm } from "../components/SpecialDateForm";
 import { PersonPicker, type PickedPerson } from "../components/PersonPicker";
@@ -400,11 +401,7 @@ export function PersonDetail() {
               inheritedFrom={person.inheritedFrom.address?.name}
               className="md:col-span-2"
             >
-              {address.length > 0 ? (
-                <span className="block whitespace-pre-line">{address.join("\n")}</span>
-              ) : (
-                <NotSet />
-              )}
+              {address.length > 0 ? <AddressLink person={person} /> : <NotSet />}
             </DetailRow>
           </dl>
         </div>

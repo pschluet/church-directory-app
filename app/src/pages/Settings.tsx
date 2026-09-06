@@ -10,7 +10,8 @@ import {
   type PushAvailability,
 } from "../lib/push";
 import { useMe } from "../context/MeContext";
-import { ErrorNotice, PageHeading, Spinner } from "../components/ui";
+import { MAPS_PROVIDERS, forgetPreferredProvider, preferredProvider } from "../lib/maps";
+import { Button, ErrorNotice, PageHeading, Spinner } from "../components/ui";
 
 /**
  * Notification settings.
@@ -29,6 +30,11 @@ import { ErrorNotice, PageHeading, Spinner } from "../components/ui";
  *
  * Reached from the gear in the nav rather than being a nav item of its own: it
  * is a page somebody visits once.
+ *
+ * A second section appears below it only for somebody who told an address to
+ * stop asking which map to open. That choice is made in the sheet itself, so
+ * this page is not where it is set -- only where it can be taken back, which
+ * is otherwise nowhere.
  */
 export function Settings() {
   const { me, canApprovePrayerRequests } = useMe();
@@ -133,6 +139,10 @@ export function Settings() {
     }
   }
 
+  // Held here rather than in the section below because it decides the page's
+  // subtitle as well as whether the section exists at all.
+  const [mapsProvider, setMapsProvider] = useState(preferredProvider);
+
   const preferences = preferencesQuery.data;
   const prayerRequests = preferences?.prayerRequests ?? true;
   const prayerRequestReviews = preferences?.prayerRequestReviews ?? true;
@@ -141,7 +151,14 @@ export function Settings() {
 
   return (
     <>
-      <PageHeading title="Settings" subtitle="Choose what the directory tells you about." />
+      <PageHeading
+        title="Settings"
+        subtitle={
+          mapsProvider
+            ? "Choose what the directory tells you about, and which map it opens."
+            : "Choose what the directory tells you about."
+        }
+      />
 
       {message && <ErrorNotice message={message} />}
 
@@ -210,6 +227,26 @@ export function Settings() {
           )}
         </div>
       </section>
+
+      {mapsProvider && (
+        <section className="mt-4 rounded-lg border border-line bg-surface p-4">
+          <h2 className="font-bold text-ink">Maps</h2>
+          <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+            <p className="min-w-0 text-ink-muted">
+              Addresses open in {MAPS_PROVIDERS[mapsProvider].label} without asking.
+            </p>
+            <Button
+              variant="secondary"
+              onClick={() => {
+                forgetPreferredProvider();
+                setMapsProvider(null);
+              }}
+            >
+              Ask me again
+            </Button>
+          </div>
+        </section>
+      )}
     </>
   );
 }

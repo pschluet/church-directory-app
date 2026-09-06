@@ -105,6 +105,26 @@ describe("PersonDetail special dates", () => {
     meState.isAdmin = false;
   });
 
+  it("makes the address tappable, so a member can open the house in a map", async () => {
+    renderPage([], {
+      addressLine1: "4129 W Newport Ave",
+      city: "Chicago",
+      state: "IL",
+      postalCode: "60641",
+    });
+
+    // jsdom reports neither an Apple device nor any touch points, so this is
+    // the single-destination branch; the platform branches belong to
+    // AddressLink.test.tsx.
+    const link = await screen.findByRole("link", {
+      name: /open 4129 W Newport Ave.* in google maps/i,
+    });
+    expect(link).toHaveAttribute(
+      "href",
+      "https://www.google.com/maps/search/?api=1&query=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641"
+    );
+  });
+
   it("explains a year that others do not get to see", async () => {
     renderPage([birthday()]);
     expect(await screen.findByText("May 4, 1985")).toBeInTheDocument();

@@ -5,6 +5,8 @@ import {
   formatMonthDayShort,
   formatMultilineAddress,
   formatPostedAt,
+  formatSingleLineAddress,
+  hasMappableAddress,
   initials,
   specialDateDetail,
   specialDateLabel,
@@ -104,6 +106,20 @@ describe("addresses", () => {
   it("splits a multi-line address without leaving blank lines", () => {
     expect(formatMultilineAddress(person)).toEqual(["4129 W Newport Ave", "Chicago IL 60641"]);
     expect(formatMultilineAddress({})).toEqual([]);
+  });
+
+  it("puts the same fields on one line for a maps query", () => {
+    // Asserted from the same fixture as the multi-line form, so the two cannot
+    // drift on which fields count or in what order.
+    expect(formatSingleLineAddress(person)).toBe("4129 W Newport Ave, Chicago IL 60641");
+    expect(formatSingleLineAddress({})).toBe("");
+  });
+
+  it("will not map an address with no street, which resolves to nowhere useful", () => {
+    expect(hasMappableAddress(person)).toBe(true);
+    expect(hasMappableAddress({ city: "Chicago", state: "IL" })).toBe(false);
+    expect(hasMappableAddress({ addressLine1: "   " })).toBe(false);
+    expect(hasMappableAddress({})).toBe(false);
   });
 });
 
