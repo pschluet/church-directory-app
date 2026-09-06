@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { useMe } from "../context/MeContext";
 import { NotificationBell } from "./NotificationBell";
 import { SettingsLink } from "./SettingsLink";
+import { usePushRegistration } from "./usePushRegistration";
 import { useRealtimeRefresh } from "./useRealtimeRefresh";
 
 /**
@@ -39,6 +40,9 @@ export function AppShell() {
   // Once, here: the bell below is rendered twice (phone and desktop copies),
   // so this cannot live inside it.
   useRealtimeRefresh();
+  // Also once, and for the same reason: this device's push subscription has to
+  // follow whoever is signed in. See usePushRegistration.
+  usePushRegistration();
   const { signOut, email } = useAuth();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const location = useLocation();

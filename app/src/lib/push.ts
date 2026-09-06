@@ -80,6 +80,28 @@ export async function currentSubscription(): Promise<PushSubscription | null> {
 }
 
 /**
+ * The same answer, but without waiting for a worker to become ready.
+ *
+ * `currentSubscription` awaits `navigator.serviceWorker.ready`, which does not
+ * resolve at all when no worker is registered -- in dev, where none is, and in
+ * any browser where registration failed. On the settings page that costs a
+ * spinner and nothing else. On the sign-out path it would hang signing out, and
+ * on every page load it would leave a promise pending for the life of the tab,
+ * so both of those callers use this instead: `getRegistration()` answers
+ * immediately, with undefined when there is nothing registered yet.
+ *
+ * The cost is that a caller running before registration completes sees null
+ * rather than waiting for it. Both callers are safe to be wrong that way -- the
+ * next load tries again.
+ */
+export async function registeredSubscription(): Promise<PushSubscription | null> {
+  if (!("serviceWorker" in navigator)) return null;
+  const registration = await navigator.serviceWorker.getRegistration();
+  if (!registration) return null;
+  return registration.pushManager.getSubscription();
+}
+
+/**
  * Asks permission and subscribes. Must be called from a user gesture.
  *
  * `userVisibleOnly: true` is not a choice -- Chrome requires it, and a push

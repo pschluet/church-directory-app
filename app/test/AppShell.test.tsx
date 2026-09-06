@@ -28,6 +28,17 @@ vi.mock("../src/context/AuthContext", () => ({
   useAuth: () => ({ signOut, email: "paul@example.com" }),
 }));
 
+/*
+ * Mounted here and nowhere else, so the shell is the only thing that can prove
+ * it runs at all. Stubbed rather than exercised -- its own behaviour is
+ * test/usePushRegistration.test.tsx.
+ */
+const usePushRegistration = vi.fn();
+
+vi.mock("../src/components/usePushRegistration", () => ({
+  usePushRegistration: () => usePushRegistration(),
+}));
+
 const meState = {
   role: "USER" as Role,
   availableOrganizations: [] as { id: string; name: string }[],
@@ -65,6 +76,14 @@ function renderShell(role: Role = "USER", orgs: { id: string; name: string }[] =
 }
 
 describe("AppShell navigation", () => {
+  it("keeps this device's push subscription registered to the signed-in account", () => {
+    // The shell is where usePushRegistration is mounted, once, for the same
+    // reason useRealtimeRefresh is: the bell it would otherwise live in renders
+    // twice, and this must not run twice.
+    renderShell();
+    expect(usePushRegistration).toHaveBeenCalled();
+  });
+
   it("shows the parish name and the page", () => {
     renderShell();
     expect(screen.getAllByText("All Saints").length).toBeGreaterThan(0);

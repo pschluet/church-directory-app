@@ -9,7 +9,8 @@ import {
 } from "aws-amplify/auth";
 import { Hub } from "aws-amplify/utils";
 import { useQueryClient } from "@tanstack/react-query";
-import { DEV_AUTH } from "../lib/api";
+import { api, DEV_AUTH } from "../lib/api";
+import { registeredSubscription } from "../lib/push";
 
 /**
  * Passwordless sign-in.
@@ -40,6 +41,34 @@ interface AuthContextValue {
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
+
+/**
+ * Stops this device receiving the departing account's notifications.
+ *
+ * Has to run *before* Amplify clears the tokens, because the DELETE is an
+ * authenticated call. Everything is swallowed: signing out must not be blocked
+ * by a network failure, and the row it could not remove is deleted anyway by
+ * the next person to sign in here, whose `POST` takes the endpoint over.
+ *
+ * The browser's own subscription is deliberately left alone. Keeping it lets
+ * `usePushRegistration` re-register this device for the next account without
+ * anybody hunting for the switch; calling `unsubscribe()` here would throw that
+ * away for no gain, since permission is granted per browser and not per
+ * account.
+ */
+async function unregisterThisDevice(): Promise<void> {
+  try {
+    const subscription = await registeredSubscription();
+    if (!subscription) return;
+    await api("/push/subscriptions", {
+      method: "DELETE",
+      body: { endpoint: subscription.endpoint },
+      withOrg: false,
+    });
+  } catch {
+    // See above.
+  }
+}
 
 function messageFor(err: unknown): string {
   if (err instanceof Error) {
@@ -135,6 +164,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const signOut = useCallback(async () => {
+    await unregisterThisDevice();
     await amplifySignOut();
     setStatus("signedOut");
     setEmail(null);
