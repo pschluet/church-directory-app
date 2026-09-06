@@ -36,6 +36,8 @@ export interface PrayerRequestRow {
   author_person_id: string;
   author_first_name: string;
   author_last_name: string | null;
+  /** The author's photo, for the avatar beside their request. */
+  author_photo_key: string | null;
   /** Null when the decider's record has since been deleted; see V8. */
   decided_by_first_name: string | null;
   decided_by_last_name: string | null;
@@ -58,8 +60,10 @@ interface PrayerRequestImageRow {
 
 /**
  * Joins `persons_resolved` rather than `persons` for the author, so a member
- * who inherits the family surname is not credited with a blank last name. The
- * reviewer who decided it is joined the same way, but with a LEFT join:
+ * who inherits the family surname is not credited with a blank last name. Their
+ * photo rides along on that same join -- the avatar beside each request costs a
+ * column, not a query. The reviewer who decided it is joined the same way, but
+ * with a LEFT join:
  * `decided_by_person_id` is `on delete set null` (see V8), so losing that
  * account must leave the decision standing rather than the row unreadable.
  *
@@ -76,6 +80,7 @@ export const PRAYER_REQUEST_SELECT = `
          pr.author_person_id,
          a.first_name as author_first_name,
          a.last_name  as author_last_name,
+         a.photo_key  as author_photo_key,
          d.first_name as decided_by_first_name,
          d.last_name  as decided_by_last_name,
          pr.title,
@@ -139,10 +144,11 @@ export function toPrayerRequest(row: PrayerRequestRow, caller: Caller): PrayerRe
     body: row.body,
     status: row.status,
     authorPersonId: row.author_person_id,
-    authorName: fullName({
-      firstName: row.author_first_name,
-      lastName: row.author_last_name,
-    }),
+    authorFirstName: row.author_first_name,
+    authorLastName: row.author_last_name,
+    // Only the thumb: the page links the avatar to the author's record rather
+    // than opening it full screen, so the full rendition would never be asked for.
+    authorThumbUrl: photoUrls(row.author_photo_key).thumbUrl,
     submittedAt: new Date(row.submitted_at).toISOString(),
     postedAt: row.posted_at ? new Date(row.posted_at).toISOString() : null,
     decidedAt: row.decided_at ? new Date(row.decided_at).toISOString() : null,

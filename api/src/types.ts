@@ -592,7 +592,19 @@ export interface PrayerRequestDto {
   body: string;
   status: PrayerRequestStatus;
   authorPersonId: string;
-  authorName: string;
+  /**
+   * The author's name in parts rather than composed, as PersonSummaryDto sends
+   * it: the page hands the same two fields to Avatar, whose initials fallback
+   * needs them apart, and composes the display name with fullName().
+   */
+  authorFirstName: string;
+  authorLastName: string | null;
+  /**
+   * The author's photo, the same small square rendition the directory uses. No
+   * `fullUrl` companion: from a list the avatar links to the record rather than
+   * opening a lightbox (see PersonCard), so the full size is never wanted here.
+   */
+  authorThumbUrl: string | null;
   /** When the author wrote it. */
   submittedAt: string;
   /** When it was approved, which is what the page is ordered by. Null until then. */

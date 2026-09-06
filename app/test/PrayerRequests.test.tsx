@@ -39,7 +39,9 @@ function request(overrides: Partial<PrayerRequestDto> = {}): PrayerRequestDto {
     body: "He is unwell.",
     status: "APPROVED",
     authorPersonId: "person-other",
-    authorName: "Boris Ivanov",
+    authorFirstName: "Boris",
+    authorLastName: "Ivanov",
+    authorThumbUrl: null,
     submittedAt: "2026-09-01T10:00:00.000Z",
     postedAt: "2026-09-02T10:00:00.000Z",
     decidedAt: "2026-09-02T10:00:00.000Z",
@@ -74,8 +76,46 @@ describe("PrayerRequests", () => {
     renderWithProviders(<PrayerRequests />);
 
     expect(await screen.findByText("For Fr. John")).toBeInTheDocument();
-    expect(screen.getByText(/Boris Ivanov/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Boris Ivanov" })).toHaveAttribute(
+      "href",
+      "/people/person-other"
+    );
     expect(screen.getByText(/1 request from the last month/)).toBeInTheDocument();
+  });
+
+  /*
+   * The author's photo and name both open their record. The photo is
+   * `aria-hidden` and out of the tab order on purpose: it is the same link to
+   * the same place as the name beside it, so announcing it twice would give
+   * anyone driving the page by name two identical targets to choose between.
+   */
+  it("links the author's photo and name to their record", async () => {
+    stubFeed([request({ authorThumbUrl: "/photos/org-1/person/boris/thumb" })]);
+    renderWithProviders(<PrayerRequests />);
+
+    await screen.findByText("For Fr. John");
+    const photo = screen.getByRole("presentation", { hidden: true });
+    expect(photo).toHaveAttribute("src", "/photos/org-1/person/boris/thumb");
+
+    const photoLink = photo.closest("a");
+    expect(photoLink).toHaveAttribute("href", "/people/person-other");
+    expect(photoLink).toHaveAttribute("aria-hidden", "true");
+    expect(photoLink).toHaveAttribute("tabindex", "-1");
+
+    // The one link the page offers by name, so it is the only tab stop.
+    expect(screen.getAllByRole("link", { name: "Boris Ivanov" })).toHaveLength(1);
+  });
+
+  it("shows the author's initials when they have no photo", async () => {
+    stubFeed([request()]);
+    renderWithProviders(<PrayerRequests />);
+
+    await screen.findByText("For Fr. John");
+    expect(screen.getByText("BI")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Boris Ivanov" })).toHaveAttribute(
+      "href",
+      "/people/person-other"
+    );
   });
 
   it("puts the caller's own request under Yours with its status", async () => {
@@ -202,6 +242,36 @@ describe("PrayerRequests", () => {
 
       expect(await screen.findByText(/One request is waiting for review/)).toBeInTheDocument();
       expect(screen.getByText("For safe travels")).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Post it" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Decline" })).toBeInTheDocument();
+    });
+
+    it("credits the author here too, so a reviewer can look them up", async () => {
+      meState.canApprove = true;
+      stubFeed(
+        [],
+        [
+          request({
+            id: "pr-queue",
+            status: "PENDING",
+            postedAt: null,
+            canDecide: true,
+            authorThumbUrl: "/photos/org-1/person/boris/thumb",
+          }),
+        ]
+      );
+      renderWithProviders(<PrayerRequests />);
+
+      await screen.findByText("For Fr. John");
+      expect(screen.getByRole("link", { name: "Boris Ivanov" })).toHaveAttribute(
+        "href",
+        "/people/person-other"
+      );
+      expect(screen.getByRole("presentation", { hidden: true })).toHaveAttribute(
+        "src",
+        "/photos/org-1/person/boris/thumb"
+      );
+      // The avatar column must not have swallowed the decisions.
       expect(screen.getByRole("button", { name: "Post it" })).toBeInTheDocument();
       expect(screen.getByRole("button", { name: "Decline" })).toBeInTheDocument();
     });
@@ -461,13 +531,17 @@ describe("PrayerRequests", () => {
         stubFeed([request({ postedAt: new Date().toISOString() })]);
         renderWithProviders(<PrayerRequests />);
         await screen.findByText("For Fr. John");
-        expect(screen.getByText(/Boris Ivanov · Just now/)).toBeInTheDocument();
+        // The byline is two nodes now -- the author's name is a link into their
+        // record -- so this matches the time on its own. Matching the pair would
+        // find nothing: getByText reads an element's own text, not its children's.
+        expect(screen.getByRole("link", { name: "Boris Ivanov" })).toBeInTheDocument();
+        expect(screen.getByText(/^· Just now$/)).toBeInTheDocument();
 
         await act(async () => {
           await vi.advanceTimersByTimeAsync(2 * 60 * 60_000);
         });
 
-        expect(screen.getByText(/Boris Ivanov · 2 hours ago/)).toBeInTheDocument();
+        expect(screen.getByText(/^· 2 hours ago$/)).toBeInTheDocument();
       } finally {
         vi.useRealTimers();
       }

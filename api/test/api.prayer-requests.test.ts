@@ -1,7 +1,13 @@
 import { afterAll, beforeEach, describe, expect, inject, it } from "vitest";
 import { closeDatabase, resetTables, testDb } from "./helpers/testDb";
 import { client } from "./helpers/request";
-import { createOrganization, createUser, type CreatedUser } from "./helpers/fixtures";
+import {
+  createFamily,
+  createOrganization,
+  createUser,
+  setInheritance,
+  type CreatedUser,
+} from "./helpers/fixtures";
 import { PUSH_KINDS } from "../src/routes/prayer-requests";
 
 /**
@@ -139,7 +145,11 @@ describe.skipIf(!hasDb)("prayer requests", () => {
         status: "PENDING",
         postedAt: null,
         decidedAt: null,
-        authorName: "Anna Petrova",
+        authorFirstName: "Anna",
+        authorLastName: "Petrova",
+        authorPersonId: author.personId,
+        // Nobody in these fixtures has a photo, so the card falls back to initials.
+        authorThumbUrl: null,
         isMine: true,
         canDelete: true,
         // The author is not a reviewer, and their own request is not theirs to
@@ -393,6 +403,41 @@ describe.skipIf(!hasDb)("prayer requests", () => {
       // everybody's list, so an ungated decidedByName would tell all of them
       // which reviewer posted each one.
       expect(seen.prayerRequests[0].decidedByName).toBeNull();
+    });
+
+    it("credits the author with their photo, as a thumb path", async () => {
+      // The page puts this beside each request, so it has to be the small
+      // rendition and not the key -- a raw key would render as a broken image.
+      await db().query("update persons set photo_key = $2 where id = $1", [
+        author.personId,
+        "photos/org/anna/",
+      ]);
+      const id = await submit();
+      await as(reviewer).call("POST", `/api/prayer-requests/${id}/approve`);
+
+      const { body } = await as(member).call("GET", "/api/prayer-requests");
+      expect(body.prayerRequests[0].authorThumbUrl).toBe("/photos/org/anna/thumb");
+      expect(body.prayerRequests[0].authorPersonId).toBe(author.personId);
+    });
+
+    it("credits an author who inherits their surname with the resolved one", async () => {
+      // Why the author is joined through persons_resolved, asserted rather than
+      // trusted: the name goes out in parts for the avatar's initials to use, so
+      // a plain `persons` join would credit this request to "Boris" alone and
+      // put a lone "B" beside it.
+      // Inheritance is only legal within a family, so both go into one first.
+      const familyId = await createFamily(db(), orgA, "Petrov");
+      await db().query("update persons set family_id = $1 where id = any($2::uuid[])", [
+        familyId,
+        [author.personId, member.personId],
+      ]);
+      await setInheritance(db(), member.personId!, { lastName: author.personId! });
+      const id = await submit(member);
+      await as(reviewer).call("POST", `/api/prayer-requests/${id}/approve`);
+
+      const { body } = await as(admin).call("GET", "/api/prayer-requests");
+      expect(body.prayerRequests[0].authorFirstName).toBe("Boris");
+      expect(body.prayerRequests[0].authorLastName).toBe("Petrova");
     });
 
     it("names the reviewer to the author and to other reviewers", async () => {

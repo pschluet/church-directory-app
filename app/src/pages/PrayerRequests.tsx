@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Link } from "react-router";
 import {
   PRAYER_REQUEST_BODY_MAX,
   PRAYER_REQUEST_MAX_IMAGES,
@@ -11,9 +12,10 @@ import {
 } from "@shared";
 import { ApiError, api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
-import { formatPostedAt } from "../lib/format";
+import { formatPostedAt, fullName } from "../lib/format";
 import { useMe } from "../context/MeContext";
 import { useAttachmentPicker } from "../components/useAttachmentPicker";
+import { Avatar } from "../components/Avatar";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import {
   Badge,
@@ -408,15 +410,64 @@ function StatusBadge({ request }: { request: PrayerRequestDto }) {
   return null;
 }
 
+/** The author, shaped for `Avatar` and `fullName`. */
+function authorPerson(request: PrayerRequestDto) {
+  return { firstName: request.authorFirstName, lastName: request.authorLastName };
+}
+
+/**
+ * The author's photo, as a link to their record.
+ *
+ * A link and not a lightbox, the convention PersonCard set: from a list,
+ * opening the record is the useful action. Which is also why no `fullUrl` is
+ * passed -- given one, Avatar renders its zoom button, and a button inside this
+ * link would be interactive content nested inside interactive content.
+ *
+ * Hidden from assistive technology and out of the tab order, because it goes
+ * exactly where the name beside it goes and a photo has nothing of its own to
+ * say -- labelling it would put two links with the same accessible name on every
+ * card, which is the ambiguity the decline button below is worded to avoid.
+ * `tabIndex` is not optional alongside `aria-hidden`: a focusable node inside a
+ * hidden subtree is somewhere a keyboard user can land and hear nothing.
+ */
+function AuthorAvatar({ request }: { request: PrayerRequestDto }) {
+  return (
+    <Link
+      to={`/people/${request.authorPersonId}`}
+      aria-hidden="true"
+      tabIndex={-1}
+      className="shrink-0"
+    >
+      <Avatar thumbUrl={request.authorThumbUrl} person={authorPerson(request)} size="sm" />
+    </Link>
+  );
+}
+
+/** The author's name, to their record. Carries the accessible name for both. */
+function AuthorLink({ request }: { request: PrayerRequestDto }) {
+  return (
+    <Link to={`/people/${request.authorPersonId}`} className="transition hover:text-accent">
+      {fullName(authorPerson(request))}
+    </Link>
+  );
+}
+
 function RequestBody({ request }: { request: PrayerRequestDto }) {
   return (
-    <>
-      <p className="font-bold text-ink">{request.title}</p>
-      <p className="text-sm text-ink-muted">{request.authorName}</p>
-      {/* whitespace-pre-line so the paragraph breaks someone typed survive. */}
-      <p className="mt-2 whitespace-pre-line text-ink">{request.body}</p>
-      <ImageStrip images={request.images} title={request.title} />
-    </>
+    // items-start, not items-center: the photo belongs beside the title, not
+    // floated to the middle of however long the message runs.
+    <div className="flex items-start gap-3">
+      <AuthorAvatar request={request} />
+      <div className="min-w-0 flex-1">
+        <p className="font-bold text-ink">{request.title}</p>
+        <p className="text-sm text-ink-muted">
+          <AuthorLink request={request} />
+        </p>
+        {/* whitespace-pre-line so the paragraph breaks someone typed survive. */}
+        <p className="mt-2 whitespace-pre-line text-ink">{request.body}</p>
+        <ImageStrip images={request.images} title={request.title} />
+      </div>
+    </div>
   );
 }
 
@@ -430,54 +481,60 @@ function RequestCard({
   onDelete: () => void;
 }) {
   return (
-    <li className="rounded-lg border border-line bg-surface p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="min-w-0 truncate font-bold text-ink">{request.title}</p>
-            <StatusBadge request={request} />
+    <li className="flex items-start gap-3 rounded-lg border border-line bg-surface p-4">
+      <AuthorAvatar request={request} />
+
+      {/* min-w-0 so a long title still truncates inside this column rather than
+          widening it and pushing the menu off the card. */}
+      <div className="min-w-0 flex-1">
+        <div className="flex items-start justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <p className="min-w-0 truncate font-bold text-ink">{request.title}</p>
+              <StatusBadge request={request} />
+            </div>
+            <p className="text-sm text-ink-muted">
+              <AuthorLink request={request} />
+              {request.postedAt && ` · ${formatPostedAt(request.postedAt, now)}`}
+            </p>
           </div>
-          <p className="text-sm text-ink-muted">
-            {request.authorName}
-            {request.postedAt && ` · ${formatPostedAt(request.postedAt, now)}`}
-          </p>
+          {/* No menu at all rather than an empty one, as on the accounts page. */}
+          {request.canDelete && (
+            <MenuButton label={`Actions for ${request.title}`}>
+              <MenuItem danger onSelect={onDelete}>
+                Remove
+              </MenuItem>
+            </MenuButton>
+          )}
         </div>
-        {/* No menu at all rather than an empty one, as on the accounts page. */}
-        {request.canDelete && (
-          <MenuButton label={`Actions for ${request.title}`}>
-            <MenuItem danger onSelect={onDelete}>
-              Remove
-            </MenuItem>
-          </MenuButton>
+
+        <p className="mt-2 whitespace-pre-line text-ink">{request.body}</p>
+
+        {/*
+          Who declined it, and why. Both are optional and independent: a reviewer
+          need not give a reason, and `decided_by_person_id` is nulled if their
+          account is deleted -- so the reason must still show with no name, and
+          the name with no reason.
+        */}
+        {request.status === "REJECTED" && (
+          <div className="mt-2 space-y-1 text-sm text-ink-muted">
+            {request.decidedByName && (
+              <p>
+                <span className="font-bold">Declined by: </span>
+                {request.decidedByName}
+              </p>
+            )}
+            {request.rejectionReason && (
+              <p>
+                <span className="font-bold">Decline Reason: </span>
+                {request.rejectionReason}
+              </p>
+            )}
+          </div>
         )}
+
+        <ImageStrip images={request.images} title={request.title} />
       </div>
-
-      <p className="mt-2 whitespace-pre-line text-ink">{request.body}</p>
-
-      {/*
-        Who declined it, and why. Both are optional and independent: a reviewer
-        need not give a reason, and `decided_by_person_id` is nulled if their
-        account is deleted -- so the reason must still show with no name, and the
-        name with no reason.
-      */}
-      {request.status === "REJECTED" && (
-        <div className="mt-2 space-y-1 text-sm text-ink-muted">
-          {request.decidedByName && (
-            <p>
-              <span className="font-bold">Declined by: </span>
-              {request.decidedByName}
-            </p>
-          )}
-          {request.rejectionReason && (
-            <p>
-              <span className="font-bold">Decline Reason: </span>
-              {request.rejectionReason}
-            </p>
-          )}
-        </div>
-      )}
-
-      <ImageStrip images={request.images} title={request.title} />
     </li>
   );
 }
@@ -558,6 +615,8 @@ function DeclineModal({
   onConfirm: (reason: string | null) => void;
 }) {
   const [reason, setReason] = useState("");
+  // Prose about a person, not a way to reach them: the name stays text here.
+  const authorName = fullName(authorPerson(request));
 
   return (
     <Modal title="Decline this request?" onClose={onClose}>
@@ -577,8 +636,8 @@ function DeclineModal({
         }}
       >
         <p className="text-ink-muted">
-          “{request.title}” will not be posted. {request.authorName} will see that it was declined
-          by you, along with anything you write here.
+          “{request.title}” will not be posted. {authorName} will see that it was declined by you,
+          along with anything you write here.
         </p>
 
         <Field
@@ -590,7 +649,7 @@ function DeclineModal({
            * response to their own POST. The audit log is the one other place
            * the note surfaces, and that is ADMIN and above.
            */
-          hint={`Optional. Only ${request.authorName} and parish administrators can see it — it is never posted to the parish.`}
+          hint={`Optional. Only ${authorName} and parish administrators can see it — it is never posted to the parish.`}
         >
           <textarea
             className={`${inputClass} min-h-32`}
