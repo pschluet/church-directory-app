@@ -30,6 +30,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/families", label: "Families" },
   { to: "/me", label: "My Details" },
   { to: "/admin/users", label: "People & Accounts", adminOnly: true },
+  { to: "/audit-log", label: "Audit Log", adminOnly: true },
   { to: "/admin/organizations", label: "Churches", superAdminOnly: true },
 ];
 
@@ -43,9 +44,56 @@ export function AppShell() {
   const location = useLocation();
   const navRef = useRef<HTMLElement>(null);
   const toggleRef = useRef<HTMLButtonElement>(null);
+  const headerRef = useRef<HTMLElement>(null);
 
   // Navigating should always close the drawer, including via the back button.
   useEffect(() => setDrawerOpen(false), [location.pathname]);
+
+  /*
+   * Publishes the sticky header's height as `--app-header-height`, for pages
+   * that need to pin something directly beneath it -- the audit log's day
+   * headings, which would otherwise slide under this and be unreadable.
+   *
+   * Measured rather than written down because it is not one number. The header
+   * is 70px on a phone and well over twice that from `md` up, taller again for
+   * a super admin, whose organization switcher is a row inside it, and taller
+   * again if a long parish name wraps. Every one of those is a real case, and a
+   * hardcoded offset would be wrong in at least one of them.
+   */
+  useEffect(() => {
+    const header = headerRef.current;
+    if (!header) return;
+
+    const publish = () => {
+      document.documentElement.style.setProperty(
+        "--app-header-height",
+        `${header.getBoundingClientRect().height}px`
+      );
+    };
+    publish();
+
+    // Signing out unmounts the shell, and the sign-in screen has no header --
+    // so the value is withdrawn rather than left behind describing one that is
+    // no longer on the page. theme.css reads it for scroll-padding-top too.
+    const forget = () => document.documentElement.style.removeProperty("--app-header-height");
+
+    // ResizeObserver catches the cases a window resize does not: the switcher
+    // appearing, the name wrapping. Falling back to `resize` rather than doing
+    // nothing keeps the breakpoint change right where it is missing.
+    if (typeof ResizeObserver === "undefined") {
+      window.addEventListener("resize", publish);
+      return () => {
+        window.removeEventListener("resize", publish);
+        forget();
+      };
+    }
+    const observer = new ResizeObserver(publish);
+    observer.observe(header);
+    return () => {
+      observer.disconnect();
+      forget();
+    };
+  }, []);
 
   /*
    * Tapping the page with the drawer open should dismiss it. This listens on
@@ -84,7 +132,10 @@ export function AppShell() {
         {organizationName}
       </div>
 
-      <header className="sticky top-0 z-40 border-b border-line bg-surface shadow-sm">
+      <header
+        ref={headerRef}
+        className="sticky top-0 z-40 border-b border-line bg-surface shadow-sm"
+      >
         <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 md:flex-col md:gap-2 md:py-4">
           {/*
             min-w-0 lets a long parish name wrap instead of forcing the flex row

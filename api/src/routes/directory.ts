@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { requireOrganizationId, type AppEnv } from "../auth";
+import { parseLimit } from "./paging";
 import { PERSON_COLUMNS, PERSON_ORDER, toSummaries, type PersonRow } from "../services/persons";
 import { fullName, uuidSchema, type PersonLookupDto } from "../types";
 
@@ -21,18 +22,6 @@ const MAX_LIMIT = 200;
 /** A dropdown nobody scrolls, so the picker's ceiling is far lower than browse's. */
 const DEFAULT_LOOKUP_LIMIT = 20;
 const MAX_LOOKUP_LIMIT = 50;
-
-function parseLookupLimit(raw: string | undefined): number {
-  const value = Number(raw ?? DEFAULT_LOOKUP_LIMIT);
-  if (!Number.isFinite(value)) return DEFAULT_LOOKUP_LIMIT;
-  return Math.min(Math.max(Math.trunc(value), 1), MAX_LOOKUP_LIMIT);
-}
-
-function parseLimit(raw: string | undefined): number {
-  const value = Number(raw ?? DEFAULT_LIMIT);
-  if (!Number.isFinite(value)) return DEFAULT_LIMIT;
-  return Math.min(Math.max(Math.trunc(value), 1), MAX_LIMIT);
-}
 
 /** A query string has no booleans; anything but an explicit "true" means off. */
 function parseFlag(raw: string | undefined): boolean {
@@ -66,7 +55,7 @@ routes.get("/", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
   const organizationId = requireOrganizationId(c);
-  const limit = parseLimit(c.req.query("limit"));
+  const limit = parseLimit(c.req.query("limit"), DEFAULT_LIMIT, MAX_LIMIT);
   const accountHoldersOnly = parseFlag(c.req.query("accountHoldersOnly"));
 
   const cursorLastName = c.req.query("cursorLastName") ?? null;
@@ -160,7 +149,7 @@ routes.get("/lookup", async (c) => {
   const db = c.get("db");
   const organizationId = requireOrganizationId(c);
   const q = (c.req.query("q") ?? "").trim();
-  const limit = parseLookupLimit(c.req.query("limit"));
+  const limit = parseLimit(c.req.query("limit"), DEFAULT_LOOKUP_LIMIT, MAX_LOOKUP_LIMIT);
 
   const excludeRaw = c.req.query("exclude");
   const exclude = excludeRaw ? uuidSchema.safeParse(excludeRaw) : null;

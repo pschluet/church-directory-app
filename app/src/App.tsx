@@ -14,6 +14,7 @@ import { Settings } from "./pages/Settings";
 import { FamilyDetail } from "./pages/FamilyDetail";
 import { AdminUsers } from "./pages/AdminUsers";
 import { AdminOrganizations } from "./pages/AdminOrganizations";
+import { AuditLog } from "./pages/AuditLog";
 
 export function App() {
   const { status } = useAuth();
@@ -58,6 +59,19 @@ function SignedInRoutes() {
           element={
             <RequireRole requires="admin">
               <AdminUsers />
+            </RequireRole>
+          }
+        />
+        {/*
+          Admins and above, matching `requireRole("ADMIN")` on /api/audit. A
+          prayer request admin is a member with one extra privilege, and this
+          holds every edit anyone in the parish has made.
+        */}
+        <Route
+          path="audit-log"
+          element={
+            <RequireRole requires="admin">
+              <AuditLog />
             </RequireRole>
           }
         />

@@ -68,6 +68,31 @@ export const qk = {
 
   adminUsers: (orgId: string | null) => [...qk.org(orgId), "admin", "users"] as const,
 
+  /**
+   * The audit log. Nested so that the page's entries and the filter options it
+   * offers are both swept by one prefix, and org-namespaced like everything
+   * else here -- a super admin switching parish is looking at a different log,
+   * not a stale copy of the last one.
+   *
+   * `filters` is in the entries key rather than beside it, which is what makes
+   * changing a filter a new cache entry instead of a race that appends rows
+   * from the old filter onto the new list.
+   */
+  auditLog: (orgId: string | null) => [...qk.org(orgId), "audit-log"] as const,
+  auditLogEntries: (orgId: string | null, filters: unknown) =>
+    [...qk.auditLog(orgId), "entries", filters] as const,
+  auditLogFilterOptions: (orgId: string | null) =>
+    [...qk.auditLog(orgId), "filter-options"] as const,
+  /** The actor typeahead, keyed on the debounced term like the directory's. */
+  auditActorLookup: (orgId: string | null, term: string) =>
+    [...qk.auditLog(orgId), "actors", "lookup", { term }] as const,
+  /**
+   * The names behind the actor ids a URL already carries. Sorted, so arriving
+   * at the same pair of people from either direction is one cache entry.
+   */
+  auditActorsByIds: (orgId: string | null, ids: string[]) =>
+    [...qk.auditLog(orgId), "actors", "by-id", { ids: [...ids].sort() }] as const,
+
   prayerRequests: (orgId: string | null) => [...qk.org(orgId), "prayer-requests"] as const,
   /**
    * Nested under the feed, so approving something can invalidate both the page

@@ -208,3 +208,44 @@ export async function createMergeRequest(
   );
   return rows[0]!.id;
 }
+
+/**
+ * One audit log entry, written directly.
+ *
+ * The read path is the only thing that reads this table, and it has to cope
+ * with states no call site produces: two entries at the same instant, an
+ * action nobody has added to `AUDIT_ACTIONS`, a null organization, a target
+ * that no longer exists. Going through the routes that happen to write audit
+ * rows would test those routes and give no control over `created_at`, which is
+ * the whole axis the log is paginated on.
+ */
+export async function createAuditEntry(
+  db: Queryable,
+  options: {
+    organizationId: string | null;
+    actorAppUserId?: string | null;
+    action?: string;
+    entityType?: string;
+    entityId?: string | null;
+    changes?: unknown;
+    /** An ISO instant, or omitted for `now()`. */
+    createdAt?: string;
+  }
+): Promise<string> {
+  const { rows } = await db.query<{ id: string }>(
+    `insert into audit_log (organization_id, actor_app_user_id, action, entity_type, entity_id,
+                            changes, created_at)
+     values ($1, $2, $3, $4, $5, $6, coalesce($7::timestamptz, now()))
+     returning id::text as id`,
+    [
+      options.organizationId,
+      options.actorAppUserId ?? null,
+      options.action ?? "person.update",
+      options.entityType ?? "person",
+      options.entityId ?? null,
+      options.changes === undefined ? null : JSON.stringify(options.changes),
+      options.createdAt ?? null,
+    ]
+  );
+  return rows[0]!.id;
+}

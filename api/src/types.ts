@@ -58,6 +58,142 @@ export const SPECIAL_DATE_TYPES = ["BIRTHDAY", "ANNIVERSARY", "FEAST_DAY"] as co
 export const specialDateTypeSchema = z.enum(SPECIAL_DATE_TYPES);
 export type SpecialDateType = z.infer<typeof specialDateTypeSchema>;
 
+/**
+ * Every `entity_type` the audit log records. Unlike the enums above this one
+ * mirrors no CHECK constraint -- `audit_log.entity_type` is plain text, for the
+ * reason V13__audit_log_browse.sql explains -- so it is a label list, not a
+ * gate. Nothing validates an incoming filter against it.
+ */
+export const AUDIT_ENTITY_TYPES = [
+  "person",
+  "family",
+  "appUser",
+  "organization",
+  "prayerRequest",
+  "specialDate",
+] as const;
+export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[number];
+
+/**
+ * Every `action` the audit log currently records, in the order the log's filter
+ * should offer them: grouped by what they act on, and within a group roughly by
+ * lifecycle rather than alphabetically, because "create, update, delete" is how
+ * somebody scans a list like this.
+ *
+ * This is for labels and for ordering only. It is emphatically **not** the set
+ * of actions the API will filter by, and the read path never checks an action
+ * against it -- see the note on `auditActionLabel` below. The list is kept
+ * honest by api/test/audit-actions.test.ts, which reads the route sources and
+ * fails when one of them writes an action that is missing here.
+ */
+export const AUDIT_ACTIONS = [
+  "person.create",
+  "person.update",
+  "person.delete",
+  "person.merge",
+  "person.mergeRequest",
+  "person.mergeRequest.approve",
+  "person.mergeRequest.deny",
+
+  "family.create",
+  "family.update",
+  "family.delete",
+  "family.join",
+  "family.joinRequest.approve",
+  "family.joinRequest.deny",
+  "family.addMember",
+  "family.removeMember",
+  "family.reorderMembers",
+
+  "user.invite",
+  "user.update",
+  "user.delete",
+  "user.changeEmail",
+  "user.adoptParish",
+  "user.changeParish",
+
+  "organization.create",
+  "organization.update",
+
+  "prayerRequest.create",
+  "prayerRequest.post",
+  "prayerRequest.approve",
+  "prayerRequest.reject",
+  "prayerRequest.delete",
+
+  "specialDate.create",
+  "specialDate.update",
+  "specialDate.delete",
+] as const;
+export type AuditAction = (typeof AUDIT_ACTIONS)[number];
+
+const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
+  "person.create": "Person added",
+  "person.update": "Person edited",
+  "person.delete": "Person deleted",
+  "person.merge": "People merged",
+  "person.mergeRequest": "Merge requested",
+  "person.mergeRequest.approve": "Merge approved",
+  "person.mergeRequest.deny": "Merge declined",
+
+  "family.create": "Family created",
+  "family.update": "Family edited",
+  "family.delete": "Family deleted",
+  "family.join": "Joined a family",
+  "family.joinRequest.approve": "Join approved",
+  "family.joinRequest.deny": "Join declined",
+  "family.addMember": "Family member added",
+  "family.removeMember": "Family member removed",
+  "family.reorderMembers": "Family reordered",
+
+  "user.invite": "Account invited",
+  "user.update": "Account edited",
+  "user.delete": "Account deleted",
+  "user.changeEmail": "Sign-in address changed",
+  "user.adoptParish": "Given a parish",
+  "user.changeParish": "Moved parish",
+
+  "organization.create": "Church created",
+  "organization.update": "Church edited",
+
+  "prayerRequest.create": "Prayer request submitted",
+  "prayerRequest.post": "Prayer request posted",
+  "prayerRequest.approve": "Prayer request approved",
+  "prayerRequest.reject": "Prayer request declined",
+  "prayerRequest.delete": "Prayer request deleted",
+
+  "specialDate.create": "Special date added",
+  "specialDate.update": "Special date edited",
+  "specialDate.delete": "Special date deleted",
+};
+
+/**
+ * A human label for an action, falling back to the raw string.
+ *
+ * The fallback is the whole point. Actions are written as inline literals at
+ * nearly thirty call sites with nothing enforcing this list, so the first thing
+ * that happens after somebody adds one is that it reaches the log before it
+ * reaches `AUDIT_ACTIONS`. Showing `family.archive` verbatim is a small
+ * cosmetic wrong; hiding the row, or refusing the filter, would be a hole in an
+ * audit trail, which is the one thing this page must not have.
+ */
+export function auditActionLabel(action: string): string {
+  return AUDIT_ACTION_LABELS[action as AuditAction] ?? action;
+}
+
+const AUDIT_ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
+  person: "Person",
+  family: "Family",
+  appUser: "Account",
+  organization: "Church",
+  prayerRequest: "Prayer request",
+  specialDate: "Special date",
+};
+
+export function auditEntityTypeLabel(entityType: string): string {
+  return AUDIT_ENTITY_TYPE_LABELS[entityType as AuditEntityType] ?? entityType;
+}
+
 export const JOIN_REQUEST_STATUSES = ["PENDING", "APPROVED", "DENIED", "CANCELLED"] as const;
 export const joinRequestStatusSchema = z.enum(JOIN_REQUEST_STATUSES);
 export type JoinRequestStatus = z.infer<typeof joinRequestStatusSchema>;
@@ -763,6 +899,102 @@ export interface MeDto {
    * Null is what the settings page reads as "push is not available here".
    */
   pushPublicKey: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Audit log
+// ---------------------------------------------------------------------------
+/**
+ * Who did it.
+ *
+ * Every field is nullable because `audit_log.actor_app_user_id` is `on delete
+ * set null`: deleting an account blanks the actor on everything it ever did,
+ * and no copy of the name was denormalized onto the row. An entry whose actor
+ * cannot be named is still an entry, so this degrades rather than disappears.
+ */
+export interface AuditActorDto {
+  appUserId: string | null;
+  email: string | null;
+  name: string | null;
+}
+
+/** What it was done to, resolved for display at read time. */
+export interface AuditTargetDto {
+  /** The person's name, the family's or church's name, the request's title. */
+  label: string | null;
+  /**
+   * The row pointed at is gone. `entity_id` is deliberately not a foreign key
+   * so that the trail outlives what it describes, which means "deleted" is a
+   * normal state here and not an error.
+   */
+  missing: boolean;
+}
+
+export interface AuditLogEntryDto {
+  /**
+   * A string, not a number. `id` is a bigserial, and node-postgres returns int8
+   * as text rather than silently rounding past 2^53.
+   */
+  id: string;
+  /** An ISO instant, not a calendar date. */
+  createdAt: string;
+  /**
+   * Typed as a plain string rather than `AuditAction`. The database is the
+   * authority on what has been recorded; `AUDIT_ACTIONS` is only a label list,
+   * and an entry with an action missing from it must still reach the page.
+   */
+  action: string;
+  entityType: string;
+  entityId: string | null;
+  actor: AuditActorDto;
+  target: AuditTargetDto;
+  /** Untyped by nature -- every call site passes its own shape, and some pass none. */
+  changes: unknown;
+  /**
+   * The entry belongs to no organization, which happens when a super admin acts
+   * before choosing a parish -- creating one, mostly. Only super admins are
+   * shown these, and the page badges them so they are not read as this parish's.
+   */
+  unassignedOrganization: boolean;
+}
+
+export interface AuditLogCursor {
+  createdAt: string;
+  id: string;
+}
+
+export interface AuditLogPageDto {
+  entries: AuditLogEntryDto[];
+  nextCursor: AuditLogCursor | null;
+}
+
+/**
+ * What the action and entity type filters can offer, taken from the rows
+ * themselves rather than from `AUDIT_ACTIONS`.
+ *
+ * Derived for two reasons. It cannot hide a row -- an action nobody has added
+ * to the constant still appears here the first time it is written -- and it
+ * never offers a filter that returns nothing, which also means it never offers
+ * an action no part of the app can actually produce.
+ *
+ * Actors are deliberately not here. There is one of those per account that has
+ * ever done anything, so the list has no ceiling worth shipping to a browser;
+ * they are searched a few at a time through `GET /api/audit/actors` instead.
+ */
+export interface AuditLogFilterOptionsDto {
+  actions: string[];
+  entityTypes: string[];
+}
+
+/**
+ * Actors matching a typed term, or the specific ones a saved filter names.
+ *
+ * Two modes on one endpoint because the picker needs both and they answer the
+ * same question: searching as somebody types, and resolving the ids already in
+ * the URL back into names so the chips can say who they are.
+ */
+export interface AuditActorLookupDto {
+  actors: AuditActorDto[];
 }
 
 // ---------------------------------------------------------------------------

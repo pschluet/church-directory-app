@@ -29,9 +29,34 @@
 }
 
 @layer base {
+  :root {
+    /*
+     * The height of the sticky header, measured and published by AppShell so a
+     * page can pin something just below it. Declared here so it always resolves
+     * to something: `top-[var(--app-header-height)]` with no value at all is an
+     * invalid declaration, and the element would not be sticky at all rather
+     * than sticky in the wrong place.
+     */
+    --app-header-height: 0px;
+  }
+
   html {
-    /* Anchor navigation should not slide content under the sticky header. */
-    scroll-padding-top: 5rem;
+    /*
+     * Keeps a top-aligned scroll clear of the sticky header -- `#anchor`
+     * navigation and `scrollIntoView({ block: "start" })`.
+     *
+     * Insurance rather than a live fix: nothing in the app does either yet, and
+     * `focus()` is unaffected because browsers scroll focus with "nearest"
+     * alignment, which does not consult this. But the number was 5rem, which
+     * was only ever right on a phone -- the header is 167px from `md` up and
+     * 232px for a super admin, whose organization switcher is a row inside it
+     * -- so the first thing to top-align a scroll would have landed roughly
+     * 90px underneath it.
+     *
+     * Resolves to the 1rem alone before AppShell has measured and on the
+     * sign-in screen, neither of which has a header to clear.
+     */
+    scroll-padding-top: calc(var(--app-header-height) + 1rem);
   }
 
   body {

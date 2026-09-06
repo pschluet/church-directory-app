@@ -19,6 +19,7 @@ import pushRoutes from "./routes/push";
 import uploadRoutes from "./routes/uploads";
 import adminRoutes from "./routes/admin";
 import organizationRoutes from "./routes/organizations";
+import auditRoutes from "./routes/audit";
 
 // Deployed, this function lives in a VPC whose only route out is IPv6 (see the
 // networking comment in infra/lib/church-directory-stack.ts). Both the Cognito
@@ -112,6 +113,7 @@ export function createApp(queryable?: Queryable) {
   app.route("/api/uploads", uploadRoutes);
   app.route("/api/admin", adminRoutes);
   app.route("/api/organizations", organizationRoutes);
+  app.route("/api/audit", auditRoutes);
 
   app.notFound((c) => c.json({ error: "Not found" }, 404));
 

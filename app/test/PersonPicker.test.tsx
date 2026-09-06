@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { PersonLookupDto } from "@shared";
 import { PersonPicker, type PickedPerson } from "../src/components/PersonPicker";
 import { renderWithProviders } from "./utils";
+import { Modal } from "../src/components/ui";
 
 const api = vi.fn();
 vi.mock("../src/lib/api", () => ({
@@ -159,5 +160,47 @@ describe("PersonPicker", () => {
         query: { q: "mar", exclude: "person-id", accounts: "none" },
       })
     );
+  });
+});
+
+/*
+ * Regression: the picker is used inside `Modal` on the special date form and in
+ * the audit log's filter sheet, and Modal dismisses itself from a keydown
+ * listener on `document`. Escape used to reach both, closing the dropdown and
+ * the dialog around it in one press.
+ */
+describe("Escape inside a dialog", () => {
+  it("closes the list without closing the dialog around it", async () => {
+    const onModalClose = vi.fn();
+    api.mockResolvedValue({ people: [{ id: "p1", name: "Boris Popov", familyName: null }] });
+
+    renderWithProviders(
+      <Modal title="Add a special date" onClose={onModalClose}>
+        <PersonPicker label="Married to" value={null} onChange={vi.fn()} />
+      </Modal>
+    );
+
+    const box = screen.getByRole("combobox", { name: "Married to" });
+    await userEvent.click(box);
+    expect(await screen.findByRole("option", { name: /Boris Popov/ })).toBeInTheDocument();
+
+    await userEvent.keyboard("{Escape}");
+
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(onModalClose).not.toHaveBeenCalled();
+  });
+
+  it("still lets Escape close the dialog once the list is shut", async () => {
+    const onModalClose = vi.fn();
+    api.mockResolvedValue({ people: [] });
+
+    renderWithProviders(
+      <Modal title="Add a special date" onClose={onModalClose}>
+        <PersonPicker label="Married to" value={null} onChange={vi.fn()} />
+      </Modal>
+    );
+
+    await userEvent.keyboard("{Escape}");
+    expect(onModalClose).toHaveBeenCalled();
   });
 });

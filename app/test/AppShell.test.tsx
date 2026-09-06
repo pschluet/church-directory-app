@@ -261,3 +261,54 @@ describe("AppShell responsive behaviour", () => {
     expect(document.querySelector("main")?.className).toContain("max-w-6xl");
   });
 });
+
+/*
+ * The audit log pins its day headings directly beneath this header, so it needs
+ * to know how tall the header is -- and that is not one number: it changes at
+ * `md`, changes again when a super admin's organization switcher appears inside
+ * it, and changes again if a long parish name wraps.
+ */
+describe("the published header height", () => {
+  const readVar = () => document.documentElement.style.getPropertyValue("--app-header-height");
+
+  function stubHeaderHeight(height: number) {
+    // jsdom lays nothing out, so every box is 0x0 unless it is told otherwise.
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      height,
+    } as unknown as DOMRect);
+  }
+
+  it("publishes the header's measured height on mount", () => {
+    stubHeaderHeight(167);
+    renderShell();
+    expect(readVar()).toBe("167px");
+  });
+
+  /*
+   * Signing out unmounts the shell, and `scroll-padding-top` in theme.css reads
+   * this too -- so a value left behind would keep the sign-in screen, which has
+   * no header, scrolling as though it had a tall one.
+   */
+  it("withdraws the value when the shell goes away", () => {
+    stubHeaderHeight(167);
+    const { unmount } = renderShell();
+    expect(readVar()).toBe("167px");
+
+    unmount();
+    expect(readVar()).toBe("");
+  });
+
+  /*
+   * jsdom has no ResizeObserver, which is also the fallback path in an older
+   * browser: the height is still measured, and a window resize re-measures it.
+   */
+  it("re-measures when the window changes size", () => {
+    stubHeaderHeight(70);
+    renderShell();
+    expect(readVar()).toBe("70px");
+
+    stubHeaderHeight(232);
+    window.dispatchEvent(new Event("resize"));
+    expect(readVar()).toBe("232px");
+  });
+});

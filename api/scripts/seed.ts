@@ -254,6 +254,183 @@ async function main(): Promise<void> {
     [allSaints, families.get("Schlueter"), boris]
   );
 
+  /*
+   * A stretch of audit log history.
+   *
+   * Nothing else writes these during a seed -- they are a side effect of using
+   * the app -- so without this the Audit Log page opens empty on a fresh
+   * database and neither the infinite scroll nor any of the filters can be
+   * seen working. Spread back over seven weeks and across several actors,
+   * actions and entity types, which is what the filters exist to cut through.
+   */
+  const { rows: actorRows } = await pool.query<{ id: string; email: string }>(
+    `select id, email::text as email from app_users`
+  );
+  const actorByEmail = new Map(actorRows.map((row) => [row.email, row.id]));
+
+  /*
+   * Only actions the app itself can produce.
+   *
+   * The filter options on the Audit Log page are derived from the rows present,
+   * so seeding an action no screen can reach would offer a filter for something
+   * that cannot happen -- which is worse than a gap, because it reads as a
+   * feature. Two audited endpoints have no caller in the SPA at all
+   * (PUT /admin/users/:id/email and DELETE /families/:id); neither is seeded.
+   */
+  const auditTemplates: {
+    action: string;
+    entityType: string;
+    entityId: string | null;
+    changes: unknown;
+  }[] = [
+    // The common case by far: the submitted payload, with no record of what it
+    // replaced. Nothing in the app records a before-and-after.
+    {
+      action: "person.update",
+      entityType: "person",
+      entityId: maria,
+      changes: {
+        firstName: "Maria",
+        lastName: "Schlueter",
+        phone: "+13125552345",
+        city: "Chicago",
+      },
+    },
+    {
+      action: "person.update",
+      entityType: "person",
+      entityId: boris,
+      changes: { phone: "+17735553456", addressLine1: "1200 N Ashland Ave" },
+    },
+    {
+      action: "person.create",
+      entityType: "person",
+      entityId: anna,
+      changes: { firstName: "Anna", lastName: "Schlueter", patronSaint: "St. Anna" },
+    },
+    // No `changes` at all, like the delete handler.
+    { action: "person.delete", entityType: "person", entityId: null, changes: null },
+    {
+      action: "user.invite",
+      entityType: "appUser",
+      entityId: actorByEmail.get("maria@example.com") ?? null,
+      changes: { email: "maria@example.com", role: "USER", organizationId: allSaints },
+    },
+    {
+      action: "user.update",
+      entityType: "appUser",
+      entityId: actorByEmail.get("maria@example.com") ?? null,
+      changes: { role: "USER", status: "ACTIVE" },
+    },
+    {
+      action: "family.update",
+      entityType: "family",
+      entityId: families.get("Schlueter") ?? null,
+      changes: { name: "Schlueter" },
+    },
+    {
+      action: "family.addMember",
+      entityType: "family",
+      entityId: families.get("Popov") ?? null,
+      changes: { personId: boris },
+    },
+    {
+      action: "family.removeMember",
+      entityType: "family",
+      entityId: families.get("Popov") ?? null,
+      changes: { personId: boris },
+    },
+    // An array, which falls through to the raw JSON branch.
+    {
+      action: "family.reorderMembers",
+      entityType: "family",
+      entityId: families.get("Schlueter") ?? null,
+      changes: { personIds: [paul, maria, anna] },
+    },
+    {
+      action: "specialDate.create",
+      entityType: "specialDate",
+      entityId: null,
+      changes: { type: "BIRTHDAY", month: 5, day: 4, year: 1985, showYearCount: true },
+    },
+    {
+      action: "specialDate.update",
+      entityType: "specialDate",
+      entityId: null,
+      changes: { type: "FEAST_DAY", month: 7, day: 26 },
+    },
+    // A target that no longer exists, which is the state entity_id is not a
+    // foreign key in order to allow.
+    {
+      action: "specialDate.delete",
+      entityType: "specialDate",
+      entityId: "00000000-0000-0000-0000-0000000000ff",
+      changes: null,
+    },
+    {
+      action: "prayerRequest.post",
+      entityType: "prayerRequest",
+      entityId: null,
+      changes: { title: "For safe travels" },
+    },
+    {
+      action: "prayerRequest.reject",
+      entityType: "prayerRequest",
+      entityId: null,
+      changes: { rejectionReason: "Please resubmit without the phone number." },
+    },
+    {
+      action: "person.mergeRequest",
+      entityType: "person",
+      entityId: paul,
+      changes: { duplicatePersonId: anna },
+    },
+  ];
+
+  const auditActors = [
+    actorByEmail.get("paul@example.com") ?? null,
+    actorByEmail.get(SUPER_ADMIN_EMAIL) ?? null,
+    actorByEmail.get("maria@example.com") ?? null,
+  ];
+
+  let auditCount = 0;
+  for (let index = 0; index < 140; index += 1) {
+    const template = auditTemplates[index % auditTemplates.length]!;
+    const actor = auditActors[index % auditActors.length]!;
+    // Back through seven weeks, several per day, so the day headings and the
+    // Today / 7 days / 30 days presets all have something to show.
+    const minutesAgo = index * 8 * 60 + (index % 17) * 11;
+    await pool.query(
+      `insert into audit_log (organization_id, actor_app_user_id, action, entity_type, entity_id,
+                              changes, created_at)
+       values ($1, $2, $3, $4, $5, $6, now() - ($7 || ' minutes')::interval)`,
+      [
+        // A handful in the other parish, so a super admin switching sees the
+        // list change, and one with no parish at all -- where organization.create
+        // lands, and the row only a super admin is shown.
+        index % 11 === 0 ? stGeorge : allSaints,
+        actor,
+        template.action,
+        template.entityType,
+        template.entityId,
+        template.changes === null ? null : JSON.stringify(template.changes),
+        minutesAgo,
+      ]
+    );
+    auditCount += 1;
+  }
+
+  await pool.query(
+    `insert into audit_log (organization_id, actor_app_user_id, action, entity_type, entity_id, changes)
+     values (null, $1, 'organization.create', 'organization', $2, $3)`,
+    [
+      actorByEmail.get(SUPER_ADMIN_EMAIL) ?? null,
+      stGeorge,
+      JSON.stringify({ name: "St. George Orthodox Church", slug: "st-george" }),
+    ]
+  );
+  auditCount += 1;
+
   const { rows: counts } = await pool.query<{ people: string; dates: string }>(
     `select (select count(*) from persons) as people,
             (select count(*) from special_dates) as dates`
@@ -261,7 +438,8 @@ async function main(): Promise<void> {
 
   console.log(
     `Seeded ${DB_NAME}: 2 organizations, ${families.size} families, ` +
-      `${counts[0]!.people} people, ${counts[0]!.dates} special dates.`
+      `${counts[0]!.people} people, ${counts[0]!.dates} special dates, ` +
+      `${auditCount} audit log entries.`
   );
   console.log(`Sign in locally with: DEV_AUTH_EMAIL=paul@example.com (admin)`);
   console.log(`             or       DEV_AUTH_EMAIL=${SUPER_ADMIN_EMAIL} (super admin)`);

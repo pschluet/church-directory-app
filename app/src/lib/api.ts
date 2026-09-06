@@ -61,6 +61,16 @@ interface RequestOptions {
   body?: unknown;
   /** Extra query parameters; the active organization is added automatically. */
   query?: Record<string, string | number | undefined | null>;
+  /**
+   * Parameters that may appear more than once -- `?action=a&action=b`, which is
+   * how the audit log's multi-select filters travel. Separate from `query`
+   * because that maps one key to one value, and flattening a list into a
+   * comma-joined string would put the API in the business of splitting it back
+   * apart and guessing what a comma inside a value meant.
+   *
+   * Empty arrays contribute nothing, so an unset filter is an absent parameter.
+   */
+  repeated?: Record<string, string[] | undefined>;
   /** Set false for the organization list itself, which is not org-scoped. */
   withOrg?: boolean;
   /** React Query hands one to every query function, which cancels superseded reads. */
@@ -68,11 +78,14 @@ interface RequestOptions {
 }
 
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { method = "GET", body, query, withOrg = true, signal } = options;
+  const { method = "GET", body, query, repeated, withOrg = true, signal } = options;
 
   const params = new URLSearchParams();
   for (const [key, value] of Object.entries(query ?? {})) {
     if (value !== undefined && value !== null && value !== "") params.set(key, String(value));
+  }
+  for (const [key, values] of Object.entries(repeated ?? {})) {
+    for (const value of values ?? []) params.append(key, value);
   }
   const orgId = getActiveOrganizationId();
   if (withOrg && orgId && !params.has("orgId")) params.set("orgId", orgId);
