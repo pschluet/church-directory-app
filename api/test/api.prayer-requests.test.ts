@@ -389,6 +389,21 @@ describe.skipIf(!hasDb)("prayer requests", () => {
       expect(titles(seen)).toEqual(["For my mother"]);
       expect(seen.prayerRequests[0].isMine).toBe(false);
       expect(seen.prayerRequests[0].canDelete).toBe(false);
+      // Who reviewed it is not the parish's business: an approved request is in
+      // everybody's list, so an ungated decidedByName would tell all of them
+      // which reviewer posted each one.
+      expect(seen.prayerRequests[0].decidedByName).toBeNull();
+    });
+
+    it("names the reviewer to the author and to other reviewers", async () => {
+      const id = await submit();
+      await as(reviewer).call("POST", `/api/prayer-requests/${id}/approve`);
+
+      const { body: mine } = await as(author).call("GET", "/api/prayer-requests");
+      expect(mine.prayerRequests[0].decidedByName).toBe("Nikolai User");
+
+      const { body: theirs } = await as(admin).call("GET", "/api/prayer-requests");
+      expect(theirs.prayerRequests[0].decidedByName).toBe("Nikolai User");
     });
 
     it("still hides it from another parish", async () => {
@@ -468,6 +483,7 @@ describe.skipIf(!hasDb)("prayer requests", () => {
       expect(mine.prayerRequests[0]).toMatchObject({
         status: "REJECTED",
         rejectionReason: "The family asked us to wait.",
+        decidedByName: "Nikolai User",
         canDelete: true,
       });
 
@@ -506,6 +522,26 @@ describe.skipIf(!hasDb)("prayer requests", () => {
       await as(reviewer).call("POST", `/api/prayer-requests/${id}/reject`);
       const { body } = await as(reviewer).call("GET", "/api/prayer-requests/pending");
       expect(body.prayerRequests).toEqual([]);
+    });
+
+    it("keeps the decision readable after the reviewer's record is deleted", async () => {
+      // decided_by_person_id is `on delete set null`, so the name goes and the
+      // decision stays. The join has to be a LEFT one for that to be true --
+      // an inner join would drop the row and the author's declined request
+      // would simply vanish from their list.
+      const id = await submit();
+      await as(reviewer).call("POST", `/api/prayer-requests/${id}/reject`, {
+        reason: "The family asked us to wait.",
+      });
+      await db().query("delete from persons where id = $1", [reviewer.personId]);
+
+      const { body } = await as(author).call("GET", "/api/prayer-requests");
+      expect(body.prayerRequests).toHaveLength(1);
+      expect(body.prayerRequests[0]).toMatchObject({
+        status: "REJECTED",
+        rejectionReason: "The family asked us to wait.",
+        decidedByName: null,
+      });
     });
   });
 

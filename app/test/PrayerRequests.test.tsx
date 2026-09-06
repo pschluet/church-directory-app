@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { act, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { MeDto, PrayerRequestDto } from "@shared";
+import { PRAYER_REQUEST_REASON_MAX, type MeDto, type PrayerRequestDto } from "@shared";
 import { ApiError } from "../src/lib/api";
 import { PrayerRequests } from "../src/pages/PrayerRequests";
 import { renderWithProviders } from "./utils";
@@ -43,6 +43,7 @@ function request(overrides: Partial<PrayerRequestDto> = {}): PrayerRequestDto {
     submittedAt: "2026-09-01T10:00:00.000Z",
     postedAt: "2026-09-02T10:00:00.000Z",
     decidedAt: "2026-09-02T10:00:00.000Z",
+    decidedByName: null,
     rejectionReason: null,
     images: [],
     canDecide: false,
@@ -105,13 +106,57 @@ describe("PrayerRequests", () => {
         postedAt: null,
         isMine: true,
         canDelete: true,
+        decidedByName: "Dimitar Petrov",
         rejectionReason: "The family asked us to wait.",
       }),
     ]);
     renderWithProviders(<PrayerRequests />);
 
-    expect(await screen.findByText("Not posted")).toBeInTheDocument();
+    expect(await screen.findByText("Declined")).toBeInTheDocument();
+    expect(screen.getByText(/Declined by:/)).toBeInTheDocument();
+    expect(screen.getByText(/Dimitar Petrov/)).toBeInTheDocument();
+    expect(screen.getByText(/Decline Reason:/)).toBeInTheDocument();
     expect(screen.getByText(/The family asked us to wait/)).toBeInTheDocument();
+  });
+
+  /*
+   * The two halves are independent: a reviewer need not give a reason, and the
+   * decider's record can be deleted out from under a standing decision, which
+   * nulls decided_by_person_id rather than cascading (see V8).
+   */
+  it("shows who declined a request even with no reason given", async () => {
+    stubFeed([
+      request({
+        status: "REJECTED",
+        postedAt: null,
+        isMine: true,
+        canDelete: true,
+        decidedByName: "Dimitar Petrov",
+        rejectionReason: null,
+      }),
+    ]);
+    renderWithProviders(<PrayerRequests />);
+
+    expect(await screen.findByText(/Declined by:/)).toBeInTheDocument();
+    expect(screen.getByText(/Dimitar Petrov/)).toBeInTheDocument();
+    expect(screen.queryByText(/Decline Reason:/)).not.toBeInTheDocument();
+  });
+
+  it("shows the reason with no name when the reviewer's record is gone", async () => {
+    stubFeed([
+      request({
+        status: "REJECTED",
+        postedAt: null,
+        isMine: true,
+        canDelete: true,
+        decidedByName: null,
+        rejectionReason: "The family asked us to wait.",
+      }),
+    ]);
+    renderWithProviders(<PrayerRequests />);
+
+    expect(await screen.findByText(/The family asked us to wait/)).toBeInTheDocument();
+    expect(screen.queryByText(/Declined by:/)).not.toBeInTheDocument();
   });
 
   it("says so when there is nothing posted", async () => {
@@ -192,6 +237,91 @@ describe("PrayerRequests", () => {
 
       expect(await screen.findByText(/One request is waiting for review/)).toBeInTheDocument();
       expect(screen.getAllByRole("button", { name: "Post it" })).toHaveLength(1);
+    });
+
+    /*
+     * Declining goes through a dialog, because it is the one decision here that
+     * takes something away from a member: the author is told "Declined"
+     * either way, so the message is the only chance to say why. These pin that
+     * the click no longer decides anything on its own, and what ends up in the
+     * body when it does.
+     */
+    describe("declining", () => {
+      /** A reviewer looking at one pending request, ready to decline it. */
+      function renderQueue() {
+        meState.canApprove = true;
+        stubFeed(
+          [],
+          [request({ id: "pr-queue", status: "PENDING", postedAt: null, canDecide: true })]
+        );
+        renderWithProviders(<PrayerRequests />);
+      }
+
+      const declineButton = () => screen.findByRole("button", { name: "Decline" });
+      const reasonBox = () => screen.getByLabelText(/Anything you want them to know/);
+
+      it("asks for a reason before declining, instead of declining outright", async () => {
+        renderQueue();
+        await userEvent.click(await declineButton());
+
+        expect(screen.getByRole("dialog", { name: /Decline this request/ })).toBeInTheDocument();
+        expect(reasonBox()).toBeInTheDocument();
+        // The whole point: the click decided nothing by itself.
+        expect(apiMock).not.toHaveBeenCalledWith(
+          "/prayer-requests/pr-queue/reject",
+          expect.anything()
+        );
+      });
+
+      it("declines with the reason the reviewer typed", async () => {
+        renderQueue();
+        await userEvent.click(await declineButton());
+        await userEvent.type(reasonBox(), "The family asked us to wait.");
+        await userEvent.click(screen.getByRole("button", { name: "Decline it" }));
+
+        await waitFor(() =>
+          expect(apiMock).toHaveBeenCalledWith("/prayer-requests/pr-queue/reject", {
+            method: "POST",
+            body: { reason: "The family asked us to wait." },
+          })
+        );
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      });
+
+      it("declines with no reason when there is nothing to say", async () => {
+        // A reviewer does not have to justify declining something, so an empty
+        // box is a null rather than an empty string or a blocked submit.
+        renderQueue();
+        await userEvent.click(await declineButton());
+        await userEvent.click(screen.getByRole("button", { name: "Decline it" }));
+
+        await waitFor(() =>
+          expect(apiMock).toHaveBeenCalledWith("/prayer-requests/pr-queue/reject", {
+            method: "POST",
+            body: { reason: null },
+          })
+        );
+      });
+
+      it("leaves the request in the queue when the reviewer backs out", async () => {
+        renderQueue();
+        await userEvent.click(await declineButton());
+        await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(apiMock).not.toHaveBeenCalledWith(
+          "/prayer-requests/pr-queue/reject",
+          expect.anything()
+        );
+        expect(await declineButton()).toBeInTheDocument();
+      });
+
+      it("caps the reason at the shared maximum", async () => {
+        // Fails if the number is ever re-inlined here or in the schema.
+        renderQueue();
+        await userEvent.click(await declineButton());
+        expect(reasonBox()).toHaveAttribute("maxLength", String(PRAYER_REQUEST_REASON_MAX));
+      });
     });
   });
 
@@ -383,6 +513,22 @@ describe("PrayerRequests", () => {
       // The server's wording would read as the reviewer having done something
       // wrong, so it must not be what they see.
       expect(screen.queryByText(/That request has already been reviewed/)).not.toBeInTheDocument();
+    });
+
+    it("reconciles a decline of a request somebody else already reviewed", async () => {
+      meState.canApprove = true;
+      stubDecideConflict(409, "That request has already been reviewed");
+      renderWithProviders(<PrayerRequests />);
+
+      await userEvent.click(await screen.findByRole("button", { name: "Decline" }));
+      await userEvent.click(screen.getByRole("button", { name: "Decline it" }));
+
+      await waitFor(() =>
+        expect(screen.getByText(/Somebody else got there first/)).toBeInTheDocument()
+      );
+      // The notice renders at the top of the page, behind the scrim, so the
+      // dialog has to be gone for it to be readable at all.
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
 
     it("still reports a real failure", async () => {

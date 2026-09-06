@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   PRAYER_REQUEST_BODY_MAX,
   PRAYER_REQUEST_MAX_IMAGES,
+  PRAYER_REQUEST_REASON_MAX,
   PRAYER_REQUEST_TITLE_MAX,
   prayerRequestCreateSchema,
   type PrayerRequestDto,
@@ -53,6 +54,12 @@ export function PrayerRequests() {
   const queryClient = useQueryClient();
   const [composing, setComposing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<PrayerRequestDto | null>(null);
+  /*
+   * The request being declined, held whole rather than by id: the queue
+   * refetches on window focus, so the row can leave `queue` while the dialog is
+   * open, and a snapshot keeps it rendering rather than blanking mid-read.
+   */
+  const [declining, setDeclining] = useState<PrayerRequestDto | null>(null);
   // Kept apart from the query's own error, so a failed action never replaces
   // the list with a notice.
   const [actionError, setActionError] = useState<string | null>(null);
@@ -115,10 +122,33 @@ export function PrayerRequests() {
   }
 
   const decide = useMutation({
-    mutationFn: ({ id, decision }: { id: string; decision: "approve" | "reject" }) =>
-      api(`/prayer-requests/${id}/${decision}`, { method: "POST" }),
-    onSuccess: refresh,
-    onError: (err) => handleActionError(err, "Could not record that decision"),
+    mutationFn: ({
+      id,
+      decision,
+      reason,
+    }: {
+      id: string;
+      decision: "approve" | "reject";
+      /** Only ever set on a decline, and only when the reviewer wrote something. */
+      reason?: string | null;
+    }) =>
+      api(`/prayer-requests/${id}/${decision}`, {
+        method: "POST",
+        // Approving carries no body at all, which is what the endpoint expects
+        // of it -- the reject schema is the only one that reads one.
+        ...(decision === "reject" ? { body: { reason: reason ?? null } } : {}),
+      }),
+    onSuccess: async () => {
+      setDeclining(null);
+      await refresh();
+    },
+    onError: (err) => {
+      // Closed before the error is reported, as on the delete path: the notice
+      // renders at the top of the page, behind the scrim, so an open dialog
+      // would leave the reviewer looking at a message they cannot read.
+      setDeclining(null);
+      handleActionError(err, "Could not record that decision");
+    },
   });
 
   const remove = useMutation({
@@ -204,7 +234,7 @@ export function PrayerRequests() {
                   <Button
                     variant="danger"
                     disabled={decide.isPending}
-                    onClick={() => decide.mutate({ id: request.id, decision: "reject" })}
+                    onClick={() => setDeclining(request)}
                   >
                     Decline
                   </Button>
@@ -281,6 +311,15 @@ export function PrayerRequests() {
             cannot be undone.
           </p>
         </ConfirmDialog>
+      )}
+
+      {declining && (
+        <DeclineModal
+          request={declining}
+          busy={decide.isPending}
+          onClose={() => setDeclining(null)}
+          onConfirm={(reason) => decide.mutate({ id: declining.id, decision: "reject", reason })}
+        />
       )}
     </>
   );
@@ -365,7 +404,7 @@ function RefreshButton({
 /** The status of one of the caller's own requests. Posted rows need no badge. */
 function StatusBadge({ request }: { request: PrayerRequestDto }) {
   if (request.status === "PENDING") return <Badge tone="accent">Waiting for review</Badge>;
-  if (request.status === "REJECTED") return <Badge tone="primary">Not posted</Badge>;
+  if (request.status === "REJECTED") return <Badge tone="primary">Declined</Badge>;
   return null;
 }
 
@@ -415,11 +454,27 @@ function RequestCard({
 
       <p className="mt-2 whitespace-pre-line text-ink">{request.body}</p>
 
-      {request.status === "REJECTED" && request.rejectionReason && (
-        <p className="mt-2 text-sm text-ink-muted">
-          <span className="font-bold">Why: </span>
-          {request.rejectionReason}
-        </p>
+      {/*
+        Who declined it, and why. Both are optional and independent: a reviewer
+        need not give a reason, and `decided_by_person_id` is nulled if their
+        account is deleted -- so the reason must still show with no name, and the
+        name with no reason.
+      */}
+      {request.status === "REJECTED" && (
+        <div className="mt-2 space-y-1 text-sm text-ink-muted">
+          {request.decidedByName && (
+            <p>
+              <span className="font-bold">Declined by: </span>
+              {request.decidedByName}
+            </p>
+          )}
+          {request.rejectionReason && (
+            <p>
+              <span className="font-bold">Decline Reason: </span>
+              {request.rejectionReason}
+            </p>
+          )}
+        </div>
       )}
 
       <ImageStrip images={request.images} title={request.title} />
@@ -471,6 +526,88 @@ function ImageStrip({ images, title }: { images: PrayerRequestImageDto[]; title:
         <PhotoLightbox src={open.fullUrl} alt={title} onClose={() => setOpen(null)} />
       )}
     </>
+  );
+}
+
+/**
+ * Declining a request, with an optional message for its author.
+ *
+ * A dialog rather than a button that acts on the spot, because declining is the
+ * one decision here that takes something away from a member: the author is told
+ * "Declined" either way, and without a place to write it there was nowhere to
+ * say why. The message is optional -- a reviewer should not have to justify
+ * declining something -- but "the family asked us not to share this yet" is
+ * worth being able to say, and the API has accepted it all along.
+ *
+ * The mutation stays in the page rather than moving in here, unlike
+ * ComposeModal: `decide` carries the 409/404 reconciliation that turns "somebody
+ * else got there first" into a refresh, and a self-submitting dialog would have
+ * to duplicate it or lose it. So this owns the text and nothing else, which is
+ * also what makes it reset itself -- it mounts fresh on every open.
+ */
+function DeclineModal({
+  request,
+  busy,
+  onClose,
+  onConfirm,
+}: {
+  request: PrayerRequestDto;
+  busy: boolean;
+  onClose: () => void;
+  /** Already trimmed, and null when the reviewer wrote nothing. */
+  onConfirm: (reason: string | null) => void;
+}) {
+  const [reason, setReason] = useState("");
+
+  return (
+    <Modal title="Decline this request?" onClose={onClose}>
+      <form
+        className="space-y-4"
+        onSubmit={(event) => {
+          event.preventDefault();
+          /*
+           * Trimmed, and blank becomes null rather than "" -- the same
+           * normalization prayerRequestRejectSchema does on the server, so an
+           * all-whitespace note never arrives as a reason and the author is not
+           * shown an empty "Decline Reason:". There is nothing here to validate:
+           * the field is optional and `maxLength` keeps the only other rule out
+           * of reach.
+           */
+          onConfirm(reason.trim() || null);
+        }}
+      >
+        <p className="text-ink-muted">
+          “{request.title}” will not be posted. {request.authorName} will see that it was declined,
+          along with anything you write here.
+        </p>
+
+        <Field
+          label="Anything you want them to know?"
+          hint={`Optional. Only ${request.authorName} and other reviewers see it — it is never posted to the parish.`}
+        >
+          <textarea
+            className={`${inputClass} min-h-32`}
+            value={reason}
+            maxLength={PRAYER_REQUEST_REASON_MAX}
+            onChange={(event) => setReason(event.target.value)}
+          />
+        </Field>
+
+        <div className="flex flex-col gap-2 sm:flex-row">
+          {/*
+            "Decline it" rather than "Decline": the button that opened this is
+            still behind the scrim, and two controls with the same accessible
+            name is one ambiguous target for anyone driving the page by name.
+          */}
+          <Button type="submit" variant="danger" disabled={busy}>
+            {busy ? "Declining…" : "Decline it"}
+          </Button>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </Modal>
   );
 }
 

@@ -538,6 +538,7 @@ export type PrayerRequestStatus = z.infer<typeof prayerRequestStatusSchema>;
 export const PRAYER_REQUEST_MAX_IMAGES = 4;
 export const PRAYER_REQUEST_TITLE_MAX = 120;
 export const PRAYER_REQUEST_BODY_MAX = 4000;
+export const PRAYER_REQUEST_REASON_MAX = 500;
 
 /**
  * One already-uploaded attachment. `photoKey` is the rendition prefix the
@@ -572,7 +573,7 @@ export type PrayerRequestCreate = z.infer<typeof prayerRequestCreateSchema>;
  * asked us not to share this yet" is worth being able to say.
  */
 export const prayerRequestRejectSchema = z.object({
-  reason: trimmedOptional(500),
+  reason: trimmedOptional(PRAYER_REQUEST_REASON_MAX),
 });
 export type PrayerRequestReject = z.infer<typeof prayerRequestRejectSchema>;
 
@@ -597,6 +598,12 @@ export interface PrayerRequestDto {
   /** When it was approved, which is what the page is ordered by. Null until then. */
   postedAt: string | null;
   decidedAt: string | null;
+  /**
+   * The reviewer who decided it, resolved to a name. Null when nobody has yet,
+   * when their record has since been deleted, or when the caller is neither the
+   * author nor a reviewer -- see toPrayerRequest for why that last one matters.
+   */
+  decidedByName: string | null;
   /** Only ever set on a REJECTED request, and only sent to its author. */
   rejectionReason: string | null;
   images: PrayerRequestImageDto[];

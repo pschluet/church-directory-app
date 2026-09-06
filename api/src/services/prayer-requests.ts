@@ -36,6 +36,9 @@ export interface PrayerRequestRow {
   author_person_id: string;
   author_first_name: string;
   author_last_name: string | null;
+  /** Null when the decider's record has since been deleted; see V8. */
+  decided_by_first_name: string | null;
+  decided_by_last_name: string | null;
   title: string;
   body: string;
   status: PrayerRequestStatus;
@@ -55,7 +58,10 @@ interface PrayerRequestImageRow {
 
 /**
  * Joins `persons_resolved` rather than `persons` for the author, so a member
- * who inherits the family surname is not credited with a blank last name.
+ * who inherits the family surname is not credited with a blank last name. The
+ * reviewer who decided it is joined the same way, but with a LEFT join:
+ * `decided_by_person_id` is `on delete set null` (see V8), so losing that
+ * account must leave the decision standing rather than the row unreadable.
  *
  * The images arrive as one aggregated JSON column rather than as extra rows.
  * The alternative -- a plain join -- multiplies every request by its
@@ -70,6 +76,8 @@ export const PRAYER_REQUEST_SELECT = `
          pr.author_person_id,
          a.first_name as author_first_name,
          a.last_name  as author_last_name,
+         d.first_name as decided_by_first_name,
+         d.last_name  as decided_by_last_name,
          pr.title,
          pr.body,
          pr.status,
@@ -95,6 +103,7 @@ export const PRAYER_REQUEST_SELECT = `
          ) as images
     from prayer_requests pr
     join persons_resolved a on a.id = pr.author_person_id
+    left join persons_resolved d on d.id = pr.decided_by_person_id
 `;
 
 /** A reviewer may decide anything still pending in the parish they are acting in. */
@@ -142,6 +151,17 @@ export function toPrayerRequest(row: PrayerRequestRow, caller: Caller): PrayerRe
     // Not the parish -- though a rejected request is never in anyone else's
     // list anyway, so this is a second lock on a door that is already shut.
     rejectionReason: isMine || caller.canApprovePrayerRequests ? row.rejection_reason : null,
+    // Gated identically, and for a reason that is not belt-and-braces here: an
+    // *approved* request is in everybody's list, so sending this ungated would
+    // tell the whole parish which reviewer posted each one. Who decided is the
+    // author's business and the reviewers' own.
+    decidedByName:
+      (isMine || caller.canApprovePrayerRequests) && row.decided_by_first_name !== null
+        ? fullName({
+            firstName: row.decided_by_first_name,
+            lastName: row.decided_by_last_name,
+          })
+        : null,
     images: (row.images ?? []).map((image) => {
       const { thumbUrl, fullUrl } = photoUrls(image.photo_key);
       return { id: image.id, thumbUrl, fullUrl, width: image.width, height: image.height };
