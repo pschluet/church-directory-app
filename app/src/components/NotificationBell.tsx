@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router";
 import type { InboxDto, NotificationType } from "@shared";
@@ -11,8 +11,8 @@ import { useNow } from "./ui";
  * The bell, and the panel behind it.
  *
  * Built on the same footing as `MenuButton` -- click rather than hover, closed
- * by a document `pointerdown` and by Escape, right-aligned and clamped to the
- * viewport because it sits at the right edge of a narrow screen. Not built on
+ * by a document `pointerdown` and by Escape, right-aligned to the button and
+ * nudged back into view when that would put it over the edge. Not built on
  * `MenuButton` itself: that panel is a `role="menu"` of `menuitem`s with arrow
  * key navigation, and this is a list of links with a heading, which is a
  * different thing to announce. Not built on `useDismissable` either, since that
@@ -39,7 +39,27 @@ export function NotificationBell({ className = "" }: { className?: string }) {
   const [open, setOpen] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
   const panelId = useId();
+
+  /**
+   * How far right of its `right-0` placement the panel has to sit, in px.
+   *
+   * Right-aligning to the bell is only enough when the bell is the rightmost
+   * thing in the header, and it is not -- the settings gear and the hamburger
+   * are outside it. That leaves the panel needing a 388px viewport to clear the
+   * left edge, so a 360px phone (a 1080px screen at DPR 3, which is most of
+   * them) chops 28px off it, with no horizontal scroll to reach the rest.
+   *
+   * `max-w` does not help: it caps the width, and the width already fits. It is
+   * the position that is out of bounds.
+   *
+   * Measured rather than written down, the same way `MenuButton` decides
+   * whether to flip above its button. The offset depends on whatever else the
+   * header has next to the bell, and rearranging that header is what put the
+   * panel over the edge in the first place.
+   */
+  const [shift, setShift] = useState(0);
 
   const inboxQuery = useQuery({
     queryKey: qk.notifications(),
@@ -114,6 +134,36 @@ export function NotificationBell({ className = "" }: { className?: string }) {
     };
   }, [open]);
 
+  /*
+   * Placed before the browser paints, so the panel never shows up in the wrong
+   * spot for a frame.
+   */
+  useLayoutEffect(() => {
+    // Cleared on the way closed, so the next open measures from `right-0`
+    // rather than from wherever the last one ended up.
+    if (!open) {
+      setShift(0);
+      return;
+    }
+    const panel = panelRef.current;
+    if (!panel) return;
+
+    // 1rem either side, which is the 2rem the `max-w` reserves.
+    const GUTTER = 16;
+    const box = panel.getBoundingClientRect();
+    const overhang = GUTTER - box.left;
+    if (overhang <= 0) return;
+    /*
+     * The smallest nudge that clears the edge, rather than parking the panel
+     * against the right gutter: it stays as close to the bell it belongs to as
+     * the screen allows. Capped by the room on the other side so a panel wider
+     * than the viewport keeps its left edge -- where the text starts -- in
+     * view instead of trading one clipped edge for the other.
+     */
+    const roomOnTheRight = window.innerWidth - GUTTER - box.right;
+    setShift(Math.min(overhang, Math.max(0, roomOnTheRight)));
+  }, [open]);
+
   // So "2 minutes ago" in the panel keeps up with the clock instead of freezing
   // at whatever it said when this last rendered for some other reason.
   const now = useNow();
@@ -166,9 +216,11 @@ export function NotificationBell({ className = "" }: { className?: string }) {
 
       {open && (
         <div
+          ref={panelRef}
           id={panelId}
           role="dialog"
           aria-label="Notifications"
+          style={shift > 0 ? { right: -shift } : undefined}
           className="absolute right-0 z-30 mt-1 w-72 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-line bg-surface text-left shadow-lg"
         >
           {notifications.length === 0 ? (

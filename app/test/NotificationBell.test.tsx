@@ -237,3 +237,96 @@ describe("NotificationBell", () => {
     );
   });
 });
+
+/**
+ * jsdom gives every element a 0x0 box, so placement cannot be exercised without
+ * saying where things are. Describes where the panel lands from its `right-0`
+ * placement, in a viewport of `viewport`.
+ */
+function stubGeometry({
+  viewport,
+  panelLeft,
+  panelWidth = 288,
+}: {
+  viewport: number;
+  panelLeft: number;
+  panelWidth?: number;
+}) {
+  Object.defineProperty(window, "innerWidth", { writable: true, value: viewport });
+  vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
+    const isPanel = this.getAttribute("role") === "dialog";
+    const left = isPanel ? panelLeft : viewport - 100 - 44;
+    const width = isPanel ? panelWidth : 44;
+    return {
+      x: left,
+      y: 0,
+      top: 0,
+      bottom: isPanel ? 60 : 44,
+      left,
+      right: left + width,
+      width,
+      height: isPanel ? 60 : 44,
+      toJSON: () => ({}),
+    } as DOMRect;
+  });
+}
+
+/** The panel's left edge once the nudge in `style.right` has been applied. */
+function leftEdgeOf(panel: HTMLElement, panelLeft: number): number {
+  const nudge = panel.style.right === "" ? 0 : -Number.parseInt(panel.style.right, 10);
+  return panelLeft + nudge;
+}
+
+describe("NotificationBell placement", () => {
+  beforeEach(() => apiMock.mockReset());
+
+  async function openPanel() {
+    stub(inbox());
+    renderWithProviders(<NotificationBell />);
+    await userEvent.click(await screen.findByRole("button", { name: "Notifications" }));
+    return screen.getByRole("dialog", { name: "Notifications" });
+  }
+
+  it("leaves the panel right-aligned to the bell when it fits", async () => {
+    stubGeometry({ viewport: 412, panelLeft: 24 });
+    expect((await openPanel()).style.right).toBe("");
+  });
+
+  it("nudges the panel back on screen on a 360px phone", async () => {
+    /*
+     * The bug this guards: the panel is right-aligned to the bell, and the
+     * settings gear and hamburger sit outside the bell, so 288px of panel needs
+     * a 388px viewport. A 1080px screen at DPR 3 gives 360px and chopped 28px
+     * off the left of the panel, with no horizontal scroll to reach the rest.
+     */
+    stubGeometry({ viewport: 360, panelLeft: -28 });
+    const panel = await openPanel();
+
+    expect(panel.style.right).toBe("-44px");
+    expect(leftEdgeOf(panel, -28)).toBe(16);
+  });
+
+  it("keeps the left edge in view when the panel is wider than the viewport", async () => {
+    // Nothing to trade: clearing the left edge fully would put the right edge
+    // over the other side, so it stops at the right gutter. The left edge is
+    // the one worth keeping -- it is where the text starts.
+    stubGeometry({ viewport: 360, panelLeft: -100, panelWidth: 400 });
+    const panel = await openPanel();
+
+    expect(panel.style.right).toBe("-44px");
+    expect(leftEdgeOf(panel, -100)).toBeLessThan(16);
+  });
+
+  it("measures again on the next open, rather than reusing the last nudge", async () => {
+    stubGeometry({ viewport: 360, panelLeft: -28 });
+    const panel = await openPanel();
+    expect(panel.style.right).toBe("-44px");
+
+    const bell = screen.getByRole("button", { name: "Notifications" });
+    await userEvent.click(bell);
+    stubGeometry({ viewport: 412, panelLeft: 24 });
+    await userEvent.click(bell);
+
+    expect(screen.getByRole("dialog", { name: "Notifications" }).style.right).toBe("");
+  });
+});
