@@ -577,13 +577,20 @@ function DeclineModal({
         }}
       >
         <p className="text-ink-muted">
-          “{request.title}” will not be posted. {request.authorName} will see that it was declined,
-          along with anything you write here.
+          “{request.title}” will not be posted. {request.authorName} will see that it was declined
+          by you, along with anything you write here.
         </p>
 
         <Field
           label="Anything you want them to know?"
-          hint={`Optional. Only ${request.authorName} and other reviewers see it — it is never posted to the parish.`}
+          /*
+           * Not "and other reviewers": no page shows them one. A declined
+           * request is only ever returned to its author (GET / matches on
+           * APPROVED-in-window or author) and to whoever decided it, on the
+           * response to their own POST. The audit log is the one other place
+           * the note surfaces, and that is ADMIN and above.
+           */
+          hint={`Optional. Only ${request.authorName} and parish administrators can see it — it is never posted to the parish.`}
         >
           <textarea
             className={`${inputClass} min-h-32`}

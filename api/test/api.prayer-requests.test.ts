@@ -524,6 +524,22 @@ describe.skipIf(!hasDb)("prayer requests", () => {
       expect(body.prayerRequests).toEqual([]);
     });
 
+    it("shows it to no reviewer but the one who decided it", async () => {
+      // What the dialog's copy promises the reviewer. `admin` clears the
+      // PRAYER_REQUEST_ADMIN floor, so the gate in toPrayerRequest would hand
+      // them the note -- they never receive the row to carry it: GET / matches
+      // on APPROVED-in-window or authorship, and /pending on PENDING.
+      const id = await submit();
+      await as(reviewer).call("POST", `/api/prayer-requests/${id}/reject`, {
+        reason: "The family asked us to wait.",
+      });
+
+      const { body: theirs } = await as(admin).call("GET", "/api/prayer-requests");
+      expect(theirs.prayerRequests).toEqual([]);
+      const { body: queue } = await as(admin).call("GET", "/api/prayer-requests/pending");
+      expect(queue.prayerRequests).toEqual([]);
+    });
+
     it("keeps the decision readable after the reviewer's record is deleted", async () => {
       // decided_by_person_id is `on delete set null`, so the name goes and the
       // decision stays. The join has to be a LEFT one for that to be true --
