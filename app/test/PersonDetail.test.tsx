@@ -446,6 +446,24 @@ describe("PersonDetail merging and deleting", () => {
       );
     });
 
+    it("does not promise an approval step it cannot promise", async () => {
+      // Absorbing a duplicate from your own family needs nobody's approval --
+      // that record is already yours to change -- so the dialog states the rule
+      // rather than claiming the merge will wait for somebody. It cannot tell
+      // which case this is: the picker carries a name and an id, not a family.
+      withLookup(person({ canEdit: true }), { id: "dup-9", name: "Layla H" });
+
+      const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+      await chooseRecordAction(/merge a duplicate into my record/i, user);
+      await user.type(screen.getByRole("combobox", { name: /the duplicate record/i }), "lay");
+      vi.advanceTimersByTime(250);
+      await user.click(await screen.findByRole("option", { name: /layla h/i }));
+      await user.click(screen.getByRole("button", { name: /continue/i }));
+
+      expect(screen.getByText(/if that record is in your own family/i)).toBeInTheDocument();
+      expect(screen.queryByText(/it takes effect once someone/i)).not.toBeInTheDocument();
+    });
+
     it("names the person picked as the survivor when merging a relative", async () => {
       meState.personId = "someone-else";
       withLookup(person({ appUserId: null, canEdit: true, familyId: "family-1" }), {

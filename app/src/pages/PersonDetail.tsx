@@ -645,7 +645,9 @@ function MergeModal({
         only the other record has is added to them, and they move into that record's family.{" "}
         {mergesImmediately
           ? "As an administrator this takes effect straight away, with nobody to ask."
-          : `It takes effect once ${isOwn ? "someone in that family approves" : "that person approves"}.`}{" "}
+          : isOwn
+            ? "If that record is in your own family this takes effect straight away, since it is already yours to change; otherwise it waits for someone in that family to approve."
+            : "It takes effect once that person approves."}{" "}
         This cannot be undone.
       </ConfirmDialog>
     );

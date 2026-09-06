@@ -276,20 +276,91 @@ describe.skipIf(!hasDb)("merging duplicate people", () => {
       expect((await personRow(duplicate)).deleted_at).toBeNull();
     });
 
-    it("will not let the account holder who asked approve their own request", async () => {
-      // Route B, and the account holder is *also* in the duplicate's family --
-      // which is the case that would otherwise let them wave it through.
+    it("merges on the spot when the account holder is in the duplicate's family", async () => {
+      // Route B, and the account holder is *also* in the duplicate's family, so
+      // they are on both sides and there is nobody else the claim is about.
+      // Nothing to approve, and -- where they are the family's only account
+      // holder -- nobody who could have.
       await db().query("update persons set family_id = $2 where id = $1", [
         holder.personId,
         schlueters,
+      ]);
+
+      const { status, body } = await as(holder).call(
+        "POST",
+        "/api/merges",
+        request({ accountPersonId: holder.personId, duplicatePersonId: duplicate })
+      );
+
+      expect(status).toBe(201);
+      expect(body.status).toBe("APPROVED");
+      expect((await personRow(duplicate)).deleted_at).not.toBeNull();
+
+      const { rows } = await db().query<{ count: string }>(
+        "select count(*) as count from person_merge_requests"
+      );
+      expect(Number(rows[0]!.count)).toBe(0);
+    });
+
+    it("records the both-sides merge as a merge, not as a request", async () => {
+      await db().query("update persons set family_id = $2 where id = $1", [
+        holder.personId,
+        schlueters,
+      ]);
+      await as(holder).call(
+        "POST",
+        "/api/merges",
+        request({ accountPersonId: holder.personId, duplicatePersonId: duplicate })
+      );
+
+      const { rows } = await db().query<{ action: string }>(
+        "select action from audit_log where entity_type = 'person' order by id"
+      );
+      // `person.merge` is "merged with nobody to ask", which is exactly what
+      // happened -- writing `person.mergeRequest` would claim an approval step
+      // that never existed.
+      expect(rows.map((r) => r.action)).toEqual(["person.merge"]);
+    });
+
+    it("lets the requester decide a request that stranded them on both sides", async () => {
+      // The row a stalled request left behind: written while the account holder
+      // was outside the family, so it needed an approver, and still pending now
+      // that they are inside it and need none. The SPA hides the offer to ask
+      // again while one is pending, so this is the only way out that is not an
+      // admin.
+      const stranded = await createMergeRequest(db(), {
+        organizationId: orgId,
+        accountPersonId: holder.personId!,
+        duplicatePersonId: duplicate,
+        requestedByPersonId: holder.personId!,
+      });
+      await db().query("update persons set family_id = $2 where id = $1", [
+        holder.personId,
+        schlueters,
+      ]);
+
+      const { status } = await as(holder).call("POST", `/api/merges/${stranded}/approve`);
+      expect(status).toBe(200);
+      expect(await statusOf(stranded)).toBe("APPROVED");
+      expect((await personRow(duplicate)).deleted_at).not.toBeNull();
+    });
+
+    it("still needs an approver when the duplicate is in another family", async () => {
+      // The account holder is in a family, just not the duplicate's, so they
+      // may not edit that record and only hold one side of the claim.
+      await db().query("update persons set family_id = $2 where id = $1", [
+        holder.personId,
+        await createFamily(db(), orgId, "Novak"),
       ]);
       const { body } = await as(holder).call(
         "POST",
         "/api/merges",
         request({ accountPersonId: holder.personId, duplicatePersonId: duplicate })
       );
-      const { status } = await as(holder).call("POST", `/api/merges/${body.id}/approve`);
-      expect(status).toBe(403);
+
+      expect(body.status).toBe("PENDING");
+      expect((await as(holder).call("POST", `/api/merges/${body.id}/approve`)).status).toBe(403);
+      expect((await personRow(duplicate)).deleted_at).toBeNull();
     });
 
     it("refuses an outsider", async () => {
@@ -721,6 +792,28 @@ describe.skipIf(!hasDb)("merging duplicate people", () => {
 
       // And the account holder who asked cannot wave it through.
       expect((await pendingFor(holder))[0]!.canDecide).toBe(false);
+    });
+
+    it("tells a requester on both sides of it that it is theirs to decide", async () => {
+      await db().query("delete from person_merge_requests where id = $1", [requestId]);
+      const routeB = await createMergeRequest(db(), {
+        organizationId: orgId,
+        accountPersonId: holder.personId!,
+        duplicatePersonId: duplicate,
+        requestedByPersonId: holder.personId!,
+      });
+      // Now in the duplicate's family, so both halves of the claim are theirs
+      // and the banner has to offer the button rather than "waiting to be
+      // approved" with nothing behind it.
+      await db().query("update persons set family_id = $2 where id = $1", [
+        holder.personId,
+        schlueters,
+      ]);
+
+      const rows = await pendingFor(holder);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.id).toBe(routeB);
+      expect(rows[0]!.canDecide).toBe(true);
     });
   });
 });

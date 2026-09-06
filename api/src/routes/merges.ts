@@ -3,7 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import { requireOrganizationId, type AppEnv, type Caller } from "../auth";
 import { one, type Queryable } from "../db";
 import { audit } from "../audit";
-import { canEditPerson } from "../services/access";
+import { canEditPerson, type PersonAccessFacts } from "../services/access";
 import { mergePersons } from "../services/merge";
 import {
   fullName,
@@ -27,10 +27,16 @@ import {
  *      -> any *other* account holder in that person's family approves
  *
  * `requested_by_person_id` is what tells the two apart, so one row and one pair
- * of routes serve both. An admin may already edit everyone in their parish, so
- * asking them to wait for permission would add nothing: their request merges
- * immediately and writes no row. That is also the way out of a merge nobody is
- * left to approve.
+ * of routes serve both.
+ *
+ * Two callers need no approval at all, because for them the merge is not a
+ * claim about somebody else. An admin may already edit everyone in their
+ * parish. And on route B the account holder can turn out to be the duplicate's
+ * own relative -- they created that record, and may edit or delete it outright
+ * -- which leaves them on both sides with nobody to ask. Requiring an approver
+ * there was worse than redundant: where the requester was the family's only
+ * account holder, the approver did not exist and the request could not be
+ * withdrawn. Both cases merge immediately and write no row.
  *
  * The actual merging is `services/merge.ts`. This file is only about who may
  * ask, who may decide, and what they can see.
@@ -48,6 +54,7 @@ interface MergeRequestRow {
   duplicate_last_name: string | null;
   duplicate_family_id: string | null;
   duplicate_family_name: string | null;
+  duplicate_app_user_id: string | null;
   requested_by_person_id: string;
   requested_by_first_name: string;
   requested_by_last_name: string | null;
@@ -71,6 +78,7 @@ const MERGE_REQUEST_SELECT = `
          d.last_name  as duplicate_last_name,
          d.family_id  as duplicate_family_id,
          d.family_name as duplicate_family_name,
+         d.app_user_id as duplicate_app_user_id,
          mr.requested_by_person_id,
          r.first_name as requested_by_first_name,
          r.last_name  as requested_by_last_name,
@@ -84,18 +92,53 @@ const MERGE_REQUEST_SELECT = `
 `;
 
 /**
+ * Both halves of the claim are already the caller's to make.
+ *
+ * A merge takes two people because each half of it asserts something about
+ * somebody else. When one caller is on both sides -- their own account record,
+ * and an account-less relative `canEditPerson` already lets them edit -- there
+ * is no somebody else left to ask. Requiring an approver anyway made folding a
+ * record in stricter than destroying it: DELETE /persons/:id asks for
+ * `canEditPerson` and nothing more. Worse, it could ask for an approver who
+ * does not exist -- the only other account holder in the family being the
+ * requester themselves -- and strand the request with no way out but an admin.
+ *
+ * Inherently route-B shaped: the caller has to be the surviving account holder,
+ * which is the half route A never gives them.
+ */
+function ownsBothSides(
+  caller: Caller,
+  accountPersonId: string,
+  duplicate: PersonAccessFacts
+): boolean {
+  return (
+    caller.personId !== null &&
+    caller.personId === accountPersonId &&
+    canEditPerson(caller, duplicate)
+  );
+}
+
+/**
  * Route B is "the account holder asked", so the family decides. Route A is
  * anyone else asking, so the account holder decides. Either way the requester
  * is excluded -- otherwise route B would let an account holder in the
  * duplicate's own family approve their own claim.
  *
- * Admins are allowed through both, which is what makes a stalled request
+ * Unless that claim was never about anybody else: `ownsBothSides` is checked
+ * first, so a requester who is on both sides of their own request may see it
+ * through. POST / merges that case on the spot and writes no row, but a row
+ * written before that rule existed -- or before the requester joined the
+ * duplicate's family -- still needs deciding, and the SPA hides the offer to
+ * ask again while one is pending.
+ *
+ * Admins are allowed through all of it, which is what makes a stalled request
  * fixable.
  */
 function canDecide(caller: Caller, row: MergeRequestRow): boolean {
   if (row.organization_id !== caller.organizationId) return false;
   if (row.status !== "PENDING") return false;
   if (caller.isAdmin) return true;
+  if (ownsBothSides(caller, row.account_person_id, duplicateFactsOf(row))) return true;
   if (!caller.personId || caller.personId === row.requested_by_person_id) return false;
 
   const askedByAccountHolder = row.requested_by_person_id === row.account_person_id;
@@ -193,7 +236,12 @@ routes.post("/", async (c) => {
     throw new HTTPException(400, { message: "Your own directory record is missing" });
   }
 
-  if (caller.isAdmin) {
+  // Nobody left to ask, for either of two reasons: an admin may already edit
+  // everyone in their parish, and a caller on both sides of the merge is not
+  // making a claim about anybody but themselves. Both merge here rather than
+  // writing a row -- which is also how a request stranded by the old rule gets
+  // out, since step 7 of mergePersons cancels whatever was still pending.
+  if (caller.isAdmin || ownsBothSides(caller, account.id, factsOf(duplicate))) {
     const result = await mergePersons(db, {
       accountPersonId: account.id,
       duplicatePersonId: duplicate.id,
@@ -319,6 +367,22 @@ function factsOf(row: CandidateRow) {
     organizationId: row.organization_id,
     familyId: row.family_id,
     appUserId: row.app_user_id,
+  };
+}
+
+/**
+ * The same facts about the duplicate, read off a request row rather than a
+ * fresh lookup. `app_user_id` is carried by MERGE_REQUEST_SELECT rather than
+ * assumed null: it was null when the row was written, but the invite flow can
+ * have set it since, and an honest `false` out of `canEditPerson` beats leaving
+ * it to mergePersons to refuse.
+ */
+function duplicateFactsOf(row: MergeRequestRow): PersonAccessFacts {
+  return {
+    id: row.duplicate_person_id,
+    organizationId: row.organization_id,
+    familyId: row.duplicate_family_id,
+    appUserId: row.duplicate_app_user_id,
   };
 }
 
