@@ -25,6 +25,32 @@ describe("PhoneLink", () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith("+13125551234");
   });
 
+  it("marks a search term in the number it shows", () => {
+    render(<PhoneLink phone="+13125551234" terms={["1234"]} />);
+
+    const link = screen.getByRole("link");
+    expect(link.querySelector("mark")).toHaveTextContent("1234");
+    // The accessible name and the href are the number, not the decoration.
+    expect(link).toHaveAttribute("href", "tel:+13125551234");
+    expect(link).toHaveTextContent("(312) 555-1234");
+  });
+
+  it("keeps the label in a single element, so its spaces survive", () => {
+    render(<PhoneLink phone="+13125551234" terms={["555"]} />);
+
+    /*
+     * The anchor is `inline-flex`, so anything directly inside it is its own
+     * anonymous flex item -- a block container, which trims its own trailing
+     * whitespace. Marking "555" would otherwise split the label into three
+     * items and paint "(312)555-0140". jsdom does no layout and textContent is
+     * blind to it, so the invariant is structural: one span, plus the copy
+     * button.
+     */
+    const link = screen.getByRole("link");
+    expect([...link.children].map((child) => child.tagName)).toEqual(["SPAN"]);
+    expect(link.firstElementChild?.querySelectorAll("mark")).toHaveLength(1);
+  });
+
   it("gives the link a comfortable touch target", () => {
     render(<PhoneLink phone="+13125551234" />);
     // 44px minimum; the class is the mechanism.

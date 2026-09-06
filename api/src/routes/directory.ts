@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { requireOrganizationId, type AppEnv } from "../auth";
 import { parseLimit } from "./paging";
 import { PERSON_COLUMNS, PERSON_ORDER, toSummaries, type PersonRow } from "../services/persons";
-import { fullName, uuidSchema, type PersonLookupDto } from "../types";
+import { fullName, searchTerms, uuidSchema, type PersonLookupDto } from "../types";
 
 /**
  * Browsing and searching the directory.
@@ -111,8 +111,9 @@ routes.get("/search", async (c) => {
 
   // Every whitespace-separated term must match somewhere, so "smith chicago"
   // narrows rather than widens. `%` and `_` are escaped so a typed wildcard is
-  // treated as a literal.
-  const terms = q.split(/\s+/).slice(0, 8);
+  // treated as a literal. The split itself is `searchTerms`, shared with the
+  // directory UI so that what gets highlighted is exactly what was filtered on.
+  const terms = searchTerms(q);
   const conditions = terms.map((_, i) => `r.search_text ilike $${i + 2}`).join(" and ");
   const params = [organizationId, ...terms.map((term) => `%${escapeLike(term)}%`)];
 

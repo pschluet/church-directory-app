@@ -1185,3 +1185,22 @@ export function formatPhone(e164: string): string {
 export function fullName(person: { firstName: string; lastName: string | null }): string {
   return [person.firstName, person.lastName].filter(Boolean).join(" ");
 }
+
+/**
+ * The one definition of "a search term", read by the route that searches and by
+ * the UI that shows what matched.
+ *
+ * `/directory/search` ANDs one `ilike '%term%'` per term against the resolved
+ * view's concatenated `search_text`, and the directory highlights those same
+ * terms on each card. Two copies of this rule would drift, and the failure is
+ * silent and specific: a card would mark a fragment the server never filtered
+ * on, or go unable to explain why it is in the results at all.
+ *
+ * The cap is on the raw split, not on what survives filtering -- terms past the
+ * eighth were never part of the predicate, so nothing may be highlighted for
+ * them. Case is left alone: the server needs the term verbatim to escape it for
+ * LIKE, and ILIKE is case-insensitive anyway.
+ */
+export function searchTerms(q: string): string[] {
+  return q.trim().split(/\s+/).filter(Boolean).slice(0, 8);
+}

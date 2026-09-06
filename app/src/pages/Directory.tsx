@@ -1,7 +1,7 @@
 import { memo, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useInfiniteQuery, useQuery } from "@tanstack/react-query";
-import type { PersonSummaryDto } from "@shared";
+import { searchTerms, type PersonSummaryDto } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
@@ -169,6 +169,18 @@ export function Directory() {
     enabled: searching,
   });
 
+  /*
+   * The terms each result card marks. Split by `searchTerms` from @shared,
+   * which is the same function the route splits with, so a card can only ever
+   * highlight a fragment the search actually filtered on.
+   *
+   * Lowercased once here rather than inside every card, and memoized against
+   * the URL rather than built in the render body: PersonGrid and PersonCard are
+   * both memoized on prop identity, and a fresh array every keystroke would defeat
+   * both for the same reason a `flatMap` in render would -- see below.
+   */
+  const terms = useMemo(() => searchTerms(query).map((term) => term.toLowerCase()), [query]);
+
   // `undefined` is "nothing to show yet"; an empty array is "searched, and
   // nobody matched".
   const results = searching ? (search.data?.people ?? null) : null;
@@ -252,7 +264,7 @@ export function Directory() {
               )}
             </EmptyState>
           ) : (
-            <PersonGrid people={results} />
+            <PersonGrid people={results} terms={terms} />
           )}
         </>
       ) : (
@@ -312,13 +324,23 @@ export function Directory() {
  * a few hundred of them, since browsing accumulates every page it has loaded.
  * Both arrays come from the query cache, so their identity is stable and this
  * bails out.
+ *
+ * `terms` has to be as stable, which is why it is a useMemo above and not a
+ * split written inline. Browsing passes none, so a card being browsed renders
+ * exactly the DOM it did before search learned to mark anything.
  */
-const PersonGrid = memo(function PersonGrid({ people }: { people: PersonSummaryDto[] }) {
+const PersonGrid = memo(function PersonGrid({
+  people,
+  terms,
+}: {
+  people: PersonSummaryDto[];
+  terms?: readonly string[];
+}) {
   return (
     <ul className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
       {people.map((person) => (
         <li key={person.id}>
-          <PersonCard person={person} />
+          <PersonCard person={person} terms={terms} />
         </li>
       ))}
     </ul>

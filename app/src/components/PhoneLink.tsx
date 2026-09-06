@@ -1,4 +1,6 @@
+import { Highlight } from "./Highlight";
 import { displayPhone } from "../lib/format";
+import { phoneRanges } from "../lib/highlight";
 
 /**
  * "Phone numbers should allow mobile users to tap to call that number."
@@ -11,10 +13,17 @@ export function PhoneLink({
   phone,
   label,
   className = "",
+  terms = [],
 }: {
   phone: string | null;
   label?: string;
   className?: string;
+  /**
+   * Search terms to mark in the number, lowercased -- see lib/highlight.ts,
+   * which knows that the stored E.164 and the number on screen are different
+   * strings. Empty everywhere but the directory's search results.
+   */
+  terms?: readonly string[];
 }) {
   if (!phone) return null;
 
@@ -25,7 +34,15 @@ export function PhoneLink({
         aria-label={`Call ${label ? `${label} at ` : ""}${displayPhone(phone)}`}
         className="tap-target inline-flex items-center text-primary underline decoration-transparent transition hover:text-accent hover:decoration-current"
       >
-        {displayPhone(phone)}
+        {/* One span, and it has to stay one. The anchor is `inline-flex`, so
+            every text run directly inside it is its own anonymous flex item --
+            each a block container that trims its own trailing whitespace. Marking
+            "555" would split the label into three items and render
+            "(312)555-0140". Inside a single span, inline flow resumes and the
+            spaces survive. */}
+        <span>
+          <Highlight text={displayPhone(phone) ?? phone} ranges={phoneRanges(phone, terms)} />
+        </span>
       </a>
       <CopyButton value={phone} />
     </span>

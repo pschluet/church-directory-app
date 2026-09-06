@@ -84,6 +84,21 @@ function renderDirectory(path = "/") {
   );
 }
 
+/*
+ * Cards are found by their heading, not by their text.
+ *
+ * A search marks the fragment it matched, which splits the name into text and
+ * <mark> nodes -- and `getByText` compares against an element's *direct* text
+ * children only, so "John Smith" stops matching the moment "smith" is what was
+ * typed. The accessible name is computed across the descendants and is still
+ * exactly the name, so it is the locator that survives the card being
+ * decorated. The negatives go through the same door on purpose: a
+ * `queryByText` that can no longer match would not fail, it would quietly
+ * start passing for the wrong reason.
+ */
+const card = (name: string) => screen.findByRole("heading", { name });
+const noCard = (name: string) => screen.queryByRole("heading", { name });
+
 const box = () => screen.getByRole("searchbox", { name: /search the directory/i });
 const filterBox = () => screen.getByRole("checkbox", { name: /show account holders only/i });
 const calls = (path: string) => api.mock.calls.filter(([called]) => called === path);
@@ -122,15 +137,15 @@ describe("Directory", () => {
   it("browses the directory on arrival", async () => {
     renderDirectory();
 
-    expect(await screen.findByText("Anna Ivanova")).toBeInTheDocument();
-    expect(screen.getByText("Boris Petrov")).toBeInTheDocument();
+    expect(await card("Anna Ivanova")).toBeInTheDocument();
+    expect(await card("Boris Petrov")).toBeInTheDocument();
     expect(screen.getByText("2 people, by last name")).toBeInTheDocument();
     expect(calls("/directory/search")).toHaveLength(0);
   });
 
   it("searches once the typing pauses, not on every keystroke", async () => {
     renderDirectory();
-    await screen.findByText("Anna Ivanova");
+    await card("Anna Ivanova");
 
     await user().type(box(), "smith");
 
@@ -149,20 +164,37 @@ describe("Directory", () => {
 
   it("replaces the browse list with the results and puts the query in the URL", async () => {
     renderDirectory();
-    await screen.findByText("Anna Ivanova");
+    await card("Anna Ivanova");
 
     await user().type(box(), "smith");
     await vi.advanceTimersByTimeAsync(250);
 
-    expect(await screen.findByText("John Smith")).toBeInTheDocument();
-    expect(screen.queryByText("Anna Ivanova")).not.toBeInTheDocument();
+    expect(await card("John Smith")).toBeInTheDocument();
+    expect(noCard("Anna Ivanova")).not.toBeInTheDocument();
     expect(screen.getByText("1 match")).toBeInTheDocument();
     expect(screen.getByTestId("search")).toHaveTextContent("?q=smith");
   });
 
+  it("marks the typed fragment on each result, and nothing while browsing", async () => {
+    const { container } = renderDirectory();
+    await card("Anna Ivanova");
+
+    // Browsing is not searching: there is no fragment to point at, so the cards
+    // render exactly as they did before search learned to mark anything.
+    expect(container.querySelectorAll("mark")).toHaveLength(0);
+
+    await user().type(box(), "smith");
+    await vi.advanceTimersByTimeAsync(250);
+    await card("John Smith");
+
+    expect([...container.querySelectorAll("mark")].map((mark) => mark.textContent)).toEqual([
+      "Smith",
+    ]);
+  });
+
   it("says so when nothing matches", async () => {
     renderDirectory();
-    await screen.findByText("Anna Ivanova");
+    await card("Anna Ivanova");
 
     await user().type(box(), "zzz");
     await vi.advanceTimersByTimeAsync(250);
@@ -175,19 +207,19 @@ describe("Directory", () => {
 
   it("restores the browse list when the box is cleared, without refetching it", async () => {
     renderDirectory();
-    await screen.findByText("Anna Ivanova");
+    await card("Anna Ivanova");
 
     await user().type(box(), "smith");
     await vi.advanceTimersByTimeAsync(250);
-    await screen.findByText("John Smith");
+    await card("John Smith");
 
     expect(calls("/directory")).toHaveLength(1);
 
     await user().click(screen.getByRole("button", { name: /clear search/i }));
     await vi.advanceTimersByTimeAsync(250);
 
-    expect(await screen.findByText("Anna Ivanova")).toBeInTheDocument();
-    expect(screen.queryByText("John Smith")).not.toBeInTheDocument();
+    expect(await card("Anna Ivanova")).toBeInTheDocument();
+    expect(noCard("John Smith")).not.toBeInTheDocument();
     expect(screen.getByTestId("search")).toHaveTextContent("");
     // The already-loaded page is reused rather than requested again.
     expect(calls("/directory")).toHaveLength(1);
@@ -196,7 +228,7 @@ describe("Directory", () => {
   it("searches straight away when the page is opened on a query", async () => {
     renderDirectory("/?q=smith");
 
-    expect(await screen.findByText("John Smith")).toBeInTheDocument();
+    expect(await card("John Smith")).toBeInTheDocument();
     expect(box()).toHaveValue("smith");
     expect(calls("/directory/search")).toHaveLength(1);
   });
@@ -223,7 +255,7 @@ describe("Directory", () => {
 
     await user().type(box(), "h");
     await vi.advanceTimersByTimeAsync(250);
-    expect(await screen.findByText("John Smith")).toBeInTheDocument();
+    expect(await card("John Smith")).toBeInTheDocument();
 
     // The stale request answers last, and must not be allowed to win. act() so
     // its resolution is really flushed into a render; without that this passes
@@ -232,28 +264,28 @@ describe("Directory", () => {
       settleStale?.({ people: [ANNA] });
     });
 
-    expect(screen.getByText("John Smith")).toBeInTheDocument();
-    expect(screen.queryByText("Anna Ivanova")).not.toBeInTheDocument();
+    expect(await card("John Smith")).toBeInTheDocument();
+    expect(noCard("Anna Ivanova")).not.toBeInTheDocument();
   });
 
   describe("the account holders filter", () => {
     it("is off to begin with, and asks for everyone", async () => {
       renderDirectory();
 
-      expect(await screen.findByText("Anna Ivanova")).toBeInTheDocument();
+      expect(await card("Anna Ivanova")).toBeInTheDocument();
       expect(filterBox()).not.toBeChecked();
       expect(queryOf("/directory", 0).accountHoldersOnly).toBeUndefined();
     });
 
     it("drops the people without an account when it is ticked", async () => {
       renderDirectory();
-      await screen.findByText("Anna Ivanova");
+      await card("Anna Ivanova");
 
       await user().click(filterBox());
 
       expect(await screen.findByText("1 account holder, by last name")).toBeInTheDocument();
-      expect(screen.getByText("Boris Petrov")).toBeInTheDocument();
-      expect(screen.queryByText("Anna Ivanova")).not.toBeInTheDocument();
+      expect(await card("Boris Petrov")).toBeInTheDocument();
+      expect(noCard("Anna Ivanova")).not.toBeInTheDocument();
 
       // One extra request, carrying the flag -- the filtering is the server's.
       expect(calls("/directory")).toHaveLength(2);
@@ -262,14 +294,14 @@ describe("Directory", () => {
 
     it("brings them back when it is unticked", async () => {
       renderDirectory();
-      await screen.findByText("Anna Ivanova");
+      await card("Anna Ivanova");
 
       await user().click(filterBox());
       await screen.findByText("1 account holder, by last name");
 
       await user().click(filterBox());
 
-      expect(await screen.findByText("Anna Ivanova")).toBeInTheDocument();
+      expect(await card("Anna Ivanova")).toBeInTheDocument();
       expect(screen.getByText("2 people, by last name")).toBeInTheDocument();
       expect(queryOf("/directory", 2).accountHoldersOnly).toBeUndefined();
     });
@@ -277,9 +309,9 @@ describe("Directory", () => {
     it("starts filtered when the URL says so, without an unfiltered first pass", async () => {
       renderDirectory("/?accountHoldersOnly=true");
 
-      expect(await screen.findByText("Boris Petrov")).toBeInTheDocument();
+      expect(await card("Boris Petrov")).toBeInTheDocument();
       expect(filterBox()).toBeChecked();
-      expect(screen.queryByText("Anna Ivanova")).not.toBeInTheDocument();
+      expect(noCard("Anna Ivanova")).not.toBeInTheDocument();
       // One request, already filtered: no unfiltered flash to correct.
       expect(calls("/directory")).toHaveLength(1);
       expect(queryOf("/directory", 0).accountHoldersOnly).toBe("true");
@@ -287,7 +319,7 @@ describe("Directory", () => {
 
     it("writes itself into the URL, and takes itself back out", async () => {
       renderDirectory();
-      await screen.findByText("Anna Ivanova");
+      await card("Anna Ivanova");
 
       await user().click(filterBox());
       await screen.findByText("1 account holder, by last name");
@@ -305,7 +337,7 @@ describe("Directory", () => {
      */
     it("survives typing a search, and the search survives it", async () => {
       renderDirectory("/?accountHoldersOnly=true");
-      await screen.findByText("Boris Petrov");
+      await card("Boris Petrov");
 
       await user().type(box(), "smith");
       await vi.advanceTimersByTimeAsync(250);
@@ -321,7 +353,7 @@ describe("Directory", () => {
 
     it("keeps the search when it is ticked mid-search", async () => {
       renderDirectory("/?q=smith");
-      await screen.findByText("John Smith");
+      await card("John Smith");
 
       await user().click(filterBox());
       await waitFor(() => expect(calls("/directory/search")).toHaveLength(2));
@@ -333,33 +365,33 @@ describe("Directory", () => {
 
     it("leaves a history entry, so the back button undoes it", async () => {
       renderDirectory();
-      await screen.findByText("Anna Ivanova");
+      await card("Anna Ivanova");
 
       await user().click(filterBox());
       await screen.findByText("1 account holder, by last name");
 
       await user().click(screen.getByRole("button", { name: /go back/i }));
 
-      expect(await screen.findByText("Anna Ivanova")).toBeInTheDocument();
+      expect(await card("Anna Ivanova")).toBeInTheDocument();
       expect(filterBox()).not.toBeChecked();
     });
 
     it("narrows a search as well as the browse list", async () => {
       renderDirectory("/?q=smith");
-      await screen.findByText("John Smith");
+      await card("John Smith");
 
       await user().click(filterBox());
 
       await waitFor(() => expect(calls("/directory/search")).toHaveLength(2));
       expect(queryOf("/directory/search", 1).accountHoldersOnly).toBe("true");
-      expect(screen.queryByText("John Smith")).not.toBeInTheDocument();
+      expect(noCard("John Smith")).not.toBeInTheDocument();
       expect(
         await screen.findByText(/only account holders are being searched/i)
       ).toBeInTheDocument();
 
       // And a way back out that does not require finding the checkbox again.
       await user().click(screen.getByRole("button", { name: /search everyone/i }));
-      expect(await screen.findByText("John Smith")).toBeInTheDocument();
+      expect(await card("John Smith")).toBeInTheDocument();
       expect(filterBox()).not.toBeChecked();
     });
 
@@ -371,7 +403,7 @@ describe("Directory", () => {
       });
 
       renderDirectory();
-      await screen.findByText("Anna Ivanova");
+      await card("Anna Ivanova");
 
       await user().click(filterBox());
 
@@ -380,7 +412,7 @@ describe("Directory", () => {
 
       await user().click(screen.getByRole("button", { name: /show everyone/i }));
 
-      expect(await screen.findByText("Anna Ivanova")).toBeInTheDocument();
+      expect(await card("Anna Ivanova")).toBeInTheDocument();
       expect(filterBox()).not.toBeChecked();
     });
 
@@ -404,7 +436,7 @@ describe("Directory", () => {
       });
 
       renderDirectory();
-      await screen.findByText("Anna Ivanova");
+      await card("Anna Ivanova");
 
       // The button disables itself while the page is in flight; the checkbox
       // does not, which is how the two requests come to overlap.
@@ -418,7 +450,7 @@ describe("Directory", () => {
 
       // Appending it would have put an account-less person back on a filtered
       // list, and left a cursor from the wrong set behind.
-      expect(screen.queryByText("John Smith")).not.toBeInTheDocument();
+      expect(noCard("John Smith")).not.toBeInTheDocument();
       expect(screen.getByText("1 account holder, by last name")).toBeInTheDocument();
     });
   });
