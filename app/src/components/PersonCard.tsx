@@ -2,7 +2,7 @@ import { memo } from "react";
 import { Link } from "react-router";
 import type { PersonSummaryDto } from "@shared";
 import { displayPhone, formatSingleLineAddress, fullName } from "../lib/format";
-import { excerpt, highlightRanges, matchesTerm, phoneRanges, type Range } from "../lib/highlight";
+import { excerpt, highlightRanges, phoneRanges, type Range } from "../lib/highlight";
 import { Avatar } from "./Avatar";
 import { Highlight } from "./Highlight";
 import { PhoneLink } from "./PhoneLink";
@@ -54,9 +54,13 @@ const REVEAL_GROUPS: RevealGroup[] = [
 
 /**
  * Two lines, because a third inflates the whole grid row: every card beside a
- * greedy one grows to match it, so one record with a lot of matching fields
- * would tax its neighbours. Anything past the second is dropped in silence -- a
- * "+1 more" would be a promise the card cannot keep.
+ * tall one grows to match it, so one record with a lot of matching fields would
+ * tax its neighbours. With four groups this is now the only thing that can hide
+ * a field the search really did match, and it is a deliberate trade -- a
+ * one-character term can be in all four at once, and every card growing four
+ * lines for it would be worse than the two most informative ones. Anything past
+ * the second is dropped in silence: a "+1 more" would be a promise the card
+ * cannot keep.
  */
 const REVEAL_LIMIT = 2;
 
@@ -79,67 +83,42 @@ interface Reveal {
 }
 
 /**
- * Which hidden fields this card has to show to account for the search.
+ * Every hidden field this search landed in, up to the cap.
  *
- * Terms already visible on the card explain themselves and are dropped first,
- * so searching a name never grows a line. What is left is covered greedily
- * rather than by walking the groups in order: "newport 60641" is two terms and
- * *one* address line, and a line-per-term rule would spend both slots saying so
- * twice.
+ * Deliberately not "every field needed to account for the search". That was the
+ * first rule here and it was too clever: a term the name already carried was
+ * struck off before the groups were consulted, so Sophia Schlueter searched for
+ * as "sophia" had her name marked and her St. Sophia never mentioned. The
+ * question a reader is asking is "where does this appear?", not "is there at
+ * least one reason I am looking at this card", and a field that matched and
+ * says nothing looks like the search missed it.
  *
- * The chosen lines are then re-sorted back into REVEAL_GROUPS order, so a
- * card's shape does not depend on which term happened to be more widely held --
- * scanning a page of results, the address is always in the same place.
+ * Each line marks every term it holds, so nothing on it is silently left plain.
  *
- * A group only marks the terms it was picked for. A term already accounted for
- * by the name is not marked again three lines down, where it would look like a
- * second, weaker reason.
+ * Which lines survive the cap is decided by how many terms each covers, because
+ * one line saying two things beats two saying one -- "newport 60641" is two
+ * terms and one address. Ties fall back to REVEAL_GROUPS order, and the
+ * survivors are then re-sorted into it, so a card's shape never depends on
+ * which term happened to be more widely held: scanning a page of results, the
+ * address is always in the same place.
  */
 function revealsFor(person: PersonSummaryDto, terms: readonly string[]): Reveal[] {
   if (terms.length === 0) return [];
 
-  const name = fullName(person);
-  const remaining = new Set(
-    terms.filter(
-      (term) =>
-        !matchesTerm(name, term) &&
-        !matchesTerm(person.familyName, term) &&
-        phoneRanges(person.phone, [term]).length === 0
-    )
-  );
-  if (remaining.size === 0) return [];
+  const matched = REVEAL_GROUPS.map((group, order) => {
+    const text = group.text(person);
+    if (!text) return null;
 
-  const candidates = REVEAL_GROUPS.map((group) => ({ group, text: group.text(person) })).filter(
-    (candidate): candidate is { group: RevealGroup; text: string } => Boolean(candidate.text)
-  );
+    const ranges = group.find(person, text, terms);
+    if (ranges.length === 0) return null;
 
-  const chosen: { order: number; label: string; text: string; ranges: Range[] }[] = [];
+    const covered = terms.filter((term) => group.find(person, text, [term]).length > 0).length;
+    return { order, label: group.label, text, ranges, covered };
+  }).filter((line): line is NonNullable<typeof line> => line !== null);
 
-  while (remaining.size > 0 && chosen.length < REVEAL_LIMIT) {
-    let best: { order: number; text: string; group: RevealGroup; covered: string[] } | null = null;
-
-    for (const [order, candidate] of candidates.entries()) {
-      if (chosen.some((line) => line.order === order)) continue;
-      const covered = [...remaining].filter(
-        (term) => candidate.group.find(person, candidate.text, [term]).length > 0
-      );
-      // Strictly greater, so a tie leaves the earlier group in place.
-      if (covered.length > 0 && (!best || covered.length > best.covered.length)) {
-        best = { order, text: candidate.text, group: candidate.group, covered };
-      }
-    }
-    if (!best) break;
-
-    for (const term of best.covered) remaining.delete(term);
-    chosen.push({
-      order: best.order,
-      label: best.group.label,
-      text: best.text,
-      ranges: best.group.find(person, best.text, best.covered),
-    });
-  }
-
-  return chosen
+  return matched
+    .sort((a, b) => b.covered - a.covered || a.order - b.order)
+    .slice(0, REVEAL_LIMIT)
     .sort((a, b) => a.order - b.order)
     .map(({ label, text, ranges }) => {
       const windowed = excerpt(text, ranges, REVEAL_MAX_CHARS);

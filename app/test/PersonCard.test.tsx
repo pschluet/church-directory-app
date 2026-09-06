@@ -117,9 +117,21 @@ describe("PersonCard", () => {
     ]);
   });
 
-  it("stays as it was when the name already explains the match", () => {
-    expect(reveals(renderCard({}, ["layla"]))).toEqual([]);
-    expect(textColumn(renderCard({}, ["layla"]))).toBeInTheDocument();
+  it("shows a field that matched even when the name matched too", () => {
+    // Sophia Schlueter, patron saint St. Sophia. The name accounting for the
+    // term is not a reason to leave the saint unmentioned: a field that matched
+    // and says nothing reads as the search having missed it.
+    const container = renderCard({ firstName: "Sophia", patronSaint: "St. Sophia", email: null }, [
+      "sophia",
+    ]);
+
+    expect(marks(container)).toEqual(["Sophia", "Sophia"]);
+    expect(reveals(container)).toEqual(["Saint · St. Sophia"]);
+  });
+
+  it("stays as it was when the match is only in what it already shows", () => {
+    expect(reveals(renderCard({}, ["hadd"]))).toEqual([]);
+    expect(textColumn(renderCard({}, ["hadd"]))).toBeInTheDocument();
   });
 
   it("says an address once, however many terms landed in it", () => {
