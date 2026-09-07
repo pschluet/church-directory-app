@@ -1,5 +1,5 @@
 import { memo } from "react";
-import { Link } from "react-router";
+import { Link } from "./nav";
 import type { PersonSummaryDto } from "@shared";
 import { displayPhone, formatSingleLineAddress, fullName } from "../lib/format";
 import { excerpt, highlightRanges, phoneRanges, type Range } from "../lib/highlight";

@@ -1,11 +1,12 @@
 import { useState } from "react";
-import { Link, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FamilySummaryDto } from "@shared";
 import { familyWriteSchema } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
+import { Link } from "../components/nav";
 import {
   Badge,
   Button,
@@ -187,7 +188,9 @@ export function Families() {
             setCreating(false);
             if (joined) {
               await reloadMe();
-              navigate(`/families/${created.id}`);
+              // Opted in like every Link, so this arrival slides in and, more to
+              // the point, so the chevron can slide back out of it.
+              void navigate(`/families/${created.id}`, { viewTransition: true });
             } else {
               // Stay put so several can be set up in a row.
               await queryClient.invalidateQueries({ queryKey: qk.families(organizationId) });

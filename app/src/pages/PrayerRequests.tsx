@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router";
 import {
   PRAYER_REQUEST_BODY_MAX,
   PRAYER_REQUEST_MAX_IMAGES,
@@ -14,6 +13,7 @@ import { ApiError, api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { formatPostedAt, fullName } from "../lib/format";
 import { useMe } from "../context/MeContext";
+import { Link } from "../components/nav";
 import { useAttachmentPicker } from "../components/useAttachmentPicker";
 import { Avatar } from "../components/Avatar";
 import { PhotoLightbox } from "../components/PhotoLightbox";

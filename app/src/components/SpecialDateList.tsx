@@ -1,4 +1,4 @@
-import { Link } from "react-router";
+import { Link } from "./nav";
 import type { SpecialDateOccurrenceDto } from "@shared";
 import {
   formatDayLabel,

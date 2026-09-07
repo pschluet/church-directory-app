@@ -184,7 +184,7 @@ describe("Families", () => {
         })
       );
       expect(reload).toHaveBeenCalled();
-      expect(navigate).toHaveBeenCalledWith("/families/fam-9");
+      expect(navigate).toHaveBeenCalledWith("/families/fam-9", { viewTransition: true });
     });
 
     it("lets an admin set one up for someone else without joining", async () => {

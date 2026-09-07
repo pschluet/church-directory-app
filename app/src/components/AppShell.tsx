@@ -1,7 +1,10 @@
 import { useEffect, useRef, useState } from "react";
-import { NavLink, Outlet, useLocation } from "react-router";
+import { Outlet, useLocation } from "react-router";
 import { useAuth } from "../context/AuthContext";
 import { useMe } from "../context/MeContext";
+import { BackButton } from "./BackButton";
+import { NavLink } from "./nav";
+import { useNavStack } from "./NavStack";
 import { NotificationBell } from "./NotificationBell";
 import { SettingsLink } from "./SettingsLink";
 import { usePushRegistration } from "./usePushRegistration";
@@ -44,6 +47,7 @@ export function AppShell() {
   // follow whoever is signed in. See usePushRegistration.
   usePushRegistration();
   const { signOut, email } = useAuth();
+  const { resetToHome } = useNavStack();
   const [drawerOpen, setDrawerOpen] = useState(false);
   const location = useLocation();
   const navRef = useRef<HTMLElement>(null);
@@ -128,31 +132,76 @@ export function AppShell() {
 
   const organizationName = me?.organization?.name ?? "Parish Directory";
 
+  /*
+   * `bg-surface` on the root rather than inheriting the body's: a view
+   * transition snapshots this subtree, and the canvas background is not part of
+   * it -- without a background of its own the outgoing page slides across as a
+   * pane of glass.
+   */
   return (
-    <div className="flex min-h-screen flex-col">
+    <div className="flex min-h-screen flex-col bg-surface">
       {/* Utility bar: the organization's name, mirroring the parish site's
-          address bar. Hidden on phones, where vertical space is precious. */}
-      <div className="hidden bg-primary px-4 py-1.5 text-center text-sm text-white md:block">
+          address bar. Hidden on phones, where vertical space is precious.
+
+          `data-app-utility-bar` takes it out of the sliding page snapshot, the
+          same way the header does -- see theme.css. It is chrome, and chrome
+          does not travel. */}
+      <div
+        data-app-utility-bar
+        className="hidden bg-primary px-4 py-1.5 text-center text-sm text-white md:block"
+      >
         {organizationName}
       </div>
 
       <header
         ref={headerRef}
+        data-app-header
         className="sticky top-0 z-40 border-b border-line bg-surface shadow-sm"
       >
-        <div className="mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 md:flex-col md:gap-2 md:py-4">
+        <div className="relative mx-auto flex max-w-6xl items-center justify-between gap-3 px-4 py-3 md:flex-col md:gap-2 md:py-4">
           {/*
-            min-w-0 lets a long parish name wrap instead of forcing the flex row
-            wider than the viewport -- without it the name pushes the menu
-            button off the right edge on a phone and the whole page scrolls
-            sideways.
+            min-w-0, on both the group and the name, lets a long parish name wrap
+            instead of forcing the flex row wider than the viewport -- without it
+            the name pushes the menu button off the right edge on a phone and the
+            whole page scrolls sideways.
+
+            Under `md` the chevron and the parish name are one left-hand unit, so
+            they share a flex group and `justify-between` keeps seeing two
+            children rather than three. From `md` up `md:contents` dissolves the
+            group: the name goes back to being a centred child of the column, and
+            the chevron -- absolutely positioned against the `relative` container
+            -- leaves the layout alone. That is what lets there be one button
+            instead of the two the bell needs below.
           */}
-          <NavLink
-            to="/"
-            className="min-w-0 text-lg font-bold leading-tight text-ink transition hover:text-accent md:text-center md:text-2xl"
-          >
-            {organizationName}
-          </NavLink>
+          <div className="flex min-w-0 items-center gap-1 md:contents">
+            <BackButton />
+            <NavLink
+              to="/"
+              /*
+               * Home, and a clean slate: the stack is discarded and the chevron
+               * goes with it, so the directory becomes the start of the session
+               * again rather than one more rung to climb back down.
+               *
+               * Still a real link. It keeps its `href`, so cmd-click and
+               * right-click behave and a screen reader still announces where it
+               * goes; only a plain left click is taken over here. Modified and
+               * non-primary clicks are handed straight back, which is what the
+               * guard is for -- React Router's Link calls this first and defers
+               * to `defaultPrevented`, so declining to prevent is how it is
+               * told to carry on as normal.
+               */
+              onClick={(event) => {
+                if (event.defaultPrevented) return;
+                if (event.button !== 0) return;
+                if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+                event.preventDefault();
+                resetToHome();
+              }}
+              className="min-w-0 text-lg font-bold leading-tight text-ink transition hover:text-accent md:text-center md:text-2xl"
+            >
+              {organizationName}
+            </NavLink>
+          </div>
 
           {/*
             The bell has to appear twice, because this row is not the same row at
@@ -221,6 +270,16 @@ export function AppShell() {
                   <NavLink
                     to={item.to}
                     end={item.to === "/"}
+                    /*
+                     * Closed here as well as in the effect above, and the effect
+                     * is not enough on its own. It runs on the path changing,
+                     * which now happens *inside* the view transition -- so the
+                     * outgoing snapshot was taken with the drawer still open,
+                     * and the header visibly collapsed from tall to short in the
+                     * middle of the slide. Closing it in the click puts it in the
+                     * same commit as the navigation, before anything is captured.
+                     */
+                    onClick={() => setDrawerOpen(false)}
                     className={({ isActive }) =>
                       `tap-target flex items-center rounded-md px-3 py-2 font-bold transition md:py-1.5 ${
                         isActive

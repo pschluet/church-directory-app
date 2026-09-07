@@ -171,6 +171,28 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     // Otherwise the next person to sign in on this tab reads the last one's
     // directory straight out of memory before their own /me lands.
     queryClient.clear();
+    /*
+     * And the same argument one layer out. Routing the app through a data router
+     * for the back chevron's slide (see App.tsx) gave React Router two
+     * per-tab caches of its own: the scroll offset of each history entry, and
+     * the pairs of paths it has animated between. Neither holds a name, an
+     * address or a phone number, but the second is a list of the `/people/<id>`
+     * and `/families/<id>` pages the last person visited, which is not something
+     * to leave sitting in the tab for whoever signs in next.
+     *
+     * Both keys are React Router's own and neither is switchable off. It flushes
+     * them on `pagehide` rather than continuously, so in a tab that has never
+     * been backgrounded there is nothing there yet and this does nothing --
+     * which is the uninteresting case. The one worth covering is the tab that
+     * has been away and come back.
+     */
+    try {
+      sessionStorage.removeItem("react-router-scroll-positions");
+      sessionStorage.removeItem("remix-router-transitions");
+    } catch {
+      // Storage can be unavailable (private mode, blocked cookies); there is
+      // nothing to clear in that case either.
+    }
   }, [queryClient]);
 
   const value = useMemo(

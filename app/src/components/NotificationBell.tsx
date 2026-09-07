@@ -1,6 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Link } from "react-router";
+import { Link } from "./nav";
 import type { InboxDto, NotificationType } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";

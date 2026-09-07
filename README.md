@@ -20,6 +20,40 @@ Accounts are invite-only, created by a parish administrator.
   whatever phone last signed in. Every org-scoped key is namespaced by organization id in
   `app/src/lib/queryKeys.ts`: `api()` appends `?orgId=` from `localStorage` itself, so a
   key that left it out would serve one parish's directory to another.
+
+  Two small exceptions arrived with *Going back*, both React Router's own and neither
+  switchable off: the scroll offset of each history entry, and the pairs of paths it has
+  animated between. They are per-tab `sessionStorage`, and what they hold is integers under
+  opaque random history keys plus a list of `/people/<id>` and `/families/<id>` — record ids
+  with no name, address or phone number attached, useless without a session, and gone when
+  the tab closes. Signing out removes both regardless, beside the `queryClient.clear()` that
+  is there for the same reason.
+- **Going back:** the app is a stack. A left chevron appears in the top left of the header
+  once you have moved off the page you started on, and walks back to it; going back slides
+  the current page away to the right to uncover the previous one, which returns with its
+  scroll offset and its settings intact. Three things make that work, and each of them is
+  load-bearing. The router is a **data router** (`createBrowserRouter`), because
+  `viewTransition` and `<ScrollRestoration>` do not exist in the declarative mode the app
+  used before — the prop is accepted and silently ignored. The animation is the **View
+  Transitions API**, not a transform on the live page: the browser snapshots into
+  viewport-fixed pseudo-elements and leaves layout alone, where a transform on any ancestor
+  would become the containing block for the audit log's `sticky` day headings and strand
+  every one of them. And **every forward link opts in**, which is why they all come from
+  `app/src/components/nav.tsx` rather than from `react-router` — the router only animates a
+  *back* navigation for a pair of paths it recorded on the way in, so a link that forgot the
+  prop would be a page you could slide into and not out of, and nothing would fail loudly.
+  Browsers without the API simply navigate instantly; there is nothing to feature-detect.
+
+  Two distinctions the obvious implementation gets wrong. "One entry back" is not "the
+  previous page": Directory's filter and each of the audit log's five push deliberately, so
+  the chevron steps over consecutive entries sharing its own path — and stays hidden when
+  every entry behind it is one, because a chevron on the directory offering to return to the
+  directory is claiming a parent it has not got. And a navigation that did not change the
+  path is animated as neither direction but a plain cross-fade, since the browser's own back
+  button can undo a checkbox and cannot be made to skip; without that, unticking one slid
+  the whole page sideways. `app/src/components/NavStack.tsx` holds both, keyed off React
+  Router's `history.state.idx` so the chevron survives a reload and is correctly absent for
+  someone arriving on a deep link from outside.
 - **Installable:** a PWA, so the directory can live on a home screen — this is the app
   someone opens standing in the parking lot after a service, and one tap beats recalling a
   URL. It is also what makes Web Push work at all, since iOS only delivers it to a site
@@ -201,7 +235,7 @@ codes arrive in your actual inbox.
 ```sh
 npm run ci:check                        # Biome lint + format
 npm run typecheck --workspaces
-npm test                                # 878 tests across api, app and infra
+npm test                                # 1124 tests across api, app and infra
 ```
 
 The API tests run against a real Postgres (`directory_test`, migrated automatically by

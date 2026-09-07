@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { Link, MemoryRouter, Route, Routes, useNavigate } from "react-router";
+import { NavStackProvider } from "../src/components/NavStack";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { MeDto, Role } from "@shared";
 import { AppShell } from "../src/components/AppShell";
@@ -59,6 +60,17 @@ vi.mock("../src/context/MeContext", () => ({
   }),
 }));
 
+/** Stands in for the browser's own back button, which the chevron cannot
+    intercept and which must animate correctly all the same. */
+function BrowserBack() {
+  const navigate = useNavigate();
+  return (
+    <button type="button" onClick={() => void navigate(-1)}>
+      Browser back
+    </button>
+  );
+}
+
 function renderShell(role: Role = "USER", orgs: { id: string; name: string }[] = []) {
   meState.role = role;
   meState.availableOrganizations = orgs;
@@ -66,8 +78,44 @@ function renderShell(role: Role = "USER", orgs: { id: string; name: string }[] =
     <QueryClientProvider client={testQueryClient()}>
       <MemoryRouter initialEntries={["/"]}>
         <Routes>
-          <Route element={<AppShell />}>
-            <Route index element={<p>Directory page</p>} />
+          {/*
+            The shell reads the nav stack for its back chevron, so the provider
+            has to be here too -- in the app it wraps the shell from the layout
+            route (see App.tsx). A second page to navigate to, so cases about the
+            chevron have somewhere to go.
+          */}
+          <Route
+            element={
+              <NavStackProvider>
+                <AppShell />
+                <BrowserBack />
+              </NavStackProvider>
+            }
+          >
+            <Route
+              index
+              element={
+                <>
+                  <p>Directory page</p>
+                  <Link to="/people/1">Open a person</Link>
+                  {/* A push that only changes the query string, which is what
+                      Directory's filter checkbox does. */}
+                  <Link to="/?shown=all">Narrow the list</Link>
+                </>
+              }
+            />
+            <Route
+              path="people/:id"
+              element={
+                <>
+                  <p>Person page</p>
+                  {/* Same path, different query string -- what Directory's
+                      filter and the audit log's do, and what the chevron has
+                      to step over rather than treat as a page. */}
+                  <Link to="/people/1?shown=all">Change a filter</Link>
+                </>
+              }
+            />
           </Route>
         </Routes>
       </MemoryRouter>
@@ -329,5 +377,177 @@ describe("the published header height", () => {
     stubHeaderHeight(232);
     window.dispatchEvent(new Event("resize"));
     expect(readVar()).toBe("232px");
+  });
+});
+
+describe("the back chevron", () => {
+  const chevron = () => screen.queryByRole("button", { name: "Back" });
+
+  it("is not there where you started", () => {
+    /*
+     * The point of the whole nav stack: at the first entry there is nothing
+     * behind it that belongs to the app, and offering to go back would either
+     * do nothing or leave the app entirely. That is also the case for somebody
+     * arriving on a deep link from outside.
+     */
+    renderShell();
+    expect(chevron()).not.toBeInTheDocument();
+  });
+
+  it("stays away when a filter pushed an entry for the same page", async () => {
+    /*
+     * Directory's "account holders only" pushes on purpose, so the browser's
+     * back button undoes it. That is a history entry but it is not somewhere
+     * you went: offering to go "back" from the directory to the directory is
+     * the chevron claiming the page has a parent when it has not.
+     */
+    renderShell();
+    await userEvent.click(screen.getByRole("link", { name: "Narrow the list" }));
+
+    expect(chevron()).not.toBeInTheDocument();
+  });
+
+  it("appears once you have gone somewhere, as a full-size touch target", async () => {
+    renderShell();
+    await userEvent.click(screen.getByRole("link", { name: "Open a person" }));
+
+    expect(await screen.findByText("Person page")).toBeInTheDocument();
+    const back = chevron();
+    expect(back).toBeInTheDocument();
+    expect(back).toHaveClass("tap-target");
+  });
+
+  it("goes back to the page you came from", async () => {
+    renderShell();
+    await userEvent.click(screen.getByRole("link", { name: "Open a person" }));
+    await screen.findByText("Person page");
+
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+
+    expect(await screen.findByText("Directory page")).toBeInTheDocument();
+    // And back at the start, it takes itself away again.
+    expect(chevron()).not.toBeInTheDocument();
+  });
+
+  it("steps over entries that only changed the query string", async () => {
+    /*
+     * Directory's "account holders only" and each of the audit log's filters
+     * push deliberately, so the browser's own back button undoes them. This is
+     * the other half of that decision: the chevron is a *page* back button, so
+     * two filter changes must not cost two taps and two full page slides.
+     */
+    renderShell();
+    await userEvent.click(screen.getByRole("link", { name: "Open a person" }));
+    await screen.findByText("Person page");
+    await userEvent.click(screen.getByRole("link", { name: "Change a filter" }));
+    await userEvent.click(screen.getByRole("link", { name: "Change a filter" }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+
+    expect(await screen.findByText("Directory page")).toBeInTheDocument();
+  });
+
+  /*
+   * The direction the CSS animates from. Asserted here because it is the only
+   * part of the transition a test can see: jsdom has no
+   * `document.startViewTransition`, so React Router takes its un-animated path
+   * and the keyframes in theme.css never run.
+   */
+  it("tells the stylesheet which way the page should slide", async () => {
+    renderShell();
+    await userEvent.click(screen.getByRole("link", { name: "Open a person" }));
+    await screen.findByText("Person page");
+    expect(document.documentElement.dataset.nav).toBe("forward");
+
+    await userEvent.click(screen.getByRole("button", { name: "Back" }));
+    await screen.findByText("Directory page");
+    expect(document.documentElement.dataset.nav).toBe("back");
+  });
+
+  it("does not slide the page sideways to apply or undo a filter", async () => {
+    /*
+     * The chevron steps over same-page entries, but the browser's own back
+     * button cannot be made to -- so the direction has to say "none" and let the
+     * stylesheet cross-fade instead. Sliding the whole directory off to the
+     * right to untick a checkbox is the artefact this prevents, and it is only
+     * reachable by the one control we do not own.
+     */
+    renderShell();
+
+    await userEvent.click(screen.getByRole("link", { name: "Narrow the list" }));
+    expect(document.documentElement.dataset.nav).toBe("none");
+
+    await userEvent.click(screen.getByRole("button", { name: "Browser back" }));
+    await waitFor(() => expect(document.documentElement.dataset.nav).toBe("none"));
+  });
+
+  it("starts over when the header title is clicked", async () => {
+    /*
+     * The title is not one more step deeper. Clicking it goes home *and*
+     * discards the stack, so the directory becomes the start of the session
+     * again -- which means the chevron has to go with it, and the page has to
+     * slide away to the right rather than in from it.
+     */
+    renderShell();
+    await userEvent.click(screen.getByRole("link", { name: "Open a person" }));
+    await screen.findByText("Person page");
+    expect(chevron()).toBeInTheDocument();
+
+    await userEvent.click(screen.getAllByRole("link", { name: "All Saints" })[0] as HTMLElement);
+
+    expect(await screen.findByText("Directory page")).toBeInTheDocument();
+    expect(chevron()).not.toBeInTheDocument();
+    expect(document.documentElement.dataset.nav).toBe("back");
+  });
+
+  it("keeps the title a real link for modified clicks", async () => {
+    // It has to stay openable in a new tab, and announce itself as a link. Only
+    // the plain left click is taken over.
+    renderShell();
+    await userEvent.click(screen.getByRole("link", { name: "Open a person" }));
+    await screen.findByText("Person page");
+
+    const title = screen.getAllByRole("link", { name: "All Saints" })[0] as HTMLElement;
+    expect(title).toHaveAttribute("href", "/");
+
+    /*
+     * A cmd-click is the browser's business -- open in a new tab -- so neither
+     * the reset nor the router should react to it, and the page must not move.
+     *
+     * One `userEvent` instance for all three steps, deliberately: the top-level
+     * `userEvent.click` sets itself up afresh each call and would drop the held
+     * modifier, sending a plain click and testing the opposite of this.
+     */
+    const user = userEvent.setup();
+    await user.keyboard("{Meta>}");
+    await user.click(title);
+    await user.keyboard("{/Meta}");
+
+    expect(screen.getByText("Person page")).toBeInTheDocument();
+    expect(chevron()).toBeInTheDocument();
+  });
+
+  it("marks the chrome that must not slide with the page", () => {
+    /*
+     * Both of these are siblings of the page content, so without a transition
+     * name of their own they are captured as part of the sliding snapshot and
+     * travel off to the right with it -- which the red utility bar visibly did.
+     * The names themselves live in theme.css and jsdom applies no CSS, so what
+     * is worth pinning here is that the hooks the stylesheet needs are present.
+     */
+    const { container } = renderShell();
+    expect(container.querySelector("[data-app-header]")).toBeInTheDocument();
+    expect(container.querySelector("[data-app-utility-bar]")).toBeInTheDocument();
+  });
+
+  it("leaves no direction behind when the shell goes away", async () => {
+    // Signing out unmounts the shell, and a stale attribute would describe a
+    // navigation that is over -- the same reason the header height is withdrawn.
+    const { unmount } = renderShell();
+    await userEvent.click(screen.getByRole("link", { name: "Open a person" }));
+    await screen.findByText("Person page");
+
+    unmount();
+    expect(document.documentElement.dataset.nav).toBeUndefined();
   });
 });

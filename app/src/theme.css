@@ -79,6 +79,163 @@
   }
 }
 
+/*
+ * The sliding page transition, for the back chevron in the header.
+ *
+ * Driven by the View Transitions API, which React Router starts for us on any
+ * navigation that opted in (see components/nav.tsx). Nothing here transforms the
+ * live page: the browser snapshots the old and new states into viewport-fixed
+ * pseudo-elements and animates those instead. That is not an implementation
+ * detail, it is the reason this approach was chosen -- translating the real tree
+ * would re-parent every `position: sticky` descendant to the transformed
+ * ancestor, and the audit log's day headings would slide out from under the
+ * header they are pinned to.
+ *
+ * Browsers without the API get an ordinary instant navigation: React Router
+ * checks for `document.startViewTransition` and takes the plain path when it is
+ * missing, so there is nothing to feature-detect here.
+ */
+
+@layer base {
+  /*
+   * The sticky header is lifted out of the page snapshot into a transition group
+   * of its own. Without this it is part of `root` and slides off to the right
+   * along with the page under it, which is the one thing a sticky header must
+   * not do. Having its own group also means the chevron appearing cross-fades
+   * inside the header instead of snapping the parish name sideways.
+   *
+   * Scoped to the attribute and not to `header`, because PageHeading renders one
+   * of those on every page -- and two elements sharing a `view-transition-name`
+   * in a single transition is an error that abandons the whole animation.
+   */
+  [data-app-header] {
+    view-transition-name: app-header;
+  }
+
+  /*
+   * The red utility bar above the header, out of the page snapshot for the same
+   * reason. It is not sticky -- it scrolls away, and the header takes over --
+   * which is why it needs the second rule below as well as this one.
+   */
+  [data-app-utility-bar] {
+    view-transition-name: app-utility-bar;
+  }
+}
+
+/*
+ * Pinned rather than merely named. A named group animates between where the
+ * element was and where it now is, and because this bar scrolls with the
+ * document those two can be different: leaving a page scrolled halfway down for
+ * one at the top, the bar would be captured off-screen above and then slide down
+ * into place. Refusing the group animation makes it take the new position
+ * outright, so it cannot travel under any scroll offset. The header does not
+ * need this -- it is `sticky top-0`, so it is in the same place either way.
+ */
+::view-transition-group(app-utility-bar) {
+  animation: none;
+}
+
+/*
+ * Clipped to the viewport. The outgoing page finishes its animation sitting a
+ * full width to the right, and `clip` here rather than `overflow-x: hidden` on
+ * `html` is deliberate: hiding overflow on the root makes it a scroll container
+ * and takes the sticky header's scrollport with it.
+ */
+::view-transition {
+  overflow: clip;
+}
+
+/*
+ * `data-nav="none"` -- a navigation that stayed on the same page -- is
+ * deliberately absent below, and so falls through to the browser's own
+ * cross-fade. That is every filter on Directory and the audit log, all of which
+ * push a history entry on purpose; undoing one should not slide the whole page
+ * sideways. See NavStack, which decides the value.
+ *
+ * Under `prefers-reduced-motion: reduce` none of this applies either, and the
+ * same cross-fade is what is left: the page changes without travelling. This is
+ * the app's first animation of any consequence, so it is also the first to ask.
+ */
+@media (prefers-reduced-motion: no-preference) {
+  html[data-nav="back"]::view-transition-old(root),
+  html[data-nav="back"]::view-transition-new(root),
+  html[data-nav="forward"]::view-transition-old(root),
+  html[data-nav="forward"]::view-transition-new(root) {
+    animation-duration: 260ms;
+    animation-timing-function: cubic-bezier(0.32, 0.72, 0, 1);
+    /* The keyframes below give only one end of each animation; `both` supplies
+       the other from the snapshot's own resting state. */
+    animation-fill-mode: both;
+    /*
+     * The default cross-fade sets `mix-blend-mode: plus-lighter` on both
+     * snapshots, which is right for two things fading through each other and
+     * badly wrong for two opaque pages sliding across one another -- the overlap
+     * washes out to white.
+     */
+    mix-blend-mode: normal;
+    /*
+     * A page's own background comes from `html`/`body`, which propagates to the
+     * viewport canvas -- and the canvas is not part of the snapshot. AppShell's
+     * root carries `bg-surface` so there is something to capture, and this is
+     * the belt to that pair of braces: without a colour anywhere, the two pages
+     * slide across each other as panes of glass.
+     */
+    background-color: var(--color-surface);
+  }
+
+  /*
+   * Going back: the page you were on slides away to the right, over the top of
+   * the one it uncovers, which eases in from a quarter step to the left. The
+   * z-index flip is what makes it read as uncovering rather than pushing -- by
+   * default the incoming snapshot paints on top -- and the parallax is what
+   * makes the two read as a stack rather than a pair of slides being swapped.
+   */
+  html[data-nav="back"]::view-transition-old(root) {
+    animation-name: page-exit-right;
+    z-index: 2;
+  }
+
+  html[data-nav="back"]::view-transition-new(root) {
+    animation-name: page-enter-left;
+    z-index: 1;
+  }
+
+  /* Going deeper: the same movement mirrored, so the two are each other's undo. */
+  html[data-nav="forward"]::view-transition-old(root) {
+    animation-name: page-exit-left;
+    z-index: 1;
+  }
+
+  html[data-nav="forward"]::view-transition-new(root) {
+    animation-name: page-enter-right;
+    z-index: 2;
+  }
+}
+
+@keyframes page-exit-right {
+  to {
+    translate: 100% 0;
+  }
+}
+
+@keyframes page-enter-left {
+  from {
+    translate: -25% 0;
+  }
+}
+
+@keyframes page-exit-left {
+  to {
+    translate: -25% 0;
+  }
+}
+
+@keyframes page-enter-right {
+  from {
+    translate: 100% 0;
+  }
+}
+
 @utility tap-target {
   /* 44px is the smallest comfortable touch target; matters most for the phone
      links, calendar day cells and inheritance toggles. */

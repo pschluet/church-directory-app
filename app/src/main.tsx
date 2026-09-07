@@ -1,9 +1,9 @@
 import { lazy, StrictMode, Suspense } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter } from "react-router";
+import { RouterProvider } from "react-router/dom";
 import { Amplify } from "aws-amplify";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { App } from "./App";
+import { router } from "./App";
 import { AuthProvider } from "./context/AuthContext";
 import { DEV_AUTH } from "./lib/api";
 import { createQueryClient } from "./lib/queryClient";
@@ -40,20 +40,28 @@ const Devtools = lazy(async () => {
   return { default: ReactQueryDevtools };
 });
 
+/*
+ * `RouterProvider` from `react-router/dom`, not from `react-router`: only that
+ * build wires up `ReactDOM.flushSync`, which the router needs to drive a view
+ * transition. The bare one warns and falls back to an un-animated update.
+ *
+ * The router is now the innermost provider rather than the outermost, because
+ * the sign-in gate moved inside it (see App.tsx) and still needs the auth
+ * context above it. QueryClientProvider stays above AuthProvider for the reason
+ * given there.
+ */
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <BrowserRouter>
-      <QueryClientProvider client={queryClient}>
-        <AuthProvider>
-          <App />
-        </AuthProvider>
-        {import.meta.env.DEV && (
-          <Suspense fallback={null}>
-            <Devtools initialIsOpen={false} />
-          </Suspense>
-        )}
-      </QueryClientProvider>
-    </BrowserRouter>
+    <QueryClientProvider client={queryClient}>
+      <AuthProvider>
+        <RouterProvider router={router} />
+      </AuthProvider>
+      {import.meta.env.DEV && (
+        <Suspense fallback={null}>
+          <Devtools initialIsOpen={false} />
+        </Suspense>
+      )}
+    </QueryClientProvider>
   </StrictMode>
 );
 

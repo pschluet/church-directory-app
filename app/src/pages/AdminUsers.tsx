@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { Link } from "react-router";
+import { useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   AppUserDto,
@@ -26,6 +26,7 @@ import {
   Spinner,
   inputClass,
 } from "../components/ui";
+import { Link } from "../components/nav";
 import { SearchField } from "../components/SearchField";
 
 /**
@@ -76,7 +77,32 @@ export function AdminUsers() {
   const [deleting, setDeleting] = useState<AppUserDto | null>(null);
   const [busy, setBusy] = useState(false);
   const [inviting, setInviting] = useState(false);
-  const [search, setSearch] = useState("");
+  /*
+   * In the URL rather than in state, so the back chevron brings the filtered
+   * table back rather than the whole list -- opening somebody's account from a
+   * search of four hundred people and returning to an unfiltered table is the
+   * case this page had.
+   *
+   * Written on every keystroke and always as a `replace`, with no debounce and
+   * no separate buffer for what the box shows. Both of those exist on Directory
+   * because typing there is a request; here it filters accounts already in hand
+   * (see the note above), so the write is free and synchronous and the box can
+   * read straight from the URL without the caret ever getting behind it.
+   */
+  const [params, setParams] = useSearchParams();
+  const search = params.get("q") ?? "";
+
+  function setSearch(next: string): void {
+    setParams(
+      (prev) => {
+        const updated = new URLSearchParams(prev);
+        if (next) updated.set("q", next);
+        else updated.delete("q");
+        return updated;
+      },
+      { replace: true }
+    );
+  }
   // Mutation failures only; the read's own is `usersQuery.error`.
   const [actionError, setActionError] = useState<string | null>(null);
 

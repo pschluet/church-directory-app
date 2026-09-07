@@ -1,7 +1,8 @@
-import { Navigate, Route, Routes } from "react-router";
+import { createBrowserRouter, Navigate, ScrollRestoration } from "react-router";
 import { useAuth } from "./context/AuthContext";
 import { MeProvider, useMe } from "./context/MeContext";
 import { AppShell } from "./components/AppShell";
+import { NavStackProvider } from "./components/NavStack";
 import { ErrorNotice, Spinner } from "./components/ui";
 import { Login } from "./pages/Login";
 import { Directory } from "./pages/Directory";
@@ -16,7 +17,73 @@ import { AdminUsers } from "./pages/AdminUsers";
 import { AdminOrganizations } from "./pages/AdminOrganizations";
 import { AuditLog } from "./pages/AuditLog";
 
-export function App() {
+/*
+ * A data router rather than `<BrowserRouter>` + `<Routes>`, and not for the sake
+ * of loaders -- there are none, and every request still goes through TanStack
+ * Query. It is because `viewTransition` and `<ScrollRestoration>` only exist in
+ * this mode: declarative mode accepts the `viewTransition` prop and silently
+ * ignores it, and `useScrollRestoration` throws outright without a data router
+ * behind it. The sliding back navigation needs both.
+ *
+ * Built once at module scope, as a data router must be -- rebuilding it in
+ * render would throw the history away on every pass.
+ */
+export const router = createBrowserRouter([
+  {
+    element: <RootGate />,
+    children: [
+      { index: true, element: <Directory /> },
+      { path: "dates", element: <UpcomingDates /> },
+      { path: "people/:id", element: <PersonDetail /> },
+      { path: "me", element: <MyDetails /> },
+      { path: "settings", element: <Settings /> },
+      { path: "prayer-requests", element: <PrayerRequests /> },
+      { path: "families", element: <Families /> },
+      { path: "families/:id", element: <FamilyDetail /> },
+      {
+        path: "admin/users",
+        element: (
+          <RequireRole requires="admin">
+            <AdminUsers />
+          </RequireRole>
+        ),
+      },
+      /*
+        Admins and above, matching `requireRole("ADMIN")` on /api/audit. A
+        prayer request admin is a member with one extra privilege, and this
+        holds every edit anyone in the parish has made.
+      */
+      {
+        path: "audit-log",
+        element: (
+          <RequireRole requires="admin">
+            <AuditLog />
+          </RequireRole>
+        ),
+      },
+      {
+        path: "admin/organizations",
+        element: (
+          <RequireRole requires="superAdmin">
+            <AdminOrganizations />
+          </RequireRole>
+        ),
+      },
+      // Unknown paths go home rather than showing a dead end.
+      { path: "*", element: <Navigate to="/" replace /> },
+    ],
+  },
+]);
+
+/**
+ * The layout route: the sign-in gate, and the frame every page sits in.
+ *
+ * The gate is here rather than above the router because a data router is built
+ * before anything has rendered and cannot be conditional. Nothing below renders
+ * until there is a session, so there is still no `/login` route -- signing out
+ * simply takes this back to the form.
+ */
+function RootGate() {
   const { status } = useAuth();
 
   if (status === "loading") return <Spinner label="Signing you in" />;
@@ -24,12 +91,12 @@ export function App() {
 
   return (
     <MeProvider>
-      <SignedInRoutes />
+      <SignedIn />
     </MeProvider>
   );
 }
 
-function SignedInRoutes() {
+function SignedIn() {
   const { me, loading, error, reload } = useMe();
 
   // The token is valid but the directory has no account for it -- deleted, or
@@ -44,49 +111,25 @@ function SignedInRoutes() {
   if (loading && !me) return <Spinner label="Loading your directory" />;
 
   return (
-    <Routes>
-      <Route element={<AppShell />}>
-        <Route index element={<Directory />} />
-        <Route path="dates" element={<UpcomingDates />} />
-        <Route path="people/:id" element={<PersonDetail />} />
-        <Route path="me" element={<MyDetails />} />
-        <Route path="settings" element={<Settings />} />
-        <Route path="prayer-requests" element={<PrayerRequests />} />
-        <Route path="families" element={<Families />} />
-        <Route path="families/:id" element={<FamilyDetail />} />
-        <Route
-          path="admin/users"
-          element={
-            <RequireRole requires="admin">
-              <AdminUsers />
-            </RequireRole>
-          }
-        />
-        {/*
-          Admins and above, matching `requireRole("ADMIN")` on /api/audit. A
-          prayer request admin is a member with one extra privilege, and this
-          holds every edit anyone in the parish has made.
-        */}
-        <Route
-          path="audit-log"
-          element={
-            <RequireRole requires="admin">
-              <AuditLog />
-            </RequireRole>
-          }
-        />
-        <Route
-          path="admin/organizations"
-          element={
-            <RequireRole requires="superAdmin">
-              <AdminOrganizations />
-            </RequireRole>
-          }
-        />
-        {/* Unknown paths go home rather than showing a dead end. */}
-        <Route path="*" element={<Navigate to="/" replace />} />
-      </Route>
-    </Routes>
+    <NavStackProvider>
+      {/*
+        Puts a page back where it was rather than at the top, which is half of
+        what makes the back chevron worth having -- returning to the directory
+        from somebody's page should return you to the row you tapped.
+
+        It keeps `{ key: scrollY }` in `sessionStorage`, and the router keeps the
+        pairs of paths it has animated between beside it. Worth being explicit
+        about, because the rule everywhere else here is that nothing goes to
+        disk. What these hold is offsets under opaque random history keys, and a
+        list of `/people/<id>` and `/families/<id>` paths -- record ids, with no
+        name, address or phone number attached to them, per tab, useless without
+        a session, and gone when the tab closes. That is a different class of
+        thing from the directory itself, which is what the rule is for. Signing
+        out clears both anyway; see AuthContext.
+      */}
+      <ScrollRestoration />
+      <AppShell />
+    </NavStackProvider>
   );
 }
 

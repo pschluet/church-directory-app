@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Link, useNavigate, useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   FamilyDto,
@@ -12,6 +12,7 @@ import type {
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
+import { Link } from "../components/nav";
 import { Avatar } from "../components/Avatar";
 import { PersonForm } from "../components/PersonForm";
 import { PhoneLink } from "../components/PhoneLink";
