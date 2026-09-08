@@ -561,9 +561,43 @@ normal `git push`.
      server key missing no address ever gets a pin, and both look like a working deployment
      until somebody opens the page.
 
-   Then switch Map View on for a parish from *Churches*, and invoke the refresh function with
-   `{"backfill": true}` to geocode the addresses it already has. The flag alone populates
-   nothing.
+   Then switch Map View on for a parish from *Churches* and **run the backfill**. The switch
+   alone populates nothing: a parish that had the map off was never geocoded, so its addresses
+   arrive with no `place_id` and its map opens correctly empty.
+
+   ```sh
+   FN=$(aws cloudformation describe-stacks --stack-name ChurchDirectoryStack \
+     --region us-east-1 \
+     --query "Stacks[0].Outputs[?OutputKey=='RefreshGeocodesFunctionName'].OutputValue" \
+     --output text)
+
+   aws lambda invoke \
+     --function-name "$FN" --region us-east-1 \
+     --payload '{"backfill":true}' \
+     --cli-binary-format raw-in-base64-out \
+     --cli-read-timeout 0 \
+     /dev/stdout
+   ```
+
+   It prints what it did -- `{ refreshed, backfilled, dropped, failed }` -- and is safe to
+   re-run: an address that already has a pin is skipped, so a second run costs nothing. Add
+   `"organizationId": "<uuid>"` to the payload to do one parish rather than every enabled one.
+
+   Two flags that are not optional. **`--cli-binary-format raw-in-base64-out`**, because CLI v2
+   otherwise expects the payload base64-encoded and rejects plain JSON with a message about
+   invalid base64. And **`--cli-read-timeout 0`**, because the function may run for up to five
+   minutes against the default sixty-second socket timeout -- without it the CLI gives up and
+   reports a failure while the backfill is still running perfectly well, and re-running it looks
+   like the fix when it is only a second run of something that already worked.
+
+   The same handler runs on the daily EventBridge schedule, which is what keeps coordinates
+   inside Google's thirty-day caching window; the payload is only needed for the one-off
+   backfill. Locally there is a script instead, which reads `api/.env`:
+
+   ```sh
+   npm run geocode:backfill -w api            # every enabled parish
+   npm run geocode:backfill -w api -- <orgId> # just one
+   ```
 
 9. **Create the first parish** from *Churches*, then invite an administrator for it.
 
