@@ -31,6 +31,17 @@ export const qk = {
 
   org: (orgId: string | null) => ["org", orgId] as const,
 
+  /**
+   * The church address, as an administrator's settings page reads it.
+   *
+   * Org-namespaced like everything else under `org`, even though the endpoint
+   * takes no id: `api()` appends `?orgId=` from localStorage, so the answer is
+   * about whichever parish the caller is acting in. A super admin switching
+   * parishes would otherwise be shown -- and would edit -- the address of the
+   * one they looked at first.
+   */
+  churchAddress: (orgId: string | null) => [...qk.org(orgId), "church-address"] as const,
+
   directoryRoot: (orgId: string | null) => [...qk.org(orgId), "directory"] as const,
   directory: (orgId: string | null, accountHoldersOnly: boolean) =>
     [...qk.directoryRoot(orgId), "browse", { accountHoldersOnly }] as const,
@@ -47,6 +58,17 @@ export const qk = {
       "lookup",
       { q, exclude: exclude ?? null, accounts: accounts ?? null },
     ] as const,
+
+  /**
+   * Every pin in the parish, in one entry.
+   *
+   * Nothing invalidates this, on purpose: `MapView` asks for it fresh on every
+   * mount rather than holding it. The pins depend on addresses, family names,
+   * family membership, merges, deletes, photos and the church address, and a
+   * key that had to be swept from all of those would be swept from most of
+   * them. See the comment on the query itself.
+   */
+  map: (orgId: string | null) => [...qk.org(orgId), "map"] as const,
 
   families: (orgId: string | null) => [...qk.org(orgId), "families"] as const,
   family: (orgId: string | null, id: string) => [...qk.families(orgId), id] as const,

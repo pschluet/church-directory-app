@@ -8,6 +8,7 @@ import { clearInheritanceFor, validateInheritance } from "../services/inheritanc
 import { cancelPendingJoinRequests } from "../services/membership";
 import { loadPerson, PERSON_WRITE_COLUMNS } from "../services/persons";
 import { deletePhoto } from "../photos";
+import { addressToLine, mapViewEnabledFor, resolveAddress } from "../services/addresses";
 import {
   createPersonSchema,
   personWriteSchema,
@@ -90,6 +91,59 @@ routes.get("/:id", async (c) => {
   return c.json(person);
 });
 
+/**
+ * The keys that mean "the address changed", and so that the pin has to be
+ * resolved again.
+ *
+ * `placeId` counts: a payload carrying only that is somebody picking a
+ * suggestion without editing the text, which is exactly when a new pin is
+ * wanted. Key presence rather than value comparison, for the same reason
+ * `buildWrite` uses it -- a PATCH that does not mention the address must not
+ * disturb it.
+ */
+const ADDRESS_KEYS = [
+  "addressLine1",
+  "addressLine2",
+  "city",
+  "state",
+  "postalCode",
+  "country",
+  "placeId",
+] as const;
+
+function touchesAddress(payload: Partial<PersonWrite>): boolean {
+  return ADDRESS_KEYS.some((key) => key in payload);
+}
+
+/**
+ * Resolve the pin for a write, and overwrite whatever `placeId` the client
+ * sent with the answer.
+ *
+ * The overwrite is the security property, not a tidy-up: `placeId` is in
+ * `PERSON_WRITE_COLUMNS` so that Autocomplete's answer can reach the database,
+ * and without this a caller could point their row at any `place_id` already in
+ * `geocoded_addresses` -- somebody else's house, or the church.
+ *
+ * Returns the warning to hand back, or null. Mutates `payload` because
+ * `buildWrite` reads it straight afterwards and a second object would be one
+ * more thing to keep in step.
+ */
+async function applyGeocode(
+  q: Queryable,
+  organizationId: string,
+  payload: Partial<PersonWrite>
+): Promise<string | null> {
+  if (!touchesAddress(payload)) return null;
+
+  const geocode = await resolveAddress(q, {
+    placeId: payload.placeId ?? null,
+    text: addressToLine(payload),
+    mapViewEnabled: await mapViewEnabledFor(q, organizationId),
+  });
+  payload.placeId = geocode.placeId;
+  return geocode.warning;
+}
+
 routes.post("/", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
@@ -102,6 +156,8 @@ routes.post("/", async (c) => {
     { personId: null, organizationId, familyId: payload.familyId },
     payload
   );
+
+  const geocodeWarning = await applyGeocode(db, organizationId, payload);
 
   const { columns, values } = buildWrite(payload);
   const created = await one<{ id: string }>(
@@ -121,7 +177,7 @@ routes.post("/", async (c) => {
   });
 
   const person = await loadPerson(db, caller, created.id, organizationId);
-  return c.json(person, 201);
+  return c.json(geocodeWarning ? { ...person, geocodeWarning } : person, 201);
 });
 
 routes.patch("/:id", async (c) => {
@@ -137,6 +193,12 @@ routes.patch("/:id", async (c) => {
   // Moving between families needs permission on the destination too, and any
   // inheritance from the old family has to go: the resolution view would
   // otherwise keep serving an address from people who are no longer relatives.
+  //
+  // `place_id` is deliberately *not* cleared alongside it. Clearing the
+  // inheritance pointer is already enough: the view then falls back to this
+  // person's own address and their own `place_id`, which were written together
+  // and so agree. Nulling the pin as well would take somebody with a perfectly
+  // good address of their own off the map for having changed family.
   const movingFamily = "familyId" in payload && payload.familyId !== existing.family_id;
   if (movingFamily && payload.familyId) {
     await assertFamilyIsEditable(db, caller, payload.familyId);
@@ -149,6 +211,16 @@ routes.patch("/:id", async (c) => {
     { personId: id, organizationId, familyId: effectiveFamilyId },
     payload
   );
+
+  /*
+   * Before `buildWrite`, because it rewrites `payload.placeId` and that has to
+   * be in the column list. Outside the transaction below on purpose: it makes
+   * an HTTPS call to Google, and holding a Postgres transaction open across
+   * one would pin a connection from a pool of two for as long as Google takes.
+   * A geocode that lands and a write that then fails leaves a spare row in
+   * `geocoded_addresses`, which costs nothing and is reused by the retry.
+   */
+  const geocodeWarning = await applyGeocode(db, organizationId, payload);
 
   const { columns, values } = buildWrite(payload);
 
@@ -180,7 +252,7 @@ routes.patch("/:id", async (c) => {
   });
 
   const person = await loadPerson(db, caller, id, organizationId);
-  return c.json(person);
+  return c.json(geocodeWarning ? { ...person, geocodeWarning } : person);
 });
 
 /** Attaches a photo that has already been uploaded to the presigned URLs. */

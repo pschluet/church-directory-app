@@ -179,3 +179,69 @@ describe("AddressLink", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+/**
+ * The address-string form, used by the map's pins.
+ *
+ * A pin is a place rather than a person, and two people at one house can have
+ * typed the address differently — so the map hands over Google's own
+ * `formatted_address` instead of six columns. Everything below the first two
+ * lines of the component is the same code path, which is the point of the
+ * change: the map gets this file's provider choice, its remembered preference
+ * and its `noreferrer` for free.
+ */
+describe("AddressLink given an address string", () => {
+  const GOOGLE_FORMATTED = "4129 W Newport Ave, Chicago, IL 60641, USA";
+
+  beforeEach(() => {
+    fakeStorage();
+  });
+
+  afterEach(() => {
+    Object.defineProperty(navigator, "userAgent", {
+      value: originalUserAgent,
+      configurable: true,
+    });
+    Object.defineProperty(navigator, "maxTouchPoints", {
+      value: originalTouchPoints,
+      configurable: true,
+    });
+  });
+
+  it("links it without needing a street line of its own", () => {
+    /*
+     * `hasMappableAddress` would refuse this: it looks for `addressLine1`, and
+     * one formatted line has no parts. It does not need the check — a pin
+     * exists because the address geocoded.
+     */
+    withDevice(ANDROID, 1);
+    render(<AddressLink address={GOOGLE_FORMATTED} />);
+    expect(screen.getByRole("link", { name: /Open .* in Google Maps/ })).toHaveAttribute(
+      "href",
+      "https://www.google.com/maps/search/?api=1&query=4129%20W%20Newport%20Ave%2C%20Chicago%2C%20IL%2060641%2C%20USA"
+    );
+  });
+
+  it("shows the line as given, on one line", () => {
+    withDevice(ANDROID, 1);
+    render(<AddressLink address={GOOGLE_FORMATTED} />);
+    expect(screen.getByText(GOOGLE_FORMATTED)).toBeInTheDocument();
+  });
+
+  it("still asks which map where both are plausible", async () => {
+    withDevice(IPHONE, 5);
+    render(<AddressLink address={GOOGLE_FORMATTED} />);
+
+    await userEvent.click(screen.getByRole("button", { name: /Open .* in a maps app/ }));
+    expect(await screen.findByRole("link", { name: "Apple Maps" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Google Maps" })).toBeInTheDocument();
+  });
+
+  it("withholds the referrer, as it does for a person", () => {
+    // The page's URL carries a person's id, and the provider is already being
+    // handed somebody's home address.
+    withDevice(ANDROID, 1);
+    render(<AddressLink address={GOOGLE_FORMATTED} />);
+    expect(screen.getByRole("link", { name: /Google Maps/ })).toHaveAttribute("rel", "noreferrer");
+  });
+});

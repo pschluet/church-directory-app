@@ -1,5 +1,6 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 
 /**
  * The small shared pieces. Kept in one file because each is a handful of lines
@@ -42,12 +43,31 @@ export function EmptyState({ title, children }: { title: string; children?: Reac
  * `filters` gets a row of its own underneath, aligned back to the left under
  * the title -- a filter belongs with the thing it narrows, and putting it in
  * `actions` instead would push whatever is up there out of line.
+ *
+ * A grid rather than a flex column, because `titleAction` needs to sit *beside*
+ * the title on a narrow screen while `actions` wraps to a row of its own
+ * underneath -- which a single flex line cannot express without either
+ * duplicating a node per breakpoint or absolutely positioning something. From
+ * `md` up it becomes an ordinary flex row and `mr-auto` on the title does the
+ * spreading. Both pre-existing layouts come out identical: one column is a
+ * stack, and two columns with a `1fr` first is the same as `justify-between`.
  */
 export function PageHeading({
   title,
   subtitle,
   actions,
   filters,
+  /**
+   * An action that belongs with the title rather than with `actions`.
+   *
+   * On a phone it sits top right, level with the heading, and `actions` drops
+   * to the full-width row beneath it; from `md` up it joins `actions` on the
+   * right, last. That is for the Directory's "Map View" link, which is a way to
+   * *another page* rather than something that narrows this one: stacked under a
+   * search box it read as part of the search, and a search box is the thing
+   * somebody came to the Directory to type in, so it keeps the wide row.
+   */
+  titleAction,
   /**
    * For `actions` that are icon-sized -- a lone three-dots menu, say. Keeps
    * them beside the title even on a phone, where the default stacking would
@@ -60,22 +80,34 @@ export function PageHeading({
   subtitle?: ReactNode;
   actions?: ReactNode;
   filters?: ReactNode;
+  titleAction?: ReactNode;
   compactActions?: boolean;
 }) {
+  // Anything sharing the heading's row needs a second column to sit in.
+  const besideTitle = compactActions || titleAction !== undefined;
+
   return (
     <header className="mb-6 md:mb-8">
       <div
-        className={
-          compactActions
-            ? "flex flex-row items-start justify-between gap-3 md:items-end"
-            : "flex flex-col gap-3 md:flex-row md:items-end md:justify-between"
-        }
+        className={`grid gap-3 md:flex md:items-end ${
+          besideTitle ? "grid-cols-[minmax(0,1fr)_auto] items-start" : "grid-cols-1"
+        }`}
       >
-        <div>
+        {/* `mr-auto` is what pushes everything else right once this is a flex row. */}
+        <div className="min-w-0 md:mr-auto">
           <h1 className="text-2xl font-bold text-ink md:text-3xl">{title}</h1>
           {subtitle && <p className="mt-1 text-ink-muted">{subtitle}</p>}
         </div>
-        {actions && <div className="flex flex-wrap justify-end gap-2">{actions}</div>}
+        {titleAction && (
+          // Last on a wide screen, so the search box stays next to the title it
+          // belongs to and this sits at the far edge.
+          <div className="justify-self-end md:order-last">{titleAction}</div>
+        )}
+        {actions && (
+          <div className={`flex flex-wrap justify-end gap-2 ${titleAction ? "col-span-2" : ""}`}>
+            {actions}
+          </div>
+        )}
       </div>
       {filters && <div className="mt-3 flex flex-wrap gap-4">{filters}</div>}
     </header>
@@ -421,7 +453,19 @@ export function Modal({
 }) {
   useDismissable(onClose);
 
-  return (
+  /*
+   * Portalled to the body, like PhotoLightbox, rather than rendered where it
+   * was written.
+   *
+   * `position: fixed` is only relative to the viewport while no ancestor has
+   * made itself a containing block. Google's InfoWindow positions its bubble
+   * with a transform and clips it, so the maps chooser opened from an address
+   * inside a map popover came out as a sliver a few pixels wide, pinned inside
+   * the bubble and unusable. Nothing else in the app had an ancestor that did
+   * that, which is why this went unnoticed -- and why the fix belongs here
+   * rather than at the one call site that exposed it.
+   */
+  return createPortal(
     <div
       className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 md:items-center md:p-6"
       role="dialog"
@@ -450,7 +494,8 @@ export function Modal({
         </div>
         {children}
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 

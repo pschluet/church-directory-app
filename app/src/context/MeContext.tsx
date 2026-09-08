@@ -29,6 +29,17 @@ interface MeContextValue {
   canApprovePrayerRequests: boolean;
   /** The organization the UI is currently showing. */
   organizationId: string | null;
+  /**
+   * Whether this parish has Map View.
+   *
+   * Derived here rather than read from `me` at each call site so the route
+   * guard and the Directory's link to it cannot disagree -- one of them hiding
+   * a page the other still offers is the kind of bug nobody notices until
+   * somebody bookmarks it.
+   */
+  mapViewEnabled: boolean;
+  /** The Google Maps browser key and Map ID, or nulls. Both, or neither. */
+  maps: { browserKey: string; mapId: string } | null;
   /** Super admins only; a no-op for everyone else. */
   switchOrganization: (organizationId: string) => Promise<void>;
 }
@@ -124,6 +135,16 @@ export function MeProvider({ children }: { children: ReactNode }) {
       // point of `hasRole` is that there is only one of it.
       canApprovePrayerRequests: me ? hasRole(me.appUser.role, "PRAYER_REQUEST_ADMIN") : false,
       organizationId: me?.organization?.id ?? null,
+      mapViewEnabled: me?.mapViewEnabled ?? false,
+      /*
+       * Nulls collapse to one null. The two are useless apart -- Advanced
+       * Markers need a Map ID and a map needs a key -- so a caller that had to
+       * check them separately would be a caller that could forget to.
+       */
+      maps:
+        me?.mapsBrowserKey && me.mapsMapId
+          ? { browserKey: me.mapsBrowserKey, mapId: me.mapsMapId }
+          : null,
       switchOrganization,
     }),
     [me, query.isPending, query.error, reload, switchOrganization]

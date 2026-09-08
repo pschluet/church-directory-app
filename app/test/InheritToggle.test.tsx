@@ -22,6 +22,7 @@ function person(id: string, firstName: string, lastName: string | null): PersonS
     state: null,
     postalCode: null,
     country: null,
+    placeId: null,
     patronSaint: null,
     photoUrl: null,
     thumbUrl: null,

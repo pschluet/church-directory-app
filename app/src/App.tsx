@@ -7,6 +7,7 @@ import { ErrorNotice, Spinner } from "./components/ui";
 import { Login } from "./pages/Login";
 import { Directory } from "./pages/Directory";
 import { UpcomingDates } from "./pages/UpcomingDates";
+import { MapView } from "./pages/MapView";
 import { PersonDetail } from "./pages/PersonDetail";
 import { MyDetails } from "./pages/MyDetails";
 import { Families } from "./pages/Families";
@@ -33,6 +34,19 @@ export const router = createBrowserRouter([
     element: <RootGate />,
     children: [
       { index: true, element: <Directory /> },
+      /*
+        Reached from the Directory rather than from the nav, per the requirement.
+        Guarded because Map View is a per-parish switch: a member of a parish
+        that has it off has no page here, and the API answers 404 to match.
+      */
+      {
+        path: "map",
+        element: (
+          <RequireMapView>
+            <MapView />
+          </RequireMapView>
+        ),
+      },
       { path: "dates", element: <UpcomingDates /> },
       { path: "people/:id", element: <PersonDetail /> },
       { path: "me", element: <MyDetails /> },
@@ -137,6 +151,20 @@ function SignedIn() {
  * Hides pages the caller has no business seeing. This is convenience, not
  * security -- every route on the API checks permissions independently.
  */
+/**
+ * Map View is a per-parish switch a super admin controls.
+ *
+ * Home rather than a notice, matching `RequireRole` and the `*` route: a page
+ * you do not have is not a page worth explaining, and the Directory does not
+ * offer the link in the first place. Both read the same `mapViewEnabled` off
+ * `useMe`, so the link and the route cannot disagree.
+ */
+function RequireMapView({ children }: { children: React.ReactNode }) {
+  const { mapViewEnabled } = useMe();
+  if (!mapViewEnabled) return <Navigate to="/" replace />;
+  return children;
+}
+
 function RequireRole({
   requires,
   children,

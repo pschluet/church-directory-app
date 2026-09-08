@@ -4,9 +4,12 @@ import { closeDatabase, resetTables, testDb } from "./helpers/testDb";
 import { client } from "./helpers/request";
 import {
   createFamily,
+  createGeocode,
   createNonUserPerson,
   createOrganization,
   createUser,
+  enableMapView,
+  setPlaceId,
   type CreatedUser,
 } from "./helpers/fixtures";
 
@@ -296,5 +299,152 @@ describe.skipIf(!hasDb)("people and attribute inheritance", () => {
 
       expect((await as(admin).call("DELETE", `/api/persons/${child}`)).status).toBe(204);
     });
+  });
+});
+
+/**
+ * What a save does about the map.
+ *
+ * The rule worth pinning is that a `place_id` off the wire is a lookup key and
+ * never a coordinate. `PERSON_WRITE_COLUMNS` contains `place_id` so that
+ * Autocomplete's answer can reach the database, which is exactly what would
+ * let a caller point their row at somebody else's house if the server did not
+ * resolve it for itself.
+ */
+describe.skipIf(!hasDb)("addresses and the map", () => {
+  const db = () => testDb();
+  let orgId: string;
+  let member: CreatedUser;
+  /** For the two cases about families -- a member may not move themselves into one. */
+  let orgAdmin: CreatedUser;
+
+  beforeEach(async () => {
+    await resetTables();
+    orgId = await createOrganization(db());
+    member = await createUser(db(), {
+      organizationId: orgId,
+      email: "member@test.example",
+      firstName: "Member",
+      lastName: "One",
+    });
+    orgAdmin = await createUser(db(), {
+      organizationId: orgId,
+      role: "ADMIN",
+      email: "admin@test.example",
+    });
+  });
+
+  afterAll(async () => {
+    await closeDatabase();
+  });
+
+  const asMember = () => client(db(), { sub: member.cognitoSub, email: member.email });
+  const asAdmin = () => client(db(), { sub: orgAdmin.cognitoSub, email: orgAdmin.email });
+
+  async function storedPlaceId(personId: string): Promise<string | null> {
+    const { rows } = await db().query<{ place_id: string | null }>(
+      "select place_id from persons where id = $1",
+      [personId]
+    );
+    return rows[0]?.place_id ?? null;
+  }
+
+  it("saves the address even though geocoding is unavailable", async () => {
+    // GEOCODING_MODE=local, so nothing resolves. Refusing the write would tell
+    // somebody their address is invalid when it is merely unplaceable.
+    const res = await asMember().call("PATCH", `/api/persons/${member.personId}`, {
+      addressLine1: "4129 W Newport Ave",
+      city: "Chicago",
+      state: "IL",
+      postalCode: "60641",
+    });
+    expect(res.status).toBe(200);
+    expect(res.body.addressLine1).toBe("4129 W Newport Ave");
+    expect(res.body.placeId).toBeNull();
+    // `not_configured` is nobody's fault, so there is nothing to warn about.
+    expect(res.body.geocodeWarning).toBeUndefined();
+  });
+
+  it("ignores a place_id the caller made up", async () => {
+    // Unresolvable, so it is dropped rather than stored -- which also keeps the
+    // foreign key satisfied.
+    const res = await asMember().call("PATCH", `/api/persons/${member.personId}`, {
+      addressLine1: "4129 W Newport Ave",
+      placeId: "ChIJtotally-invented",
+    });
+    expect(res.status).toBe(200);
+    expect(await storedPlaceId(member.personId!)).toBeNull();
+  });
+
+  it("does not let a caller claim an address that already exists", async () => {
+    // The attack this blocks: `geocoded_addresses` is shared across the
+    // deployment, so a known place_id would otherwise be a way onto somebody
+    // else's pin. It is only accepted because the parish has the map on and
+    // the row is already resolved -- and even then only as itself.
+    await enableMapView(db(), orgId);
+    await createGeocode(db(), { placeId: "ChIJsomeone-elses-house" });
+
+    const res = await asMember().call("PATCH", `/api/persons/${member.personId}`, {
+      addressLine1: "4129 W Newport Ave",
+      placeId: "ChIJsomeone-elses-house",
+    });
+    expect(res.status).toBe(200);
+    // Resolved from the table without calling Google, because the coordinates
+    // are already known. This is the cost saving that makes a family of five
+    // one geocode instead of five -- and the reason the pin is shared.
+    expect(await storedPlaceId(member.personId!)).toBe("ChIJsomeone-elses-house");
+  });
+
+  it("makes no attempt to geocode for a parish with the map switched off", async () => {
+    await createGeocode(db(), { placeId: "ChIJknown" });
+    const res = await asMember().call("PATCH", `/api/persons/${member.personId}`, {
+      addressLine1: "4129 W Newport Ave",
+      placeId: "ChIJknown",
+    });
+    expect(res.status).toBe(200);
+    // Even a place_id already in the table is refused: a parish without a map
+    // contributes nothing to the Google bill and stores no coordinates.
+    expect(await storedPlaceId(member.personId!)).toBeNull();
+  });
+
+  it("leaves the pin alone on a write that does not mention the address", async () => {
+    await enableMapView(db(), orgId);
+    await createGeocode(db(), { placeId: "ChIJhome" });
+    await setPlaceId(db(), member.personId!, "ChIJhome");
+
+    const res = await asMember().call("PATCH", `/api/persons/${member.personId}`, {
+      patronSaint: "St Nicholas",
+    });
+    expect(res.status).toBe(200);
+    expect(await storedPlaceId(member.personId!)).toBe("ChIJhome");
+  });
+
+  it("keeps the pin when a person changes family", async () => {
+    // Clearing the inheritance pointer is enough: the view then falls back to
+    // this person's own address and their own place_id, which were written
+    // together. Nulling the pin as well would take somebody with a perfectly
+    // good address off the map for having changed family.
+    await enableMapView(db(), orgId);
+    await createGeocode(db(), { placeId: "ChIJownhome" });
+    await setPlaceId(db(), member.personId!, "ChIJownhome");
+    const destination = await createFamily(db(), orgId, "Popov");
+
+    const res = await asAdmin().call("PATCH", `/api/persons/${member.personId}`, {
+      familyId: destination,
+    });
+    expect(res.status).toBe(200);
+    expect(await storedPlaceId(member.personId!)).toBe("ChIJownhome");
+  });
+
+  it("creates a person with an address and no pin when geocoding is off", async () => {
+    const familyId = await createFamily(db(), orgId, "Schlueter");
+    const res = await asAdmin().call("POST", "/api/persons", {
+      firstName: "Nikolai",
+      lastName: "Schlueter",
+      familyId,
+      addressLine1: "4129 W Newport Ave",
+    });
+    expect(res.status).toBe(201);
+    expect(res.body.placeId).toBeNull();
   });
 });

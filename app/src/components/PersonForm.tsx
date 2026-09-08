@@ -11,6 +11,7 @@ import {
 } from "@shared";
 import { api, ApiError } from "../lib/api";
 import { InheritToggle, inheritanceCandidates } from "./InheritToggle";
+import { AddressAutocomplete } from "./AddressAutocomplete";
 import { Button, Field, inputClass } from "./ui";
 
 /**
@@ -42,6 +43,14 @@ interface FormState {
   postalCode: string;
   country: string;
   patronSaint: string;
+  /**
+   * Google's id for the address, from the suggestion that was picked.
+   *
+   * Only ever set by choosing a suggestion, and cleared by typing -- so it can
+   * never describe an address other than the one in the boxes. The server
+   * resolves it to coordinates and ignores it if it cannot.
+   */
+  placeId: string | null;
   /** "" means no family. Only ever edited when `families` is supplied. */
   familyId: string;
   inherit: Record<InheritableAttribute, string | null>;
@@ -58,6 +67,7 @@ function initialState(person: PersonDto): FormState {
     phone: person.inheritedFrom.phone ? "" : (person.phone ?? ""),
     altPhone: person.inheritedFrom.altPhone ? "" : (person.altPhone ?? ""),
     addressLine1: person.inheritedFrom.address ? "" : (person.addressLine1 ?? ""),
+    placeId: person.inheritedFrom.address ? null : person.placeId,
     addressLine2: person.inheritedFrom.address ? "" : (person.addressLine2 ?? ""),
     city: person.inheritedFrom.address ? "" : (person.city ?? ""),
     state: person.inheritedFrom.address ? "" : (person.state ?? ""),
@@ -162,6 +172,7 @@ export function PersonForm({
         ? {}
         : {
             addressLine1: form.addressLine1,
+            placeId: form.placeId,
             addressLine2: form.addressLine2,
             city: form.city,
             state: form.state,
@@ -193,6 +204,12 @@ export function PersonForm({
 
     setSaving(true);
     try {
+      /*
+       * `geocodeWarning` rides along on the response and is deliberately *not*
+       * shown here: `onSaved` closes this form, so a message rendered in it
+       * would be unmounted in the same tick and nobody would ever read it. The
+       * page that survives the save shows it -- see PersonDetail.
+       */
       onSaved(
         await api<PersonDto>(`/persons/${person.id}`, { method: "PATCH", body: parsed.data })
       );
@@ -425,12 +442,29 @@ export function PersonForm({
           </p>
         ) : (
           <div className="mt-2 grid gap-4 md:grid-cols-2">
-            <Field label="Street" className="md:col-span-2">
-              <input
-                className={inputClass}
-                autoComplete="address-line1"
+            <Field
+              label="Street"
+              className="md:col-span-2"
+              hint="Start typing and pick a suggestion, so this address can be placed on the map."
+            >
+              <AddressAutocomplete
                 value={form.addressLine1}
-                onChange={(e) => set("addressLine1", e.target.value)}
+                // Typing un-picks the suggestion, so a stored id can never
+                // describe an address other than the one in these boxes.
+                onChange={(value) =>
+                  setForm((prev) => ({ ...prev, addressLine1: value, placeId: null }))
+                }
+                onPick={(picked) =>
+                  setForm((prev) => ({
+                    ...prev,
+                    addressLine1: picked.addressLine1,
+                    city: picked.city || prev.city,
+                    state: picked.state || prev.state,
+                    postalCode: picked.postalCode || prev.postalCode,
+                    country: picked.country || prev.country,
+                    placeId: picked.placeId,
+                  }))
+                }
               />
             </Field>
             <Field label="Apartment, suite, etc." className="md:col-span-2">

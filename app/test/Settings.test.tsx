@@ -37,12 +37,18 @@ vi.mock("../src/lib/push", () => ({
 const meState = {
   pushPublicKey: "vapid-public-key" as string | null,
   canApprove: false,
+  isAdmin: false,
 };
 
 vi.mock("../src/context/MeContext", () => ({
   useMe: () => ({
     me: { pushPublicKey: meState.pushPublicKey } as unknown as MeDto,
     canApprovePrayerRequests: meState.canApprove,
+    isAdmin: meState.isAdmin,
+    organizationId: "org-1",
+    // The church address section renders an AddressAutocomplete, which reads
+    // this. Null is the plain-text-input path.
+    maps: null,
   }),
 }));
 
@@ -69,6 +75,7 @@ describe("Settings", () => {
     pushState.subscribeResult = SUBSCRIPTION;
     meState.pushPublicKey = "vapid-public-key";
     meState.canApprove = false;
+    meState.isAdmin = false;
   });
 
   /*
@@ -333,6 +340,24 @@ describe("Settings", () => {
         ).not.toBeInTheDocument();
         unmount();
       }
+    });
+  });
+
+  describe("the church address", () => {
+    it("is offered to an administrator, who is the one the map warns", async () => {
+      // Map View tells an administrator this address is missing and links here.
+      // Churches -- the other place it can be set -- is super-admin-only, so
+      // without this section that warning led nowhere for most of them.
+      meState.isAdmin = true;
+      renderWithProviders(<Settings />);
+      expect(await screen.findByRole("heading", { name: "Church address" })).toBeInTheDocument();
+    });
+
+    it("is not offered to a member", async () => {
+      meState.isAdmin = false;
+      renderWithProviders(<Settings />);
+      await screen.findByRole("heading", { name: "Notifications" });
+      expect(screen.queryByRole("heading", { name: "Church address" })).not.toBeInTheDocument();
     });
   });
 });

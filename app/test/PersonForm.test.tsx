@@ -16,6 +16,16 @@ vi.mock("../src/lib/api", () => ({
   DEV_AUTH: false,
 }));
 
+/*
+ * The street field is an AddressAutocomplete, which reads the Google Maps
+ * browser key from here. `maps: null` is the case that matters for this file:
+ * with no key it renders a plain text input, which is what these cases type
+ * into -- and is also what a parish with Map View switched off gets.
+ */
+vi.mock("../src/context/MeContext", () => ({
+  useMe: () => ({ organizationId: "org-1", mapViewEnabled: false, maps: null }),
+}));
+
 function summary(overrides: { id: string; firstName: string }): PersonSummaryDto {
   return {
     organizationId: "org-1",
@@ -32,6 +42,7 @@ function summary(overrides: { id: string; firstName: string }): PersonSummaryDto
     state: null,
     postalCode: null,
     country: null,
+    placeId: null,
     patronSaint: null,
     photoUrl: null,
     thumbUrl: null,

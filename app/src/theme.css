@@ -17,6 +17,15 @@
 @theme {
   --color-primary: #b42d23;
   --color-primary-dark: #8e231b;
+  /*
+   * A lighter tint of the liturgical red, for the map's individual pins.
+   *
+   * Households are `--color-primary` and somebody living alone is this, so the
+   * two read as the same family of thing at two weights. It is a real colour
+   * rather than `bg-primary/70`, because a translucent pin lets the map show
+   * through and turns muddy over a road or the lake.
+   */
+  --color-primary-light: #d4564a;
   --color-accent: #b88c51;
   --color-accent-light: #d9c19b;
   --color-ink: #333333;
@@ -241,4 +250,31 @@
      links, calendar day cells and inheritance toggles. */
   min-height: 2.75rem;
   min-width: 2.75rem;
+}
+
+/*
+ * Google's InfoWindow, which the map's popovers are built on.
+ *
+ * The one place this app reaches into third-party markup, and it is worth
+ * saying why rather than deleting it later as mysterious. Google gives the
+ * bubble's content box `overflow-x: scroll` rather than `auto`, so on any
+ * platform that does not use overlay scrollbars it reserves a twelve pixel
+ * gutter and paints a scrollbar track across the bottom of every popover --
+ * with nothing to scroll, `scrollWidth` and `clientWidth` being equal. On a
+ * phone that reads as a popover that scrolls sideways.
+ *
+ * Hiding the horizontal one is safe because the content is sized to the box
+ * rather than the other way round (see `WIDTH_CLASS` in
+ * components/MapPopover.tsx) and every string in it is allowed to wrap, so
+ * there is never anything out there to reach.
+ *
+ * The vertical axis has the same fault and cannot simply be hidden: a pin with
+ * two families and a lodger at one address is genuinely tall, and that one has
+ * to scroll. `auto` is the fix for it -- a scrollbar when there is something to
+ * scroll and no reserved gutter when there is not, which is what `scroll`
+ * should have been in the first place.
+ */
+.gm-style-iw-d {
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
 }

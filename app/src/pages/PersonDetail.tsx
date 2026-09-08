@@ -131,6 +131,16 @@ export function PersonDetail() {
   };
 
   /*
+   * "The address saved, but could not be placed on the map."
+   *
+   * Held here rather than in PersonForm because `onSaved` closes that form: a
+   * message rendered inside it would be unmounted in the same tick and nobody
+   * would ever read it. Cleared when the form is opened again, so it describes
+   * the last save rather than lingering over the next one.
+   */
+  const [geocodeWarning, setGeocodeWarning] = useState<string | null>(null);
+
+  /*
    * A merge reaches almost everything: the two records, the families they
    * belong to, the cards in the directory and the dates that moved. `reloadMe`
    * on top of that, because an approved merge can change the caller's own
@@ -346,7 +356,15 @@ export function PersonDetail() {
                     Remove photo
                   </MenuItem>
                 )}
-                <MenuItem onSelect={() => setEditing(true)}>Edit details</MenuItem>
+                <MenuItem
+                  onSelect={() => {
+                    // The warning describes the last save, not the next one.
+                    setGeocodeWarning(null);
+                    setEditing(true);
+                  }}
+                >
+                  Edit details
+                </MenuItem>
                 {mergeOffer && (
                   <MenuItem onSelect={() => setMerging(true)}>
                     {mergeOffer === "own"
@@ -403,6 +421,20 @@ export function PersonDetail() {
               className="md:col-span-2"
             >
               {address.length > 0 ? <AddressLink person={person} /> : <NotSet />}
+              {/*
+                `role="status"` and not `alert`: the save succeeded, so this is
+                news rather than a fault, and an alert would interrupt a screen
+                reader to say something went wrong when nothing did. Beside the
+                address because that is the field it is about.
+              */}
+              {geocodeWarning && (
+                <p
+                  role="status"
+                  className="mt-2 rounded-md border border-accent bg-surface-muted p-3 text-sm text-ink"
+                >
+                  {geocodeWarning}
+                </p>
+              )}
             </DetailRow>
           </dl>
         </div>
@@ -532,6 +564,7 @@ export function PersonDetail() {
             onCancel={() => setEditing(false)}
             onSaved={(updated) => {
               applyPerson(updated);
+              setGeocodeWarning(updated.geocodeWarning ?? null);
               setEditing(false);
               // A move changes which relatives the inheritance pickers offer,
               // and which family lists them.

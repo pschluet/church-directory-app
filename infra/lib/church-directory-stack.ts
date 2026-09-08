@@ -23,6 +23,8 @@ import * as acm from "aws-cdk-lib/aws-certificatemanager";
 import * as route53 from "aws-cdk-lib/aws-route53";
 import * as targets from "aws-cdk-lib/aws-route53-targets";
 import * as iam from "aws-cdk-lib/aws-iam";
+import * as events from "aws-cdk-lib/aws-events";
+import * as eventTargets from "aws-cdk-lib/aws-events-targets";
 
 export interface ChurchDirectoryStackProps extends StackProps {
   /** Seeded into app_users by the migrations and bound on first sign-in. */
@@ -68,6 +70,31 @@ export interface ChurchDirectoryStackProps extends StackProps {
   readonly vapidPrivateKey: string;
   /** `mailto:` or a URL, so a push service can reach the sender. */
   readonly vapidSubject: string;
+  /**
+   * Google Maps, for Map View. Both empty when this deployment has no Google
+   * project, which is a supported state: every parish's map is switched off,
+   * addresses save without coordinates, and the page says so.
+   *
+   * Two keys rather than one, because the browser's cannot be kept secret and
+   * the server's can. `mapsBrowserKey` is handed to signed-in members through
+   * GET /api/me -- it necessarily reaches a page, so it is restricted in the
+   * Google console to this site's referrers and capped there; delivering it
+   * through the API rather than baking it into the public bundle only keeps it
+   * off the open internet. `mapsServerKey` carries no application restriction,
+   * because a Lambda leaving over IPv6 has no stable address to restrict it
+   * to, and so must never reach a browser.
+   *
+   * `mapsMapId` is not a secret and ships in responses freely. It is required
+   * rather than optional: Advanced Markers do not render without one, so a key
+   * with no Map ID beside it would load a map and put nothing on it.
+   *
+   * Nothing to add to the network here either. maps.googleapis.com and
+   * places.googleapis.com both publish AAAA records, so this reaches Google
+   * over IPv6 through the egress-only gateway -- the same story as Web Push.
+   * See the networking comment.
+   */
+  readonly mapsBrowserKey: string;
+  readonly mapsServerKey: string;
 }
 
 /**
@@ -109,6 +136,8 @@ export class ChurchDirectoryStack extends Stack {
       vapidPublicKey,
       vapidPrivateKey,
       vapidSubject,
+      mapsBrowserKey,
+      mapsServerKey,
     } = props;
 
     // -------------------------------------------------------------------
@@ -456,6 +485,11 @@ export class ChurchDirectoryStack extends Stack {
         VAPID_PUBLIC_KEY: vapidPublicKey,
         VAPID_PRIVATE_KEY: vapidPrivateKey,
         VAPID_SUBJECT: vapidSubject,
+        // Google Maps. Same delivery as the two keys above and for the same
+        // reason. Empty when there is no Google project, which the API reads
+        // as "no parish here can have a map".
+        GOOGLE_MAPS_BROWSER_KEY: mapsBrowserKey,
+        GOOGLE_MAPS_SERVER_KEY: mapsServerKey,
       },
     });
 
@@ -469,6 +503,76 @@ export class ChurchDirectoryStack extends Stack {
         ],
       })
     );
+    // -------------------------------------------------------------------
+    // Geocode refresh -- a daily job, and the only scheduled thing here.
+    //
+    // Google's Maps Platform terms allow lat/lng to be cached for 30
+    // consecutive days unless the value is isolated to the one end user who
+    // looked it up, which a parish map showing every home to every member is
+    // not. So `place_id` is stored indefinitely -- it is separately exempt --
+    // and the coordinates are refreshed before they age out. See the comment
+    // at the top of api/src/refresh-geocodes.ts.
+    //
+    // Its own function rather than a schedule pointed at the API: that one
+    // sits behind a JWT authorizer with no claims for EventBridge to present.
+    // Same subnets, same security group, same database grant, and the same
+    // IPv6 route to Google -- so this adds nothing to the network, and the
+    // assertions in infra/test that there is no NAT gateway and no interface
+    // endpoint still hold.
+    // -------------------------------------------------------------------
+    const refreshGeocodesFn = new NodejsFunction(this, "RefreshGeocodesFunction", {
+      entry: path.join(__dirname, "..", "..", "api", "src", "refresh-geocodes.ts"),
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 256,
+      // A batch is a couple of hundred serial HTTPS calls with a small pause
+      // between them, which is minutes rather than seconds. Nobody is waiting.
+      timeout: Duration.minutes(5),
+      bundling: { minify: true, target: "node22" },
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      securityGroups: [apiSecurityGroup],
+      // As with apiFn: without this there is no route out and every call to
+      // maps.googleapis.com hangs until the timeout.
+      ipv6AllowedForDualStack: true,
+      logGroup: new logs.LogGroup(this, "RefreshGeocodesLogGroup", {
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: RemovalPolicy.DESTROY,
+      }),
+      environment: {
+        DB_HOST: database.dbInstanceEndpointAddress,
+        DB_PORT: database.dbInstanceEndpointPort,
+        DB_NAME,
+        DB_USER: APP_DB_ROLE,
+        DB_AUTH: "iam",
+        GOOGLE_MAPS_SERVER_KEY: mapsServerKey,
+      },
+    });
+    refreshGeocodesFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["rds-db:connect"],
+        resources: [
+          `arn:aws:rds-db:${this.region}:${this.account}:dbuser:${database.instanceResourceId}/${APP_DB_ROLE}`,
+        ],
+      })
+    );
+
+    new events.Rule(this, "RefreshGeocodesSchedule", {
+      // Daily, against a 25-day staleness threshold, so a run that fails has
+      // five days of slack before anything is out of terms.
+      schedule: events.Schedule.rate(Duration.days(1)),
+      description: "Re-resolve parish addresses before their coordinates age out",
+      targets: [new eventTargets.LambdaFunction(refreshGeocodesFn)],
+    });
+
+    new CfnOutput(this, "RefreshGeocodesFunctionName", {
+      value: refreshGeocodesFn.functionName,
+      // Named in an output because the backfill is a manual invoke: switching
+      // Map View on for a parish populates nothing by itself.
+      description: 'Invoke with {"backfill":true} to geocode addresses that have no pin',
+    });
+
     photosBucket.grantReadWrite(apiFn);
     photosBucket.grantDelete(apiFn);
     apiFn.addToRolePolicy(

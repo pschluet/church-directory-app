@@ -203,6 +203,30 @@ export function hasMappableAddress(person: Partial<PersonSummaryDto>): boolean {
   return Boolean(person.addressLine1?.trim());
 }
 
+/**
+ * A few names and how many more there are -- "Anna, Maria, Nikolai +1".
+ *
+ * The tail of a member preview, without any count in front of it, because the
+ * two callers disagree about what the count means. The families list says
+ * "4 members" and means the whole family; a map pin says nothing, because a pin
+ * is an address and a family can have somebody living elsewhere.
+ *
+ * Shared rather than written twice because the fiddly part is the arithmetic --
+ * `total` is the real number of people, which may be larger than `names`, since
+ * the families list caps its names server-side. `api/src/services/persons.ts`
+ * records what happened last time two copies of this preview's logic drifted:
+ * the list ordered its members differently from the page it previewed.
+ */
+export function memberPreview(names: string[], total: number, show = 3): string {
+  const shown = names.slice(0, show);
+  // `total` rather than `names.length`: the caller may have been handed fewer
+  // names than there are people, and the overflow has to count the ones it
+  // never saw.
+  const hidden = Math.max(total - shown.length, 0);
+  if (shown.length === 0) return hidden > 0 ? `+${hidden}` : "";
+  return hidden > 0 ? `${shown.join(", ")} +${hidden}` : shown.join(", ");
+}
+
 /** Initials for the placeholder shown when someone has no photo. */
 export function initials(person: { firstName: string; lastName: string | null }): string {
   return [person.firstName?.[0], person.lastName?.[0]].filter(Boolean).join("").toUpperCase();

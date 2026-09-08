@@ -156,6 +156,96 @@ Accounts are invite-only, created by a parish administrator.
   A corollary worth knowing: relative timestamps are computed at render and nothing
   re-renders on its own, so `useNow` ticks them — without it a page left open disagreed
   with the bell about when the same request was posted, from identical data.
+- **Map View:** a Google Maps view of where everyone lives, reached from the Directory rather
+  than from the nav, opening on the church at about a 30 mile radius. Four things about it are
+  worth knowing before touching it.
+
+  **Coordinates live in their own table, keyed by Google's `place_id`.** Google's Maps Platform
+  terms allow `lat`/`lng` to be cached for 30 consecutive days *unless* the value is isolated to
+  the one end user who looked it up -- and a parish map showing every home to every member is
+  the opposite of that. `place_id` is separately exempt, so it is the durable key and the
+  coordinates are a cache with a `geocoded_at` on them, refreshed daily at 25 days by
+  `api/src/refresh-geocodes.ts` on an EventBridge schedule. The compliance is why it exists;
+  the benefit is that it self-heals when Google corrects an address. Keying by `place_id`
+  rather than putting columns on `persons` also means "everyone at the same address shares one
+  pin" is a `group by` on a primary key instead of a comparison of two floats, and a family of
+  five at one address costs one geocode rather than five.
+
+  **Map View is a per-organization switch a super admin controls**, and it gates four things:
+  the browser API key in `GET /api/me`, `GET /api/map` (404, not 403 -- this parish has no map
+  page, and a 403 sends somebody to ask for access nobody can grant), the `/map` route and the
+  Directory's link to it, and geocoding itself. That last one is the point rather than a
+  detail: a parish with the map off makes *no* calls to Google at all, so in a multi-tenant
+  deployment the bill is proportional to the parishes using the map rather than to the parishes
+  that exist. It defaults off, so the flag alone populates nothing -- invoke the refresh
+  function with `{"backfill": true}` after switching a parish on.
+
+  **Two API keys, and the distinction is load-bearing.** The browser key necessarily reaches a
+  page, so it is restricted in the Google console to this site's referrers and capped there;
+  it is served from `GET /api/me` rather than baked into the bundle by a `VITE_` variable,
+  which does not make it secret -- anyone signed in can read it in devtools -- but does keep it
+  out of a public bundle that gets scraped. The server key carries no application restriction,
+  because a Lambda leaving over IPv6 has no stable address to restrict it to, and so must never
+  reach a browser. The Map ID is neither: it names a style, grants nothing, and is already sent
+  to every signed-in browser, so it is a constant in `api/src/services/geocoding.ts` rather
+  than three files of plumbing to hide a value that is published by design.
+
+  **A `place_id` off the wire is a lookup key and never a coordinate.** It is in
+  `PERSON_WRITE_COLUMNS` so Places Autocomplete's answer can reach the database, which is
+  exactly what would let somebody point their row at the church roof if the server did not
+  resolve the coordinates itself. `applyGeocode` in `api/src/routes/persons.ts` overwrites
+  whatever arrived. A geocode that fails does not fail the save -- the address is stored with
+  no pin and a warning comes back on the response, because refusing the write would tell
+  somebody their address is invalid when it is merely one Google cannot place.
+
+  Address autocomplete comes with the same switch, and is free rather than cheap: autocomplete
+  requests carrying a session token bill under the session SKU, which has no limit, and only the
+  single `Place.fetchFields` that closes the session costs anything. Minting a fresh token after
+  each selection is not an optimisation -- a reused one silently moves the typing onto the
+  per-request SKU, which works perfectly and costs money.
+
+  **Pins are two weights of one red**, with gold kept for the church: a household is
+  `--color-primary` and somebody living alone `--color-primary-light`, so they read as one set
+  rather than two unrelated colours, and the one gold pin on the map is the only one that is
+  not somebody's home. It gets a popover of its own naming the parish, because a marker whose
+  only affordance is a browser tooltip does nothing at all on a phone.
+
+  **A tapped pin opens a popover beside it**, not a drawer or a side panel. Those covered the
+  map in order to describe a point on it, and on a phone the drawer took half the screen to name
+  one household. It is a Google `InfoWindow`, which buys two things that would otherwise be
+  rebuilt by hand: it stays attached to its marker through a pan or a zoom, and it moves the map
+  if it would open off the edge. An individual gets their photo, name and address; a family gets
+  its name, the members who live *there*, and the same address. The address is stated once for
+  the whole pin and behaves exactly as an address does anywhere else in the app, because it is
+  the same `AddressLink` -- which grew a second form taking a pre-formatted string, since a pin
+  is a place rather than a person.
+
+  That reuse turned up a bug in `Modal`, which is now portalled to the body. `position: fixed`
+  is only relative to the viewport while no ancestor has made itself a containing block, and
+  Google's InfoWindow positions its bubble with a transform and clips it -- so the
+  which-map-app sheet, opened from an address inside a popover, came out as an unusable sliver
+  trapped in the bubble. Nothing else in the app has an ancestor that does that, which is why
+  it took a map to find it.
+
+  **The map is measured, not given a fraction of the viewport.** `h-[70vh]` plus a header of up
+  to 232px does not fit in 100vh, so the bottom of the map used to sit below the fold on every
+  desktop. `useFillViewport` subtracts the element's own offset down the document from the
+  visual viewport, because what sits above it is not a constant -- the header's height depends
+  on the role, and an administrator may also be reading a warning about the church address.
+
+  **Full screen is CSS, not the Fullscreen API.** iOS Safari will not take a `div` full screen,
+  Google's own control hides itself below a size threshold, and the installed PWA has no chrome
+  to leave -- the native path fails on the three cases that most want it. Swapping the
+  container's classes also keeps the same `google.maps.Map`, so entering and leaving costs no
+  billed map load; there is a test asserting the map mounts exactly once through both.
+
+  **The base map's styling lives in the Google console**, against the Map ID, so the parish's
+  colours can change with no deploy. A copy of the JSON and why it looks that way are committed
+  at `docs/map-style.json` and `docs/map-style.md`.
+
+  Nothing was added to the network for any of it. `maps.googleapis.com` publishes AAAA records,
+  so the geocoder is reachable over IPv6 through the egress-only gateway -- the same story as
+  Web Push (see *Why there is no NAT gateway*).
 - **Tags:** every resource carries `Project=all-saints` for cost tracking.
 
 ### Why there is no NAT gateway
@@ -187,6 +277,23 @@ $0.10/1,000 emails, a few cents of S3, pennies per deploy for the Fargate migrat
 about $0.60/month for the stopped bastion's root volume (see *Inspecting the deployed
 database*).
 
+**Google Maps is $0/month at parish scale**, and not marginally. Every SKU used here gets
+10,000 free calls per month and the allowances do not pool: Dynamic Maps, Geocoding and Place
+Details Essentials are 10,000 each, and session-scoped Autocomplete is free without limit. A
+Dynamic Maps event is billed once per `new google.maps.Map()` -- loading the library, panning,
+zooming, adding markers and clustering are all free -- so the cost of Map View is *how often
+somebody opens the page*, not how much they use it. At 400 people, 250 distinct addresses and
+150 accounts opening the map four times a month, that is about 910 calls against 10,000, or
+roughly 6% of the free tier.
+
+Two consequences to keep in mind rather than rediscover. **Do not remount the map** -- every
+remount is another billable load, which is why selection state in `app/src/pages/MapView.tsx`
+lives above `<Map>` and nothing keys the instance on anything that changes. And the daily
+**quota cap in the Google console is the real cost control**, not the referrer restriction: a
+`Referer` header is trivially forged outside a browser. Past the free tier, map loads are $7
+per 1,000, so 20,000 opens in a month would be $70; the per-organization switch is what keeps
+that proportional to the parishes actually using it.
+
 ## Local development
 
 Everything runs on a laptop with no AWS account at all.
@@ -210,6 +317,53 @@ Neither needs any environment: the connection settings default to the docker-com
 Postgres, and `api`'s `dev` script supplies the local-only ones (`DEV_AUTH_EMAIL`,
 `DB_PASSWORD`, `PHOTO_STORAGE=local`, `COGNITO_MODE=local`, `PUSH_MODE=local`). Any of them
 can be overridden from your shell — `DEV_AUTH_EMAIL=someone@example.com npm run dev:api`.
+The same goes for `GEOCODING_MODE`, which the script also defaults to `local`.
+
+Google Maps is off by the same trick: with no keys the addresses save without coordinates,
+the address fields are plain text inputs, and Map View reports itself unavailable. The two keys
+go in **`api/.env`**, which is gitignored — copy the committed example and fill it in:
+
+```sh
+cp api/.env.example api/.env
+```
+
+```sh
+GOOGLE_MAPS_BROWSER_KEY=AIza...
+GOOGLE_MAPS_SERVER_KEY=AIza...
+```
+
+That is the whole list. **Nothing goes in `app/`**, because the browser key is served from
+`GET /api/me` rather than baked into the bundle, and the Map ID is a constant in
+`api/src/services/geocoding.ts` — it names a style rather than granting anything.
+
+There is no dotenv dependency: the `dev` script passes Node's own
+`--env-file-if-exists=.env`. One consequence worth knowing, because it is silent —
+**`--env-file` does not override a variable already set in your shell**. So
+`GOOGLE_MAPS_SERVER_KEY=... npm run dev` wins over the file, and a name the `dev` script
+already exports (`DEV_AUTH_EMAIL`, `DB_PASSWORD`, `PHOTO_STORAGE`, `COGNITO_MODE`,
+`PUSH_MODE`) cannot be set from the file at all. `GEOCODING_MODE` is deliberately *not* in
+that list, so `GEOCODING_MODE=local` in `api/.env` can force Maps off with the keys still
+present.
+
+Two more things to do once, or the map will be correct and empty:
+
+1. **Add `http://localhost:5173/*`** to the browser key's referrer restrictions in the Google
+   console. Without it Maps refuses the script and the address field falls back to a plain
+   input — which is the designed behaviour for a missing key, so nothing looks broken.
+2. **Switch Map View on** for the parish, from *Churches* as the super administrator, and then
+   backfill. Until the switch, `GET /api/me` returns a null key however many are set, `/map`
+   redirects home and the Directory offers no link; and the switch alone populates nothing,
+   because a parish with the map off was never geocoded:
+
+   ```sh
+   npm run geocode:backfill -w api            # every enabled parish
+   npm run geocode:backfill -w api -- <orgId> # just one
+   ```
+
+   It reads `api/.env` too, and prints what it did — `{ refreshed, backfilled, dropped,
+   failed }`. Editing an address through the UI and picking a suggestion is the other way, and
+   the one that exercises Autocomplete. The same handler runs on the daily schedule in
+   production, where it is invoked with `{"backfill": true}`.
 
 `PUSH_MODE=local` makes push a no-op, so everything except the notification itself works
 with no VAPID keys. The in-app bell is unaffected and is the part worth exercising locally;
@@ -373,7 +527,45 @@ normal `git push`.
    is deleted — but every member has to turn notifications back on from the settings page
    before they hear anything again.
 
-8. **Create the first parish** from *Churches*, then invite an administrator for it.
+8. **Set up Google Maps.** Optional and skippable: without it every parish's Map View stays
+   unavailable, addresses save without coordinates, and the address fields are plain text
+   inputs. The page and the settings say so in as many words. All of it is console work in one
+   project, with nothing to wait for.
+
+   - Create a Cloud project and **attach a billing account**. Maps Platform serves nothing
+     without one even entirely inside the free tier, which is the step that surprises people.
+     Set a budget alert while you are there; expected spend is $0.
+   - Enable **Maps JavaScript API**, **Places API (New)** and **Geocoding API**. Nothing else --
+     an unused enabled API is surface area on a key that gets scraped.
+   - Create **two** keys, because the browser's cannot be kept secret and the server's can:
+     - *directory browser* — restricted to **Websites**, referrers `https://directory.pauldev.io/*`
+       (add `http://localhost:5173/*` for local work), and to the Maps JavaScript and Places
+       APIs only.
+     - *directory server* — **no** application restriction, because the Lambda leaves over IPv6
+       from a shifting address, and restricted to the Geocoding API only. This is why it has to
+       be a second key: one with no application restriction must never reach a browser.
+   - Set **daily quota caps** per API (APIs & Services → Quotas). This is the control that
+     actually bounds a leaked browser key. Around 2,000 map loads, 500 Places requests and
+     1,000 geocodes per day is far above real use and well under a painful bill.
+   - Create a **Map ID** (Map Management → JavaScript, **Vector**) and associate it with a
+     **map style**. Required, not cosmetic: Advanced Markers do not render without a Map ID.
+     The style is where the base map gets muted toward the parish's own colours -- it is edited
+     in the console and takes effect with no deploy. **Paste `docs/map-style.json` into the
+     style editor's JSON tab** rather than building one by hand -- that is the parish's own
+     palette, and `docs/map-style.md` says why each choice is there. The Map ID itself is
+     **not** a secret and is a constant in `api/src/services/geocoding.ts`; a deployment
+     against a different Google project needs that line changed.
+   - Store the two keys as repository secrets: `GOOGLE_MAPS_BROWSER_KEY` and
+     `GOOGLE_MAPS_SERVER_KEY`. Setting only one fails the synth on purpose (`readMapsConfig` in
+     `infra/bin/app.ts`) -- with the browser key missing the map cannot load, and with the
+     server key missing no address ever gets a pin, and both look like a working deployment
+     until somebody opens the page.
+
+   Then switch Map View on for a parish from *Churches*, and invoke the refresh function with
+   `{"backfill": true}` to geocode the addresses it already has. The flag alone populates
+   nothing.
+
+9. **Create the first parish** from *Churches*, then invite an administrator for it.
 
 ## CI/CD
 

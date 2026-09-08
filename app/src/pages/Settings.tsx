@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { NotificationPreferencesDto } from "@shared";
+import type { NotificationPreferencesDto, OrganizationAddressDto } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import {
@@ -11,7 +11,8 @@ import {
 } from "../lib/push";
 import { useMe } from "../context/MeContext";
 import { MAPS_PROVIDERS, forgetPreferredProvider, preferredProvider } from "../lib/maps";
-import { Button, ErrorNotice, PageHeading, Spinner } from "../components/ui";
+import { AddressAutocomplete } from "../components/AddressAutocomplete";
+import { Button, ErrorNotice, Field, PageHeading, Spinner, inputClass } from "../components/ui";
 
 /**
  * Notification settings.
@@ -37,7 +38,7 @@ import { Button, ErrorNotice, PageHeading, Spinner } from "../components/ui";
  * is otherwise nowhere.
  */
 export function Settings() {
-  const { me, canApprovePrayerRequests } = useMe();
+  const { me, canApprovePrayerRequests, isAdmin } = useMe();
   const queryClient = useQueryClient();
 
   const publicKey = me?.pushPublicKey ?? null;
@@ -228,6 +229,8 @@ export function Settings() {
         </div>
       </section>
 
+      {isAdmin && <ChurchAddressSection />}
+
       {mapsProvider && (
         <section className="mt-4 rounded-lg border border-line bg-surface p-4">
           <h2 className="font-bold text-ink">Maps</h2>
@@ -248,6 +251,171 @@ export function Settings() {
         </section>
       )}
     </>
+  );
+}
+
+/**
+ * The church address, for an administrator.
+ *
+ * Here rather than on *Churches*, which is a super administrator's page, because
+ * Map View warns an administrator that this address is missing -- and a warning
+ * that links somewhere you are bounced out of is worse than no warning. This is
+ * the UI for `PATCH /api/organizations/current`, which is deliberately narrower
+ * than the super administrator's route: it takes an address and nothing else, so
+ * the parish name and the Map View switch stay out of reach.
+ *
+ * Shown to every administrator, not only when the address is missing. Somebody
+ * has to be able to correct one that is merely wrong, and a section that
+ * vanished once it was filled in would be a section nobody could find again.
+ */
+function ChurchAddressSection() {
+  const queryClient = useQueryClient();
+  const { organizationId } = useMe();
+  const [saved, setSaved] = useState<string | null>(null);
+  const [warning, setWarning] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [address, setAddress] = useState<{
+    addressLine1: string;
+    city: string;
+    state: string;
+    postalCode: string;
+    country: string;
+    placeId: string | null;
+  } | null>(null);
+
+  /*
+   * Read from the map, which every member may load, rather than from
+   * `/organizations` -- that one is super-admin-only, so an administrator
+   * asking it would get a 403 and this section would be permanently broken for
+   * exactly the people it is for.
+   */
+  const current = useQuery({
+    queryKey: qk.churchAddress(organizationId),
+    queryFn: ({ signal }) => api<OrganizationAddressDto>("/organizations/current", { signal }),
+  });
+
+  const form = address ?? {
+    addressLine1: current.data?.addressLine1 ?? "",
+    city: current.data?.city ?? "",
+    state: current.data?.state ?? "",
+    postalCode: current.data?.postalCode ?? "",
+    country: current.data?.country ?? "",
+    placeId: current.data?.placeId ?? null,
+  };
+
+  const save = useMutation({
+    mutationFn: () =>
+      api<{ organization: OrganizationAddressDto; geocodeWarning: string | null }>(
+        "/organizations/current",
+        { method: "PATCH", body: form }
+      ),
+    onSuccess: async (result) => {
+      setError(null);
+      setWarning(result.geocodeWarning);
+      setSaved(
+        result.organization.latitude === null
+          ? "Saved. It could not be placed on the map."
+          : "Saved, and placed on the map."
+      );
+      await queryClient.invalidateQueries({ queryKey: qk.churchAddress(organizationId) });
+    },
+    onError: (err: unknown) => {
+      setSaved(null);
+      setError(err instanceof Error ? err.message : "Could not save that address");
+    },
+  });
+
+  return (
+    <section className="mt-4 rounded-lg border border-line bg-surface p-4">
+      <h2 className="font-bold text-ink">Church address</h2>
+      <p className="mt-1 text-sm text-ink-muted">
+        Where Map View opens, at about a 30 mile radius. Without it the map centres on the middle of
+        the parish instead.
+      </p>
+
+      {current.isPending ? (
+        <Spinner label="Loading the church address" />
+      ) : (
+        <form
+          className="mt-3 grid gap-4 md:grid-cols-2"
+          onSubmit={(event) => {
+            event.preventDefault();
+            save.mutate();
+          }}
+        >
+          <Field label="Street" className="md:col-span-2">
+            <AddressAutocomplete
+              value={form.addressLine1}
+              onChange={(value) => setAddress({ ...form, addressLine1: value, placeId: null })}
+              onPick={(picked) =>
+                setAddress({
+                  addressLine1: picked.addressLine1,
+                  city: picked.city || form.city,
+                  state: picked.state || form.state,
+                  postalCode: picked.postalCode || form.postalCode,
+                  country: picked.country || form.country,
+                  placeId: picked.placeId,
+                })
+              }
+            />
+          </Field>
+          <Field label="City">
+            <input
+              className={inputClass}
+              value={form.city}
+              onChange={(event) => setAddress({ ...form, city: event.target.value })}
+            />
+          </Field>
+          <Field label="State">
+            <input
+              className={inputClass}
+              value={form.state}
+              onChange={(event) => setAddress({ ...form, state: event.target.value })}
+            />
+          </Field>
+          <Field label="ZIP code">
+            <input
+              className={inputClass}
+              value={form.postalCode}
+              onChange={(event) => setAddress({ ...form, postalCode: event.target.value })}
+            />
+          </Field>
+          <Field label="Country">
+            <input
+              className={inputClass}
+              value={form.country}
+              onChange={(event) => setAddress({ ...form, country: event.target.value })}
+            />
+          </Field>
+
+          <div className="md:col-span-2">
+            <Button type="submit" disabled={save.isPending}>
+              {save.isPending ? "Saving…" : "Save church address"}
+            </Button>
+          </div>
+
+          {error && (
+            <p role="alert" className="font-bold text-primary md:col-span-2">
+              {error}
+            </p>
+          )}
+          {/* Status rather than alert: the save worked, so this is news. */}
+          {saved && !error && (
+            <p role="status" className="text-sm text-ink-muted md:col-span-2">
+              {saved}
+            </p>
+          )}
+          {warning && (
+            <p
+              role="status"
+              className="rounded-md border border-accent bg-surface-muted p-3 text-sm text-ink md:col-span-2"
+            >
+              {warning}
+            </p>
+          )}
+        </form>
+      )}
+    </section>
   );
 }
 

@@ -46,6 +46,8 @@ describe("ChurchDirectoryStack", () => {
       vapidPublicKey: "test-vapid-public-key",
       vapidPrivateKey: "test-vapid-private-key",
       vapidSubject: "mailto:no-reply@example.com",
+      mapsBrowserKey: "test-maps-browser-key",
+      mapsServerKey: "test-maps-server-key",
     });
     cdk.Tags.of(app).add("Project", "all-saints");
     template = Template.fromStack(stack);
@@ -288,6 +290,51 @@ describe("ChurchDirectoryStack", () => {
             VAPID_SUBJECT: "mailto:no-reply@example.com",
           }),
         },
+      });
+    });
+
+    it("is handed both Google Maps keys, and keeps them apart", () => {
+      /*
+       * Two keys, not one, and the distinction is the point. The browser key is
+       * handed to signed-in members through GET /api/me, so it necessarily
+       * reaches a page and is restricted by referrer in the Google console. The
+       * server key carries no application restriction -- a Lambda leaving over
+       * IPv6 has no stable address to restrict it to -- so it must never reach
+       * a browser. Asserted because a single key wired to both would work
+       * perfectly and be exactly the mistake.
+       */
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        Environment: {
+          Variables: Match.objectLike({
+            GOOGLE_MAPS_BROWSER_KEY: "test-maps-browser-key",
+            GOOGLE_MAPS_SERVER_KEY: "test-maps-server-key",
+          }),
+        },
+      });
+    });
+
+    it("refreshes geocodes on a schedule, in the VPC and with no browser key", () => {
+      /*
+       * The refresh function is inside the VPC for the database and reaches
+       * maps.googleapis.com over IPv6, exactly like the API -- which is why the
+       * "no NAT gateway" assertion below still has to hold with it present.
+       *
+       * It is given the server key and *not* the browser key: it never answers
+       * a request, so a browser key in its environment would be a copy of a
+       * credential with nowhere to go.
+       */
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        Environment: {
+          Variables: Match.objectLike({
+            GOOGLE_MAPS_SERVER_KEY: "test-maps-server-key",
+            DB_AUTH: "iam",
+          }),
+        },
+        VpcConfig: Match.objectLike({ Ipv6AllowedForDualStack: true }),
+      });
+      template.hasResourceProperties("AWS::Events::Rule", {
+        ScheduleExpression: "rate(1 day)",
+        State: "ENABLED",
       });
     });
 

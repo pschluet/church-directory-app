@@ -12,8 +12,10 @@ vi.mock("../src/lib/api", () => ({
   DEV_AUTH: false,
 }));
 
+/** Per-case, because whether this parish has Map View changes what renders. */
+const me = vi.fn(() => ({ organizationId: "org-1", mapViewEnabled: false }) as unknown);
 vi.mock("../src/context/MeContext", () => ({
-  useMe: () => ({ organizationId: "org-1" }),
+  useMe: () => me(),
 }));
 
 function person(
@@ -39,6 +41,7 @@ function person(
     state: null,
     postalCode: null,
     country: null,
+    placeId: null,
     patronSaint: null,
     photoUrl: null,
     thumbUrl: null,
@@ -108,6 +111,7 @@ const queryOf = (path: string, index: number): Query =>
 
 describe("Directory", () => {
   beforeEach(() => {
+    me.mockReturnValue({ organizationId: "org-1", mapViewEnabled: false });
     api.mockReset();
     api.mockImplementation((path: string, options?: { query?: Query }) => {
       const holdersOnly = options?.query?.accountHoldersOnly === "true";
@@ -452,6 +456,28 @@ describe("Directory", () => {
       // list, and left a cursor from the wrong set behind.
       expect(noCard("John Smith")).not.toBeInTheDocument();
       expect(screen.getByText("1 account holder, by last name")).toBeInTheDocument();
+    });
+  });
+
+  describe("the way through to the map", () => {
+    it("offers Map View when this parish has it", async () => {
+      me.mockReturnValue({ organizationId: "org-1", mapViewEnabled: true });
+      api.mockResolvedValue({ people: [], nextCursor: null });
+      renderWithProviders(<Directory />);
+
+      const link = await screen.findByRole("link", { name: /map view/i });
+      expect(link).toHaveAttribute("href", "/map");
+    });
+
+    it("offers nothing when this parish does not", async () => {
+      // Not a disabled link and not a link that bounces you home: the same
+      // `mapViewEnabled` the route guard reads, so the two cannot disagree.
+      me.mockReturnValue({ organizationId: "org-1", mapViewEnabled: false });
+      api.mockResolvedValue({ people: [], nextCursor: null });
+      renderWithProviders(<Directory />);
+
+      await screen.findByRole("heading", { name: "Directory" });
+      expect(screen.queryByRole("link", { name: /map view/i })).not.toBeInTheDocument();
     });
   });
 });

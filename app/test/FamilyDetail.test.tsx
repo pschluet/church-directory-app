@@ -51,6 +51,7 @@ function member(overrides: {
     state: null,
     postalCode: null,
     country: null,
+    placeId: null,
     patronSaint: null,
     photoUrl: null,
     thumbUrl: null,

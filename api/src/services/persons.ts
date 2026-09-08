@@ -38,6 +38,7 @@ export interface PersonRow {
   state: string | null;
   postal_code: string | null;
   country: string | null;
+  place_id: string | null;
   patron_saint: string | null;
   photo_key: string | null;
   /** Position within the family; null until someone sets a custom order. */
@@ -66,6 +67,7 @@ export const PERSON_COLUMNS = `
   r.state,
   r.postal_code,
   r.country,
+  r.place_id,
   r.patron_saint,
   r.photo_key,
   r.family_order,
@@ -134,6 +136,7 @@ export function toSummary(caller: Caller, row: PersonRow): PersonSummaryDto {
     state: row.state,
     postalCode: row.postal_code,
     country: row.country,
+    placeId: row.place_id,
     patronSaint: row.patron_saint,
     // photoUrl is deprecated; it mirrors the thumbnail so a still-cached older
     // SPA bundle keeps rendering avatars until it is replaced.
@@ -337,6 +340,12 @@ export const PERSON_WRITE_COLUMNS = {
   state: "state",
   postalCode: "postal_code",
   country: "country",
+  /*
+   * Writable because it is the one part of a geocode the client is allowed to
+   * send: Places Autocomplete found it, and the server resolves the
+   * coordinates from it rather than trusting a latitude off the wire.
+   */
+  placeId: "place_id",
   patronSaint: "patron_saint",
   familyId: "family_id",
   inheritEmailFromPersonId: INHERIT_COLUMN.email,

@@ -22,6 +22,7 @@ function person(overrides: Partial<PersonSummaryDto> = {}): PersonSummaryDto {
     state: "IL",
     postalCode: "60641",
     country: null,
+    placeId: null,
     patronSaint: "St. Anna",
     photoUrl: null,
     thumbUrl: null,

@@ -8,6 +8,7 @@ import { loadPerson } from "../services/persons";
 import { setAccountOrganization } from "../services/membership";
 import { PHOTO_COOKIE_TTL_SECONDS, signPhotoCookies } from "../photo-cookies";
 import { pushPublicKey } from "../services/push";
+import { mapsBrowserConfig } from "../services/geocoding";
 import { fullName, setMyOrganizationSchema, type MeDto, type OrganizationMoveDto } from "../types";
 
 /**
@@ -31,9 +32,11 @@ function asHomeParishCaller(caller: Caller): Caller {
 async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<MeDto> {
   const [org, person] = await Promise.all([
     caller.organizationId
-      ? one<{ id: string; name: string }>(db, "select id, name from organizations where id = $1", [
-          caller.organizationId,
-        ])
+      ? one<{ id: string; name: string; map_view_enabled: boolean }>(
+          db,
+          "select id, name, map_view_enabled from organizations where id = $1",
+          [caller.organizationId]
+        )
       : Promise.resolve(null),
     caller.personId && caller.homeOrganizationId
       ? loadPerson(db, asHomeParishCaller(caller), caller.personId, caller.homeOrganizationId)
@@ -49,6 +52,15 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
         )
       ).rows
     : [];
+
+  /*
+   * Map View is a per-parish switch, so the key follows the organization being
+   * looked at rather than the deployment. Withholding it when the parish has
+   * the map off is the point: no Google script is loaded on any page, which is
+   * also why address autocomplete goes quiet at the same time.
+   */
+  const mapViewEnabled = org?.map_view_enabled ?? false;
+  const maps = mapViewEnabled ? mapsBrowserConfig() : { key: null, mapId: null };
 
   // The active organization is usually the home one, so avoid re-reading it.
   const homeName =
@@ -74,7 +86,7 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
       personName: person ? fullName(person) : null,
     },
     person,
-    organization: org,
+    organization: org && { id: org.id, name: org.name },
     availableOrganizations,
     /*
      * The VAPID public key the browser needs to subscribe for push.
@@ -86,6 +98,9 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
      * by definition -- it is what identifies the sender to the push service.
      */
     pushPublicKey: pushPublicKey(),
+    mapViewEnabled,
+    mapsBrowserKey: maps.key,
+    mapsMapId: maps.mapId,
   };
 }
 

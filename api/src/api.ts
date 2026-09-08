@@ -6,9 +6,11 @@ import { ZodError } from "zod";
 import { authMiddleware, type AppEnv } from "./auth";
 import { assertPhotoCookieConfig } from "./photo-cookies";
 import { assertPushConfig } from "./services/push";
+import { assertGeocodingConfig } from "./services/geocoding";
 import type { Queryable } from "./db";
 import meRoutes from "./routes/me";
 import directoryRoutes from "./routes/directory";
+import mapRoutes from "./routes/map";
 import personRoutes from "./routes/persons";
 import familyRoutes from "./routes/families";
 import mergeRoutes from "./routes/merges";
@@ -52,6 +54,10 @@ export function createApp(queryable?: Queryable) {
   // Same reasoning, one step weaker: push is optional, so this only complains
   // about a *half*-configured keypair. See assertPushConfig.
   assertPushConfig();
+  // Weaker again: the map is optional per parish, so this only complains about
+  // a browser key with no server key behind it -- a map that loads and then
+  // never places anybody on it.
+  assertGeocodingConfig();
 
   const app = new Hono<AppEnv>();
 
@@ -103,6 +109,7 @@ export function createApp(queryable?: Queryable) {
 
   app.route("/api/me", meRoutes);
   app.route("/api/directory", directoryRoutes);
+  app.route("/api/map", mapRoutes);
   app.route("/api/persons", personRoutes);
   app.route("/api/families", familyRoutes);
   app.route("/api/merges", mergeRoutes);

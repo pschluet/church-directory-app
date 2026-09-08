@@ -55,6 +55,8 @@ const TABLES = [
   "families",
   "app_users",
   "organizations",
+  // After organizations and persons: both hold a foreign key into it.
+  "geocoded_addresses",
 ];
 
 /**

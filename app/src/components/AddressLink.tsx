@@ -25,20 +25,31 @@ const LINK_CLASS =
  * the platform in lib/maps, and the reasoning lives there.
  *
  * An address with no street line stays plain text; see `hasMappableAddress`.
+ *
+ * Two ways in. Most callers have a Person and let this assemble the address out
+ * of the six columns. The map has a *place* instead -- a pin is an address, not
+ * a person, and two people at one house may have typed it differently -- so it
+ * passes Google's own `formatted_address` and skips the assembly. That form is
+ * always linkable: a pin exists because the address geocoded.
  */
-export function AddressLink({
-  person,
-  className = "",
-}: {
-  person: Partial<PersonSummaryDto>;
-  className?: string;
-}) {
+type AddressLinkProps = { className?: string } & (
+  | { person: Partial<PersonSummaryDto>; address?: never }
+  | { address: string; person?: never }
+);
+
+export function AddressLink({ person, address: given, className = "" }: AddressLinkProps) {
   const [choosing, setChoosing] = useState(false);
   const [preferred, setPreferred] = useState(preferredProvider);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
-  const lines = formatMultilineAddress(person);
-  const address = formatSingleLineAddress(person);
+  /*
+   * `given` is one line already, so there is nothing to lay out over several --
+   * it wraps instead. A Person's address is built from its parts, which is
+   * where the multi-line shape comes from.
+   */
+  const lines = given ? [given] : formatMultilineAddress(person ?? {});
+  const address = given ?? formatSingleLineAddress(person ?? {});
+  const mappable = given ? true : hasMappableAddress(person ?? {});
   /*
    * Read at render rather than through a hook: neither the user agent nor the
    * touch count can change while the page is open, and the decision they feed
@@ -50,7 +61,7 @@ export function AddressLink({
 
   const text = lines.join("\n");
 
-  if (!hasMappableAddress(person)) {
+  if (!mappable) {
     return <span className={`block whitespace-pre-line ${className}`}>{text}</span>;
   }
 

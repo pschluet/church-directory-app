@@ -8,6 +8,7 @@ import {
   formatSingleLineAddress,
   hasMappableAddress,
   initials,
+  memberPreview,
   specialDateDetail,
   specialDateLabel,
   specialDatePartner,
@@ -199,5 +200,50 @@ describe("formatPostedAt", () => {
     // and "27 days ago" is not something anyone converts to a date in their head.
     expect(formatPostedAt(ago(10 * DAY), now)).not.toMatch(/ago/);
     expect(formatPostedAt(ago(10 * DAY), now)).toMatch(/2[45]/);
+  });
+});
+
+/**
+ * The names-and-overflow tail of a member preview.
+ *
+ * Shared by the families list and the map's pins, which disagree about what
+ * count belongs in front of it -- so this deliberately has no count of its own.
+ * The arithmetic is the bit worth pinning: `total` is the real number of
+ * people, which may be larger than the names the caller was handed, because the
+ * families endpoint caps them server-side.
+ */
+describe("memberPreview", () => {
+  it("lists everybody when they fit", () => {
+    expect(memberPreview(["Anna", "Boris"], 2)).toBe("Anna, Boris");
+  });
+
+  it("lists exactly the cap without an overflow", () => {
+    expect(memberPreview(["Anna", "Boris", "Dmitri"], 3)).toBe("Anna, Boris, Dmitri");
+  });
+
+  it("counts the people it did not name", () => {
+    expect(memberPreview(["Anna", "Boris", "Dmitri", "Elena"], 4)).toBe("Anna, Boris, Dmitri +1");
+  });
+
+  it("counts against the real total, not the names it was given", () => {
+    // The families endpoint sends three names for a family of six.
+    expect(memberPreview(["Anna", "Boris", "Dmitri"], 6)).toBe("Anna, Boris, Dmitri +3");
+  });
+
+  it("takes a different cap", () => {
+    expect(memberPreview(["Anna", "Boris", "Dmitri"], 3, 1)).toBe("Anna +2");
+  });
+
+  it("says nothing about nobody", () => {
+    expect(memberPreview([], 0)).toBe("");
+  });
+
+  it("can count people it has no names for at all", () => {
+    expect(memberPreview([], 3)).toBe("+3");
+  });
+
+  it("does not invent a negative overflow", () => {
+    // A total behind the names is a caller bug, not something to render.
+    expect(memberPreview(["Anna", "Boris"], 1)).toBe("Anna, Boris");
   });
 });

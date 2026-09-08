@@ -28,6 +28,7 @@ function member(overrides: Partial<FamilyMemberDto> & { id: string; firstName: s
     state: null,
     postalCode: null,
     country: null,
+    placeId: null,
     patronSaint: null,
     photoUrl: null,
     thumbUrl: null,

@@ -4,8 +4,9 @@
   "private": true,
   "type": "commonjs",
   "scripts": {
-    "dev": "DEV_AUTH_EMAIL=${DEV_AUTH_EMAIL-paul@example.com} DB_PASSWORD=${DB_PASSWORD-postgres} PHOTO_STORAGE=${PHOTO_STORAGE-local} COGNITO_MODE=${COGNITO_MODE-local} PUSH_MODE=${PUSH_MODE-local} tsx watch src/server.ts",
+    "dev": "DEV_AUTH_EMAIL=${DEV_AUTH_EMAIL-paul@example.com} DB_PASSWORD=${DB_PASSWORD-postgres} PHOTO_STORAGE=${PHOTO_STORAGE-local} COGNITO_MODE=${COGNITO_MODE-local} PUSH_MODE=${PUSH_MODE-local} tsx watch --env-file-if-exists=.env src/server.ts",
     "seed": "tsx scripts/seed.ts",
+    "geocode:backfill": "DB_PASSWORD=${DB_PASSWORD-postgres} tsx --env-file-if-exists=.env scripts/backfill-geocodes.ts",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest"

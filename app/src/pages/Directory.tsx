@@ -5,6 +5,7 @@ import { searchTerms, type PersonSummaryDto } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
+import { Link } from "../components/nav";
 import { PersonCard } from "../components/PersonCard";
 import { SearchField } from "../components/SearchField";
 import { Button, EmptyState, ErrorNotice, PageHeading, Spinner } from "../components/ui";
@@ -41,7 +42,7 @@ const ACCOUNT_HOLDERS_PARAM = "accountHoldersOnly";
  * pages already loaded, and their cursor, rather than starting the scroll again.
  */
 export function Directory() {
-  const { organizationId } = useMe();
+  const { organizationId, mapViewEnabled } = useMe();
   const [params, setParams] = useSearchParams();
   const query = params.get("q") ?? "";
 
@@ -213,6 +214,16 @@ export function Directory() {
         title="Directory"
         subtitle={subtitle}
         actions={<SearchField value={input} onChange={setInput} />}
+        /*
+          Not `actions` and not `filters`. Not `filters`, because a link to
+          another page does not narrow this list, which is what that row is for;
+          not `actions`, because on a phone it would stack under the search box
+          and read as part of it. Beside the title it stays a way *out* of this
+          page. Absent entirely when the parish has Map View off -- the same
+          `mapViewEnabled` the route guard reads, so this cannot offer a page
+          that would bounce you home.
+        */
+        titleAction={mapViewEnabled ? <MapViewLink /> : undefined}
         filters={
           <label className="tap-target inline-flex items-center gap-2 text-sm">
             <input
@@ -329,6 +340,35 @@ export function Directory() {
  * split written inline. Browsing passes none, so a card being browsed renders
  * exactly the DOM it did before search learned to mark anything.
  */
+/**
+ * "Accessible from the directory page via tapping a map icon with 'Map View'
+ * text." A secondary button, so it reads as the alternative view of this page
+ * rather than as the thing to do next. Inline SVG, like every icon here.
+ */
+function MapViewLink() {
+  return (
+    <Link
+      to="/map"
+      className="tap-target inline-flex items-center justify-center gap-2 rounded-md border border-primary px-4 py-2 font-bold text-primary transition hover:border-accent hover:text-accent"
+    >
+      <svg
+        viewBox="0 0 24 24"
+        className="h-4 w-4"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        aria-hidden="true"
+      >
+        <path d="M12 21s-6.5-5.6-6.5-10.2a6.5 6.5 0 1 1 13 0C18.5 15.4 12 21 12 21z" />
+        <circle cx="12" cy="10.5" r="2.4" />
+      </svg>
+      Map View
+    </Link>
+  );
+}
+
 const PersonGrid = memo(function PersonGrid({
   people,
   terms,

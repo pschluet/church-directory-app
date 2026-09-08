@@ -33,8 +33,12 @@ function relativeDate(offsetDays: number): { month: number; day: number } {
 
 async function main(): Promise<void> {
   await pool.query(
+    // geocoded_addresses last: persons and organizations both hold a foreign
+    // key into it, so it cannot go first, and leaving it out would strand a
+    // pin for every address the previous seed placed.
     `truncate audit_log, special_dates, family_join_requests, person_merge_requests,
-              persons, families, app_users, organizations restart identity cascade`
+              persons, families, app_users, organizations, geocoded_addresses
+              restart identity cascade`
   );
 
   const { rows: orgs } = await pool.query<{ id: string; slug: string }>(

@@ -24,6 +24,8 @@ export default defineConfig({
       // Cognito account creation is stubbed.
       PHOTO_STORAGE: "local",
       PUSH_MODE: "local",
+      // Without this every suite that saves an address would call Google.
+      GEOCODING_MODE: "local",
       COGNITO_MODE: "local",
       EMAIL_MODE: "local",
       PHOTOS_BUCKET: "test-photos-bucket",

@@ -249,3 +249,73 @@ export async function createAuditEntry(
   );
   return rows[0]!.id;
 }
+
+/**
+ * A geocoded address, inserted directly.
+ *
+ * Direct rather than through a route because every route that writes one calls
+ * Google, and `GEOCODING_MODE=local` refuses. What the map tests need is the
+ * table populated, not the call exercised -- `geocoding.test.ts` covers the
+ * call with a stubbed `fetch`.
+ */
+export async function createGeocode(
+  db: Queryable,
+  options: {
+    placeId: string;
+    formattedAddress?: string;
+    latitude?: number | null;
+    longitude?: number | null;
+    /** Days in the past, for the staleness the refresh job selects on. */
+    ageDays?: number;
+  }
+): Promise<string> {
+  await db.query(
+    `insert into geocoded_addresses
+       (place_id, formatted_address, latitude, longitude, geocoded_at)
+     values ($1, $2, $3, $4, now() - ($5 || ' days')::interval)`,
+    [
+      options.placeId,
+      options.formattedAddress ?? `${options.placeId} Street, Chicago, IL, USA`,
+      options.latitude === undefined ? 41.9445 : options.latitude,
+      options.longitude === undefined ? -87.7325 : options.longitude,
+      String(options.ageDays ?? 0),
+    ]
+  );
+  return options.placeId;
+}
+
+/** Points a person at an address that has already been geocoded. */
+export async function setPlaceId(
+  db: Queryable,
+  personId: string,
+  placeId: string | null
+): Promise<void> {
+  await db.query("update persons set place_id = $2 where id = $1", [personId, placeId]);
+}
+
+/** Switches Map View on for a parish, and optionally gives it a church address. */
+export async function enableMapView(
+  db: Queryable,
+  organizationId: string,
+  churchPlaceId?: string | null
+): Promise<void> {
+  await db.query(
+    "update organizations set map_view_enabled = true, place_id = coalesce($2, place_id) where id = $1",
+    [organizationId, churchPlaceId ?? null]
+  );
+}
+
+/**
+ * The order somebody dragged a family's members into on the family page.
+ *
+ * Null means nobody has ordered this family, which is why every read sorts
+ * `family_order asc nulls last` and falls back to names.
+ */
+export async function setFamilyOrder(
+  db: Queryable,
+  order: { personId: string; position: number | null }[]
+): Promise<void> {
+  for (const { personId, position } of order) {
+    await db.query("update persons set family_order = $2 where id = $1", [personId, position]);
+  }
+}

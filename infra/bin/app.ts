@@ -92,8 +92,50 @@ function readPushKeys(): { publicKey: string; privateKey: string } {
   };
 }
 
+/**
+ * Google Maps, for Map View.
+ *
+ * Both come from GitHub secrets (or `-c mapsBrowserKey=` and `-c mapsServerKey=`
+ * for a deploy from a laptop). Unlike the two keypairs above there is no
+ * committed public half, because neither is generated -- they are created by
+ * hand in the Google Cloud console.
+ *
+ * The Map ID is not here. It names a style rather than granting anything and is
+ * already sent to every signed-in browser, so it is a constant in
+ * api/src/services/geocoding.ts.
+ *
+ * Nothing configured is a supported state: every parish's map is off, addresses
+ * save without coordinates, and the page says so. A *partial* configuration is
+ * refused, for the same reason `readPushKeys` refuses one -- with the browser
+ * key missing the map cannot load, and with the server key missing no address
+ * ever gets a pin. Both look like a working deployment until somebody opens the
+ * page.
+ */
+function readMapsConfig(): { browserKey: string; serverKey: string } {
+  const browserKey =
+    app.node.tryGetContext("mapsBrowserKey") ?? process.env.GOOGLE_MAPS_BROWSER_KEY ?? "";
+  const serverKey =
+    app.node.tryGetContext("mapsServerKey") ?? process.env.GOOGLE_MAPS_SERVER_KEY ?? "";
+
+  const supplied = [
+    ["GOOGLE_MAPS_BROWSER_KEY", browserKey],
+    ["GOOGLE_MAPS_SERVER_KEY", serverKey],
+  ] as const;
+  const missing = supplied.filter(([, value]) => !value).map(([name]) => name);
+
+  if (missing.length === 1) {
+    throw new Error(
+      `Google Maps is half-configured: ${missing[0]} must be set alongside the other. ` +
+        "Set both or neither -- neither deploys with Map View unavailable, which is supported."
+    );
+  }
+
+  return { browserKey: browserKey.trim(), serverKey: serverKey.trim() };
+}
+
 const photoKeys = readPhotoKeys();
 const pushKeys = readPushKeys();
+const maps = readMapsConfig();
 
 new ChurchDirectoryStack(app, "ChurchDirectoryStack", {
   env: { account, region },
@@ -110,6 +152,8 @@ new ChurchDirectoryStack(app, "ChurchDirectoryStack", {
   // The address a push service contacts if it has a problem with our sends.
   // Reuses the SES sender rather than inventing a mailbox nobody reads.
   vapidSubject: "mailto:no-reply@pauldev.io",
+  mapsBrowserKey: maps.browserKey,
+  mapsServerKey: maps.serverKey,
 });
 
 // Every resource is tagged so this project's cost can be tracked on its own.

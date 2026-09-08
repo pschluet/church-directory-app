@@ -114,6 +114,7 @@ export const AUDIT_ACTIONS = [
 
   "organization.create",
   "organization.update",
+  "organization.updateAddress",
 
   "prayerRequest.create",
   "prayerRequest.post",
@@ -155,6 +156,7 @@ const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
 
   "organization.create": "Church created",
   "organization.update": "Church edited",
+  "organization.updateAddress": "Church address edited",
 
   "prayerRequest.create": "Prayer request submitted",
   "prayerRequest.post": "Prayer request posted",
@@ -246,6 +248,17 @@ export const addressSchema = z.object({
   state: trimmedOptional(100),
   postalCode: trimmedOptional(20),
   country: trimmedOptional(100),
+  /**
+   * Google's identifier for the address, from Places Autocomplete.
+   *
+   * The only part of the geocode a client is allowed to send. Coordinates are
+   * resolved from this on the server, because a payload that carried its own
+   * latitude would let anyone put themselves on the church roof.
+   *
+   * Null for an address typed by hand, which falls through to geocoding the
+   * text instead.
+   */
+  placeId: trimmedOptional(255),
 });
 
 // ---------------------------------------------------------------------------
@@ -295,6 +308,12 @@ export interface PersonSummaryDto {
   state: string | null;
   postalCode: string | null;
   country: string | null;
+  /**
+   * Google's identifier for this address, or null when it has never been
+   * geocoded. Sent back so the edit form can hand it straight to a PATCH that
+   * did not touch the address, rather than dropping the pin on every save.
+   */
+  placeId: string | null;
   patronSaint: string | null;
   /**
    * @deprecated Use `thumbUrl`/`fullUrl`. Kept for one release because the SPA
@@ -331,6 +350,15 @@ export interface PersonDto extends PersonSummaryDto {
   /** Which fields are inherited, and from whom -- drives the edit UI. */
   inheritedFrom: Partial<Record<InheritableAttribute, { personId: string; name: string }>>;
   specialDates: SpecialDateDto[];
+  /**
+   * Set when the address saved but could not be placed on the map.
+   *
+   * A warning rather than a 400, because the save did work: refusing it would
+   * tell somebody their address is invalid when it is merely one Google has
+   * never heard of, and there is no version of it they could type that would
+   * be guaranteed to pass. Only ever present on the response to a write.
+   */
+  geocodeWarning?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -821,8 +849,88 @@ export interface UpcomingDatesDto {
 }
 
 // ---------------------------------------------------------------------------
+// Map view
+// ---------------------------------------------------------------------------
+/**
+ * One thing that lives at an address, as the map draws it.
+ *
+ * "If people share the exact same address AND are in the same family, show only
+ * the family name; if people share an address that aren't in the same family,
+ * you must show all of those people." So an address yields a mixture: one entry
+ * per family present, plus one entry per person present who has no family. A
+ * house shared by two families and a lodger is three entries, not six people
+ * and not one address.
+ */
+/**
+ * One person at an address.
+ *
+ * Names arrive in parts rather than joined, because `Avatar` builds initials
+ * from them and would otherwise have to split a string back up -- which gets
+ * "Anna Maria Popov" wrong.
+ */
+export interface MapMemberDto {
+  id: string;
+  firstName: string;
+  lastName: string | null;
+  thumbUrl: string | null;
+}
+
+export interface MapOccupantDto {
+  kind: "family" | "person";
+  /** A family id or a person id, depending on `kind`. */
+  id: string;
+  /** The family name, or the person's full name. */
+  label: string;
+  /**
+   * For a family, everyone in it who lives here -- the drawer lists them and
+   * each one links into the directory. For a person, just themselves: the
+   * panel needs their name in parts for an avatar, and a one-element list beats
+   * a second optional field that only one of the two kinds ever fills in.
+   */
+  members: MapMemberDto[];
+}
+
+/** One pin. Everybody at the same address shares it, by construction. */
+export interface MapLocationDto {
+  placeId: string;
+  latitude: number;
+  longitude: number;
+  formattedAddress: string;
+  occupants: MapOccupantDto[];
+}
+
+export interface MapDto {
+  /**
+   * Where to open. Null when the parish has saved no church address, or has
+   * saved one that would not geocode -- in which case the map centres on the
+   * centroid of everybody instead, and admins are told to fix it.
+   */
+  church: { latitude: number; longitude: number; formattedAddress: string } | null;
+  locations: MapLocationDto[];
+  /**
+   * How many people have an address that could not be placed. Shown to admins
+   * as a count rather than a list: it is a prompt to go and look, and naming
+   * them on a map page they are absent from would be a second directory.
+   */
+  unmappedCount: number;
+}
+
+// ---------------------------------------------------------------------------
 // Admin: organizations and invitations
 // ---------------------------------------------------------------------------
+/**
+ * The church's own address, and the switch that decides whether this parish
+ * has a map at all.
+ *
+ * Split out from `organizationWriteSchema` because the two are edited by
+ * different people. An admin may set their parish's address -- they are the
+ * one warned that it is missing, and a warning about something only a super
+ * admin can fix is a dead end -- but only a super admin may turn Map View on,
+ * because that switch starts a billable Google integration.
+ */
+export const organizationAddressSchema = addressSchema;
+export type OrganizationAddress = z.infer<typeof organizationAddressSchema>;
+
 export const organizationWriteSchema = z.object({
   name: z.string().trim().min(1).max(150),
   slug: z
@@ -831,8 +939,38 @@ export const organizationWriteSchema = z.object({
     .toLowerCase()
     .regex(/^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/, "Lowercase letters, numbers and hyphens only")
     .max(60),
+  /**
+   * Optional so that every caller written before the map existed still
+   * validates. Absent means "leave it as it is", not "switch it off" -- this
+   * schema is deliberately not `.partial()`, so the distinction has to be
+   * carried by the field itself.
+   */
+  mapViewEnabled: z.boolean().optional(),
+  ...organizationAddressSchema.shape,
 });
 export type OrganizationWrite = z.infer<typeof organizationWriteSchema>;
+
+/**
+ * The church's own address, as an administrator sees it.
+ *
+ * Narrower than `OrganizationDto` on purpose: it is what
+ * `GET`/`PATCH /api/organizations/current` deal in, and those exist so an
+ * administrator can fix the address Map View warns them about without being
+ * handed -- or being able to change -- the parish name, its short name or the
+ * Map View switch.
+ */
+export interface OrganizationAddressDto {
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+  placeId: string | null;
+  /** Null until the address has been geocoded, or when it could not be. */
+  latitude: number | null;
+  longitude: number | null;
+}
 
 export interface OrganizationDto {
   id: string;
@@ -840,6 +978,18 @@ export interface OrganizationDto {
   slug: string;
   personCount: number;
   familyCount: number;
+  /** Whether this parish has Map View. Super admins only may change it. */
+  mapViewEnabled: boolean;
+  addressLine1: string | null;
+  addressLine2: string | null;
+  city: string | null;
+  state: string | null;
+  postalCode: string | null;
+  country: string | null;
+  placeId: string | null;
+  /** Null until the church address has been geocoded. */
+  latitude: number | null;
+  longitude: number | null;
 }
 
 export const inviteUserSchema = z.object({
@@ -918,6 +1068,36 @@ export interface MeDto {
    * Null is what the settings page reads as "push is not available here".
    */
   pushPublicKey: string | null;
+  /**
+   * Whether this parish has Map View. Gates the route, the Directory's link to
+   * it, and the endpoint behind it.
+   *
+   * Read from the organization the caller is currently acting in, so a super
+   * admin who switches to a parish without a map loses it too -- which is
+   * right: they are looking at that parish, not at their own.
+   */
+  mapViewEnabled: boolean;
+  /**
+   * The Google Maps browser key, or null.
+   *
+   * Delivered here rather than baked into the bundle by a `VITE_` variable
+   * because the bundle is public and gets scraped; behind the JWT authorizer it
+   * only reaches people who are already signed in. It is not thereby a secret
+   * -- anyone can read it in devtools -- which is why the key itself is
+   * restricted to this site's referrers and capped in the Google console. This
+   * only keeps it off the open internet.
+   *
+   * Null for two independent reasons: the deployment has no key, or this parish
+   * has Map View switched off. The SPA does not need to tell them apart,
+   * because `mapViewEnabled` has already sent anyone in the second case
+   * somewhere else.
+   */
+  mapsBrowserKey: string | null;
+  /**
+   * The Map ID the styled vector map is published under. Not a secret, and
+   * required rather than optional: Advanced Markers do not render without one.
+   */
+  mapsMapId: string | null;
 }
 
 // ---------------------------------------------------------------------------

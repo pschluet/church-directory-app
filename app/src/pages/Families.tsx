@@ -4,6 +4,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FamilySummaryDto } from "@shared";
 import { familyWriteSchema } from "@shared";
 import { api } from "../lib/api";
+import { memberPreview } from "../lib/format";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
 import { Link } from "../components/nav";
@@ -137,30 +138,35 @@ export function Families() {
         </EmptyState>
       ) : (
         <ul className="space-y-3">
-          {families.map((family) => (
-            <li
-              key={family.id}
-              className="flex flex-col gap-2 rounded-lg border border-line bg-surface p-4 sm:flex-row sm:items-center sm:justify-between"
-            >
-              <div className="min-w-0">
-                <Link
-                  to={`/families/${family.id}`}
-                  className="font-bold text-primary hover:text-accent"
-                >
-                  {family.name}
-                </Link>
-                <p className="truncate text-sm text-ink-muted">
-                  {family.memberCount} {family.memberCount === 1 ? "member" : "members"}
-                  {/* Nothing stops two households sharing a surname, so name a
-                      few people to tell them apart. */}
-                  {family.memberNames.length > 0 && ` — ${family.memberNames.join(", ")}`}
-                  {family.memberCount > family.memberNames.length &&
-                    ` +${family.memberCount - family.memberNames.length}`}
-                </p>
-              </div>
-              {rowAction(family)}
-            </li>
-          ))}
+          {families.map((family) => {
+            // The server caps `memberNames`, so the overflow counts against the
+            // real total rather than against the names it was handed.
+            const preview = memberPreview(family.memberNames, family.memberCount);
+            return (
+              <li
+                key={family.id}
+                className="flex flex-col gap-2 rounded-lg border border-line bg-surface p-4 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <div className="min-w-0">
+                  <Link
+                    to={`/families/${family.id}`}
+                    className="font-bold text-primary hover:text-accent"
+                  >
+                    {family.name}
+                  </Link>
+                  <p className="truncate text-sm text-ink-muted">
+                    {family.memberCount} {family.memberCount === 1 ? "member" : "members"}
+                    {/* Nothing stops two households sharing a surname, so name a
+                      few people to tell them apart. The names and the overflow
+                      come from `memberPreview`, shared with the map's pins so
+                      the two cannot drift apart. */}
+                    {preview.length > 0 && ` — ${preview}`}
+                  </p>
+                </div>
+                {rowAction(family)}
+              </li>
+            );
+          })}
         </ul>
       )}
 

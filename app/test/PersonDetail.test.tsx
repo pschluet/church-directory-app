@@ -71,6 +71,7 @@ function buildPerson(specialDates: SpecialDateDto[]): PersonDto {
     state: null,
     postalCode: null,
     country: null,
+    placeId: null,
     patronSaint: null,
     photoUrl: null,
     thumbUrl: null,
@@ -663,5 +664,71 @@ describe("PersonDetail merging and deleting", () => {
         expect(navigate).toHaveBeenCalledWith("/people/survivor-1", { replace: true })
       );
     });
+  });
+});
+
+/**
+ * "The address saved, but could not be placed on the map."
+ *
+ * This lives on the page rather than in `PersonForm` because `onSaved` closes
+ * that form -- a message rendered inside it is unmounted in the same tick and
+ * nobody ever reads it. That is the bug this file exists to keep fixed, and it
+ * is invisible: the save works, so nothing looks broken.
+ */
+describe("PersonDetail geocode warning", () => {
+  beforeEach(() => {
+    api.mockReset();
+    meState.personId = "person-1";
+    meState.isAdmin = false;
+  });
+
+  async function saveReturning(response: Partial<PersonDto>) {
+    api.mockImplementation((path: string, options?: { method?: string }) => {
+      if (options?.method === "PATCH")
+        return Promise.resolve({ ...buildPerson([]), canEdit: true, ...response });
+      if (options?.method) return Promise.resolve({});
+      if (path === "/persons/person-1")
+        return Promise.resolve({ ...buildPerson([]), canEdit: true });
+      return Promise.resolve({ people: [], families: [] });
+    });
+    renderWithProviders(
+      <Routes>
+        <Route path="/people/:id" element={<PersonDetail />} />
+      </Routes>,
+      { initialEntries: ["/people/person-1"] }
+    );
+
+    await userEvent.click(await screen.findByRole("button", { name: /actions for/i }));
+    await userEvent.click(await screen.findByRole("menuitem", { name: /edit details/i }));
+    await userEvent.click(await screen.findByRole("button", { name: "Save changes" }));
+  }
+
+  it("survives the form closing, which is the whole point", async () => {
+    await saveReturning({
+      geocodeWarning: "This address was saved, but the map could not find it.",
+    });
+
+    // The dialog has gone, and the message is still on the page behind it.
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /edit/i })).not.toBeInTheDocument()
+    );
+    expect(
+      screen.getByText("This address was saved, but the map could not find it.")
+    ).toBeInTheDocument();
+  });
+
+  it("says nothing when the address was placed", async () => {
+    await saveReturning({});
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: /edit/i })).not.toBeInTheDocument()
+    );
+    expect(screen.queryByText(/could not/i)).not.toBeInTheDocument();
+  });
+
+  it("is news rather than a fault, so it does not interrupt a screen reader", async () => {
+    await saveReturning({ geocodeWarning: "This address was saved, but is not specific enough." });
+    const note = await screen.findByText("This address was saved, but is not specific enough.");
+    expect(note).toHaveAttribute("role", "status");
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 });
