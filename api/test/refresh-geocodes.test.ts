@@ -341,4 +341,82 @@ describe.skipIf(!hasDb)("geocode refresh", () => {
     );
     expect(rows[0]!.place_id).toBe("ChIJresolved");
   });
+
+  it("tells an address it cannot place apart from one it could not reach", async () => {
+    /*
+     * These two arrived as one number, and they want opposite responses: an
+     * address Google has never heard of needs somebody to look at it, and one
+     * that timed out needs nothing but tomorrow. A single `failed` count sent
+     * an operator hunting for a typo that was not there, or ignoring one that
+     * was.
+     */
+    const orgId = await createOrganization(db());
+    await enableMapView(db(), orgId);
+    const personId = await createNonUserPerson(db(), {
+      organizationId: orgId,
+      familyId: null,
+      firstName: "Ivan",
+    });
+    await db().query("update persons set address_line1 = '12 Nowhere Ln' where id = $1", [
+      personId,
+    ]);
+
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ status: "ZERO_RESULTS", results: [] }), { status: 200 })
+    );
+
+    const { refreshGeocodes } = await load();
+    const summary = await refreshGeocodes(db());
+
+    expect(summary.unplaceable).toBe(1);
+    expect(summary.failed).toBe(0);
+  });
+
+  it("counts an unreachable Google as deferred rather than as a bad address", async () => {
+    const orgId = await createOrganization(db());
+    await enableMapView(db(), orgId);
+    const personId = await createNonUserPerson(db(), {
+      organizationId: orgId,
+      familyId: null,
+      firstName: "Ivan",
+    });
+    await db().query("update persons set address_line1 = '4129 W Newport Ave' where id = $1", [
+      personId,
+    ]);
+
+    fetchMock.mockRejectedValue(new Error("timed out"));
+
+    const { refreshGeocodes } = await load();
+    const summary = await refreshGeocodes(db());
+
+    expect(summary.failed).toBe(1);
+    expect(summary.unplaceable).toBe(0);
+  });
+
+  it("says which person could not be placed, and not where they live", async () => {
+    // The id is enough to find them from the admin screens. Their home address
+    // does not need to sit in CloudWatch for a month to make that possible.
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const orgId = await createOrganization(db());
+    await enableMapView(db(), orgId);
+    const personId = await createNonUserPerson(db(), {
+      organizationId: orgId,
+      familyId: null,
+      firstName: "Ivan",
+    });
+    await db().query("update persons set address_line1 = '12 Nowhere Ln' where id = $1", [
+      personId,
+    ]);
+
+    fetchMock.mockResolvedValue(
+      new Response(JSON.stringify({ status: "ZERO_RESULTS", results: [] }), { status: 200 })
+    );
+
+    const { refreshGeocodes } = await load();
+    await refreshGeocodes(db());
+
+    const logged = warn.mock.calls.flat().join(" ");
+    expect(logged).toContain(personId);
+    expect(logged).not.toContain("Nowhere");
+  });
 });

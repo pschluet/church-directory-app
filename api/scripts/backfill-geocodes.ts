@@ -33,12 +33,19 @@ async function main(): Promise<void> {
     organizationId ? { backfill: true, organizationId } : { backfill: true }
   );
 
-  if (summary.failed > 0) {
-    // Not a crash: an address Google cannot place is a normal outcome, and the
-    // person keeps their address. Worth a non-zero exit so a script notices.
+  if (summary.unplaceable > 0) {
+    // Not a crash: the person keeps their address and simply has no pin. The
+    // ids are in the log above, so say what to do with them.
     console.error(
-      `${summary.failed} address(es) could not be placed. Check them for typos, or try again ` +
-        "later if Google was unreachable."
+      `${summary.unplaceable} address(es) could not be placed at all. Check them for typos, or ` +
+        "re-enter them using the address suggestions -- see the warnings above for which."
+    );
+  }
+  if (summary.failed > 0) {
+    // Deliberately a different sentence: this one needs no action.
+    console.error(
+      `${summary.failed} address(es) were deferred because Google could not be reached. The ` +
+        "daily run will pick them up; nothing is wrong with the addresses."
     );
   }
 }

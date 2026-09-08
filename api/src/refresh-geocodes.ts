@@ -81,6 +81,14 @@ export interface RefreshSummary {
   backfilled: number;
   /** Addresses Google no longer recognises, whose coordinates were cleared. */
   dropped: number;
+  /**
+   * Addresses Google cannot place at all -- a typo, or somewhere too vague to
+   * pin. Counted apart from `failed` because the two need opposite responses
+   * and used to be indistinguishable: this one wants somebody to look at the
+   * address, and `failed` wants nothing but time.
+   */
+  unplaceable: number;
+  /** Timeouts, quota, 5xx. Nothing is wrong with the address; try again later. */
   failed: number;
   skipped?: string;
 }
@@ -187,7 +195,13 @@ export async function refreshGeocodes(
   q: Queryable,
   event: RefreshEvent = {}
 ): Promise<RefreshSummary> {
-  const summary: RefreshSummary = { refreshed: 0, backfilled: 0, dropped: 0, failed: 0 };
+  const summary: RefreshSummary = {
+    refreshed: 0,
+    backfilled: 0,
+    dropped: 0,
+    unplaceable: 0,
+    failed: 0,
+  };
 
   if (!isGeocodingConfigured()) {
     // Not an error. A deployment with no Google project is a supported state,
@@ -219,6 +233,7 @@ export async function refreshGeocodes(
     } else {
       // Timeout or quota. Leave `geocoded_at` alone so tomorrow tries again.
       summary.failed += 1;
+      console.warn(`Deferred place_id ${placeId}: ${result.reason}`);
     }
     await sleep(DELAY_MS);
   }
@@ -248,8 +263,19 @@ export async function refreshGeocodes(
           result.placeId,
         ]);
         summary.backfilled += 1;
+      } else if (result.reason === "no_match" || result.reason === "imprecise") {
+        /*
+         * Somebody has to look at this address, so say which one. The person's
+         * id and not their address: the id is enough to find them from the
+         * admin screens, and a member's home address does not need to sit in
+         * CloudWatch for a month to make that possible.
+         */
+        summary.unplaceable += 1;
+        console.warn(`Could not place person ${person.id}: ${result.reason}`);
       } else {
+        // Nothing is wrong with the address; tomorrow's run will try again.
         summary.failed += 1;
+        console.warn(`Deferred person ${person.id}: ${result.reason}`);
       }
       await sleep(DELAY_MS);
     }
