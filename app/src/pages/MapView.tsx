@@ -410,10 +410,13 @@ function ChurchMarker({
   onSelect: () => void;
   onClose: () => void;
 }) {
-  // Same reasoning as ClusteredPin: a callback stable for the life of the
-  // marker, so setting state from it fires once rather than every render.
-  const [marker, setMarker] = useState<Marker | null>(null);
-  const setMarkerRef = useCallback((element: Marker | null) => setMarker(element), []);
+  // A ref for the same reason as ClusteredPin, though this one is not
+  // clustered: re-rendering a marker to record that it exists is churn either
+  // way, and two markers in one file should not disagree about how it is done.
+  const marker = useRef<Marker | null>(null);
+  const setMarkerRef = useCallback((element: Marker | null) => {
+    marker.current = element;
+  }, []);
 
   if (!church) return null;
 
@@ -437,8 +440,8 @@ function ChurchMarker({
           </svg>
         </div>
       </AdvancedMarker>
-      {selected && marker && (
-        <ChurchPopover name={name} church={church} anchor={marker} onClose={onClose} />
+      {selected && marker.current && (
+        <ChurchPopover name={name} church={church} anchor={marker.current} onClose={onClose} />
       )}
     </>
   );
@@ -478,20 +481,60 @@ function Pins({
 }) {
   const map = useMap();
   const clusterer = useRef<MarkerClusterer | null>(null);
-  const markers = useRef(new globalThis.Map<string, Marker>());
+  const [markers, setMarkers] = useState<Record<string, Marker>>({});
 
   useEffect(() => {
     if (!map) return;
     const instance = new MarkerClusterer({ map, renderer: clusterRenderer });
     clusterer.current = instance;
-    // Ref callbacks run during the commit, before this effect, so the first
-    // batch of markers is already waiting by the time the clusterer exists.
-    if (markers.current.size > 0) instance.addMarkers([...markers.current.values()]);
     return () => {
       instance.clearMarkers();
       clusterer.current = null;
     };
   }, [map]);
+
+  /*
+   * The whole batch, in an effect, and never one marker at a time as each ref
+   * fires. That version silently produced no clusters at all.
+   *
+   * `AdvancedMarker` attaches its ref before it has finished setting the
+   * marker's `position`, so a marker handed straight to `addMarker` went into
+   * SuperCluster with undefined coordinates. It cached the empty result -- and
+   * then never recomputed, because its staleness check is whether the marker
+   * *array* changed, and the array was the same objects forever after. So the
+   * map drew every pin separately at every zoom, and whether it looked right
+   * depended on whether positions happened to land in time. Registering into
+   * state instead defers the add to a later commit, by which point the
+   * positions are set.
+   *
+   * `clearMarkers` before `addMarkers` for the same staleness check: it is what
+   * makes the array differ, so the algorithm reloads instead of handing back
+   * what it decided the first time.
+   */
+  useEffect(() => {
+    const instance = clusterer.current;
+    if (!instance) return;
+    instance.clearMarkers();
+    instance.addMarkers(Object.values(markers));
+  }, [markers, map]);
+
+  /*
+   * One callback for every pin, stable for the life of this component, so a
+   * pin's ref never changes identity -- React 19 reads a changed ref callback
+   * as detach-then-attach, and an inline one here re-registered every marker on
+   * every render.
+   */
+  const register = useCallback((placeId: string, marker: Marker | null) => {
+    setMarkers((current) => {
+      if (marker) {
+        if (current[placeId] === marker) return current;
+        return { ...current, [placeId]: marker };
+      }
+      if (!(placeId in current)) return current;
+      const { [placeId]: _gone, ...rest } = current;
+      return rest;
+    });
+  }, []);
 
   return (
     <>
@@ -499,8 +542,7 @@ function Pins({
         <ClusteredPin
           key={location.placeId}
           location={location}
-          clusterer={clusterer}
-          markers={markers}
+          register={register}
           selected={location.placeId === selectedPlaceId}
           onSelect={onSelect}
           onClose={onClose}
@@ -512,15 +554,14 @@ function Pins({
 
 function ClusteredPin({
   location,
-  clusterer,
-  markers,
+  register,
   selected,
   onSelect,
   onClose,
 }: {
   location: MapLocationDto;
-  clusterer: React.RefObject<MarkerClusterer | null>;
-  markers: React.RefObject<globalThis.Map<string, Marker>>;
+  /** Hands this pin's marker to the clusterer's batch; null on the way out. */
+  register: (placeId: string, marker: Marker | null) => void;
   selected: boolean;
   onSelect: (placeId: string) => void;
   onClose: () => void;
@@ -528,33 +569,31 @@ function ClusteredPin({
   const placeId = location.placeId;
 
   /*
-   * The popover has to be anchored to a real marker, so this pin keeps its own.
+   * The popover anchors to a real marker, so this pin keeps its own -- in a ref
+   * rather than in state, and that is not a style preference.
    *
-   * State in a ref callback looks exactly like the mistake described above, and
-   * is not: that bug was a *new* callback on every render, which React 19 reads
-   * as detach-then-attach and which therefore fired forever. This callback is
-   * memoised on `placeId`, so it runs once when the marker mounts and once more
-   * with null when it goes away.
+   * It was state, and it made clustering intermittent: whether a cluster bubble
+   * appeared at a given zoom varied from one load to the next. `setMarker` in
+   * the ref callback re-renders this component, which re-renders
+   * `AdvancedMarker`, which re-asserts `marker.map` -- and hiding a marker by
+   * setting `marker.map = null` is exactly how MarkerClusterer collapses one
+   * into a cluster. Whichever of the two landed last won, and which that was
+   * depended on when `useMap()` resolved. The comment above this component says
+   * nothing here needs a re-render when a marker arrives; that was right, and
+   * adding state for the popover overrode it.
+   *
+   * Read during render, which is safe here rather than merely convenient: a
+   * marker cannot be selected before it exists, because selecting one means
+   * clicking it, and the `selected` prop changing is what re-renders this.
    */
-  const [marker, setMarker] = useState<Marker | null>(null);
+  const marker = useRef<Marker | null>(null);
 
   const setMarkerRef = useCallback(
     (element: Marker | null) => {
-      const registry = markers.current;
-      if (!registry) return;
-      const existing = registry.get(placeId);
-
-      if (element) {
-        if (existing === element) return;
-        registry.set(placeId, element);
-        clusterer.current?.addMarker(element);
-      } else if (existing) {
-        registry.delete(placeId);
-        clusterer.current?.removeMarker(existing);
-      }
-      setMarker(element);
+      marker.current = element;
+      register(placeId, element);
     },
-    [placeId, clusterer, markers]
+    [placeId, register]
   );
 
   return (
@@ -567,7 +606,9 @@ function ClusteredPin({
       >
         <Pin location={location} />
       </AdvancedMarker>
-      {selected && marker && <MapPopover location={location} anchor={marker} onClose={onClose} />}
+      {selected && marker.current && (
+        <MapPopover location={location} anchor={marker.current} onClose={onClose} />
+      )}
     </>
   );
 }

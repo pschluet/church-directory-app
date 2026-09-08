@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { APIProvider, useMapsLibrary } from "@vis.gl/react-google-maps";
 import { useMe } from "../context/MeContext";
 import { inputClass } from "./ui";
 
@@ -46,7 +47,7 @@ interface Suggestion {
 const MIN_QUERY = 3;
 const DEBOUNCE_MS = 250;
 
-export function AddressAutocomplete({
+function AutocompleteField({
   value,
   onChange,
   onPick,
@@ -61,8 +62,15 @@ export function AddressAutocomplete({
   id?: string;
   autoComplete?: string;
 }) {
-  const { maps } = useMe();
-  const places = usePlacesLibrary(maps?.browserKey ?? null);
+  /*
+   * The library's loader, not one of ours. Two separate races came out of a
+   * hand-rolled one -- a missed `load` event that left the field a plain input
+   * forever, and a `load` that fired before `importLibrary` was assigned -- and
+   * both looked exactly like a deployment with no key. `useMapsLibrary` is the
+   * same loader the map page already depends on, and it is shared, so a form
+   * open on top of the map costs no second script.
+   */
+  const places = useMapsLibrary("places");
   const [suggestions, setSuggestions] = useState<Suggestion[]>([]);
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(0);
@@ -77,10 +85,34 @@ export function AddressAutocomplete({
    */
   const sessionToken = useRef<google.maps.places.AutocompleteSessionToken | null>(null);
 
+  /**
+   * The value this component itself last put in the box.
+   *
+   * Picking a suggestion changes `value`, which changes `query`, which re-runs
+   * the effect below -- so the list reopened on its own the moment it closed,
+   * and the address had to be picked twice. Worse than the annoyance: that
+   * second request came after `fetchFields` had already closed the session and
+   * the token had been discarded, so it opened a *new* session that nothing
+   * ever closed. Autocomplete requests are only free inside a session that ends
+   * in a Place Details call, so the bug quietly moved them onto the
+   * per-request SKU -- the exact thing the session token is there to avoid.
+   *
+   * Compared by value rather than tracked with a boolean, so a flag cannot get
+   * stuck: anything typed makes `query` differ from this and suggestions
+   * resume on their own.
+   */
+  const pickedValue = useRef<string | null>(null);
+
   const query = value.trim();
 
   useEffect(() => {
     if (!places || query.length < MIN_QUERY) {
+      setSuggestions([]);
+      return;
+    }
+
+    // Our own answer coming back round. Nothing to suggest about it.
+    if (pickedValue.current === query) {
       setSuggestions([]);
       return;
     }
@@ -145,10 +177,16 @@ export function AddressAutocomplete({
           // move this call to a dearer SKU for data nobody displays.
           fields: ["addressComponents", "formattedAddress", "location", "id"],
         });
-        onPick(toPickedAddress(place, suggestion));
+        const picked = toPickedAddress(place, suggestion);
+        // Recorded before handing it over, because `onPick` changes `value` and
+        // the effect that watches it runs before anything here would.
+        pickedValue.current = picked.addressLine1.trim();
+        onPick(picked);
       } catch {
         // The session is spent either way, so fall back to the text Google
-        // already showed rather than leaving the field half-filled.
+        // already showed rather than leaving the field half-filled -- and
+        // record it, or the list reopens over the top of it.
+        pickedValue.current = suggestion.text.trim();
         onChange(suggestion.text);
       } finally {
         // Spent. A reused token bills the next session per request.
@@ -308,67 +346,40 @@ function toPickedAddress(place: google.maps.places.Place, suggestion: Suggestion
  * Null until it is ready, and null forever if it fails, which is what the
  * caller renders a plain input for.
  */
-const SCRIPT_ID = "google-maps-places";
-
 /**
- * The Maps bootstrap, if it has arrived.
+ * The address field, with Google's suggestions when this parish has a key.
  *
- * Read off `globalThis` rather than by naming `google` directly: before the
- * script lands -- and in jsdom, where it never does -- that identifier does not
- * exist, and touching it is a ReferenceError rather than undefined.
+ * Two components because the loader is a hook and hooks cannot be conditional:
+ * the outer one decides whether there is a key at all, and only then mounts the
+ * provider that fetches the API. A parish with Map View switched off therefore
+ * loads no Google script from this field, which is half of what that switch is
+ * for.
  */
-function loadedMaps(): typeof google.maps | null {
-  const g = (globalThis as { google?: { maps?: typeof google.maps } }).google;
-  return g?.maps?.importLibrary ? g.maps : null;
-}
+export function AddressAutocomplete(props: {
+  value: string;
+  onChange: (value: string) => void;
+  onPick: (address: PickedAddress) => void;
+  id?: string;
+  autoComplete?: string;
+}) {
+  const { maps } = useMe();
 
-function usePlacesLibrary(browserKey: string | null): typeof google.maps.places | null {
-  const [places, setPlaces] = useState<typeof google.maps.places | null>(null);
+  if (!maps) {
+    return (
+      <input
+        id={props.id}
+        type="text"
+        className={inputClass}
+        value={props.value}
+        autoComplete={props.autoComplete ?? "address-line1"}
+        onChange={(event) => props.onChange(event.target.value)}
+      />
+    );
+  }
 
-  useEffect(() => {
-    if (!browserKey) return;
-
-    let cancelled = false;
-    const importLibrary = async () => {
-      try {
-        const maps = loadedMaps();
-        if (!maps) return;
-        const library = (await maps.importLibrary("places")) as typeof google.maps.places;
-        if (!cancelled) setPlaces(library);
-      } catch {
-        // Leave it null. The field is still a field.
-      }
-    };
-
-    if (loadedMaps()) {
-      void importLibrary();
-      return () => {
-        cancelled = true;
-      };
-    }
-
-    /*
-     * The bootstrap loader rather than a `<script src=...&libraries=places>`:
-     * it is the only form that gives `importLibrary`, and it loads nothing
-     * until something asks for a library -- so a page that renders this
-     * component and is never typed into costs nothing.
-     */
-    let script = document.getElementById(SCRIPT_ID) as HTMLScriptElement | null;
-    if (!script) {
-      script = document.createElement("script");
-      script.id = SCRIPT_ID;
-      script.async = true;
-      script.src = `https://maps.googleapis.com/maps/api/js?key=${encodeURIComponent(
-        browserKey
-      )}&loading=async&v=weekly`;
-      document.head.appendChild(script);
-    }
-    script.addEventListener("load", importLibrary);
-    return () => {
-      cancelled = true;
-      script?.removeEventListener("load", importLibrary);
-    };
-  }, [browserKey]);
-
-  return places;
+  return (
+    <APIProvider apiKey={maps.browserKey}>
+      <AutocompleteField {...props} />
+    </APIProvider>
+  );
 }

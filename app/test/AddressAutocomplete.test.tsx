@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
+import { useState } from "react";
 import userEvent from "@testing-library/user-event";
 import { AddressAutocomplete } from "../src/components/AddressAutocomplete";
 
@@ -17,6 +18,18 @@ import { AddressAutocomplete } from "../src/components/AddressAutocomplete";
 const maps = vi.fn();
 vi.mock("../src/context/MeContext", () => ({
   useMe: () => maps(),
+}));
+
+/*
+ * The library's loader stands in for itself: `APIProvider` renders its children
+ * and `useMapsLibrary` hands back whatever `stubPlaces` put on the global. The
+ * component no longer loads the script itself -- two races came out of doing
+ * that by hand -- so what is left to test is everything after it is loaded.
+ */
+vi.mock("@vis.gl/react-google-maps", () => ({
+  APIProvider: ({ children }: { children: React.ReactNode }) => <>{children}</>,
+  useMapsLibrary: () =>
+    (globalThis as { google?: { maps?: { __places?: unknown } } }).google?.maps?.__places ?? null,
 }));
 
 /** Every session token minted, so the sharing can be asserted. */
@@ -77,7 +90,7 @@ function stubPlaces(): void {
   };
 
   vi.stubGlobal("google", {
-    maps: { importLibrary: vi.fn(async () => places) },
+    maps: { importLibrary: vi.fn(async () => places), __places: places },
   });
 }
 
@@ -231,5 +244,82 @@ describe("AddressAutocomplete", () => {
       "aria-selected",
       "true"
     );
+  });
+});
+
+/**
+ * What happens after a suggestion is picked.
+ *
+ * Picking one changes the value in the box, and the effect that fetches
+ * suggestions watches that value -- so the list reopened on its own the instant
+ * it closed, and an address had to be picked twice. The billing consequence was
+ * the worse half: that second request arrived after `fetchFields` had closed
+ * the session and the token had been thrown away, so it opened a fresh session
+ * nothing ever closed, which is how autocomplete stops being free.
+ */
+describe("AddressAutocomplete after a pick", () => {
+  beforeEach(() => {
+    tokens = [];
+    placeConstructions = [];
+    maps.mockReturnValue({ maps: { browserKey: "browser-key", mapId: "map-id" } });
+    stubPlaces();
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  /** A harness that behaves like PersonForm: the pick writes back to `value`. */
+  function Controlled({ onPick }: { onPick: (v: string) => void }) {
+    const [value, setValue] = useState("4129 W New");
+    return (
+      <AddressAutocomplete
+        value={value}
+        onChange={setValue}
+        onPick={(picked) => {
+          setValue(picked.addressLine1);
+          onPick(picked.addressLine1);
+        }}
+      />
+    );
+  }
+
+  it("does not reopen the list over the address it just filled in", async () => {
+    const onPick = vi.fn();
+    render(<Controlled onPick={onPick} />);
+
+    await userEvent.click(await screen.findByRole("option", { name: /4129 W Newport Ave/ }));
+    await waitFor(() => expect(onPick).toHaveBeenCalledWith("4129 West Newport Avenue"));
+
+    // Long enough for the 250ms debounce to have fired had it been going to.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(screen.queryByRole("option")).not.toBeInTheDocument();
+  });
+
+  it("asks Google nothing more, so the closed session stays closed", async () => {
+    const onPick = vi.fn();
+    render(<Controlled onPick={onPick} />);
+
+    await userEvent.click(await screen.findByRole("option", { name: /4129 W Newport Ave/ }));
+    await waitFor(() => expect(onPick).toHaveBeenCalled());
+    const callsAfterPick = fetchSuggestions.mock.calls.length;
+
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(fetchSuggestions.mock.calls.length).toBe(callsAfterPick);
+    // And no second session was minted to pay for.
+    expect(tokens).toHaveLength(1);
+  });
+
+  it("starts suggesting again as soon as the address is edited", async () => {
+    // The guard is by value, not a flag, so it cannot get stuck shut.
+    const onPick = vi.fn();
+    render(<Controlled onPick={onPick} />);
+
+    await userEvent.click(await screen.findByRole("option", { name: /4129 W Newport Ave/ }));
+    await waitFor(() => expect(onPick).toHaveBeenCalled());
+
+    await userEvent.type(screen.getByRole("combobox"), "nue");
+    expect(await screen.findByRole("option", { name: /4129 W Newport Ave/ })).toBeInTheDocument();
   });
 });
