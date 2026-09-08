@@ -58,9 +58,20 @@ export interface RefreshEvent {
    */
   organizationId?: string;
   /**
-   * Also resolve addresses that have never had a `place_id` at all, rather
-   * than only refreshing ones that do. This is the backfill -- for the initial
-   * migration, and for a parish being switched on.
+   * Whether to also resolve addresses that have never had a `place_id` at all,
+   * rather than only refreshing the ones that do.
+   *
+   * **Defaults to on**, so this is an opt-out. It started as an opt-in, which
+   * was wrong in a way that was invisible: the scheduled invocation is the only
+   * caller that never passes it -- EventBridge sends its own event shape, which
+   * has no such field -- so the daily run never backfilled anything. An address
+   * that failed to geocode once was then off the map permanently, and the two
+   * ways that happens are both ordinary. A parish switched on after the fact
+   * was never geocoded at all. And a member who saved their address while
+   * Google was unreachable got the "try again later" warning, which nothing
+   * ever acted on.
+   *
+   * Passing `false` is only useful for narrowing a manual run.
    */
   backfill?: boolean;
 }
@@ -212,7 +223,12 @@ export async function refreshGeocodes(
     await sleep(DELAY_MS);
   }
 
-  if (event.backfill) {
+  /*
+   * Opt-out rather than opt-in -- see the note on `RefreshEvent.backfill`. This
+   * is the line that decides whether an address which has never geocoded is
+   * ever picked up by anything other than a human remembering to.
+   */
+  if (event.backfill ?? true) {
     for (const person of await selectUngeocoded(q, event.organizationId)) {
       // `addressToLine` speaks the payload's camelCase, not the row's.
       const line = addressToLine({
@@ -245,9 +261,15 @@ export async function refreshGeocodes(
 /**
  * The Lambda entry point.
  *
- * Logs the summary rather than returning it anywhere useful, because nothing
- * reads the return value of a scheduled invocation -- CloudWatch is the only
- * place this run is ever looked at.
+ * Invoked daily by EventBridge with no payload, which is the case that matters:
+ * it refreshes coordinates before they age out of Google's thirty-day caching
+ * window *and* picks up any address that has never been geocoded. A manual
+ * invoke is only for doing it now rather than tomorrow, and needs no payload
+ * either -- `{"organizationId": "..."}` to narrow it to one parish.
+ *
+ * Logs the summary as well as returning it, because nothing reads the return
+ * value of a scheduled invocation -- CloudWatch is the only place that run is
+ * ever looked at.
  */
 export async function handler(event: RefreshEvent = {}): Promise<RefreshSummary> {
   const summary = await refreshGeocodes(db, event);

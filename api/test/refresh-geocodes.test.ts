@@ -270,4 +270,75 @@ describe.skipIf(!hasDb)("geocode refresh", () => {
     expect(summary.skipped).toMatch(/not configured/);
     expect(fetchMock).not.toHaveBeenCalled();
   });
+
+  it("backfills without being asked, because the daily run never asks", async () => {
+    /*
+     * The regression this file exists to prevent. `backfill` was an opt-in, and
+     * the scheduled invocation is the one caller that never passes it --
+     * EventBridge sends its own event shape with no such field -- so the daily
+     * run refreshed existing pins and silently ignored every address that had
+     * never got one. Nothing looked broken: the summary said `backfilled: 0`,
+     * which was true.
+     */
+    const orgId = await createOrganization(db());
+    await enableMapView(db(), orgId);
+    const personId = await createNonUserPerson(db(), {
+      organizationId: orgId,
+      familyId: null,
+      firstName: "Ivan",
+    });
+    await db().query(
+      "update persons set address_line1 = '4129 W Newport Ave', city = 'Chicago' where id = $1",
+      [personId]
+    );
+
+    const { refreshGeocodes } = await load();
+    // No event at all, which is what the schedule effectively sends.
+    expect((await refreshGeocodes(db())).backfilled).toBe(1);
+  });
+
+  it("can still be told not to, for narrowing a manual run", async () => {
+    const orgId = await createOrganization(db());
+    await enableMapView(db(), orgId);
+    const personId = await createNonUserPerson(db(), {
+      organizationId: orgId,
+      familyId: null,
+      firstName: "Ivan",
+    });
+    await db().query("update persons set address_line1 = '4129 W Newport Ave' where id = $1", [
+      personId,
+    ]);
+
+    const { refreshGeocodes } = await load();
+    const summary = await refreshGeocodes(db(), { backfill: false });
+    expect(summary.backfilled).toBe(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("picks up an address whose first geocode failed, rather than stranding it", async () => {
+    /*
+     * The case that made the default wrong. A member saves an address, Google
+     * times out, they get "it will be placed on the map later" -- and before
+     * this, nothing ever did.
+     */
+    const orgId = await createOrganization(db());
+    await enableMapView(db(), orgId);
+    const personId = await createNonUserPerson(db(), {
+      organizationId: orgId,
+      familyId: null,
+      firstName: "Ivan",
+    });
+    await db().query("update persons set address_line1 = '4129 W Newport Ave' where id = $1", [
+      personId,
+    ]);
+
+    const { refreshGeocodes } = await load();
+    await refreshGeocodes(db());
+
+    const { rows } = await db().query<{ place_id: string | null }>(
+      "select place_id from persons where id = $1",
+      [personId]
+    );
+    expect(rows[0]!.place_id).toBe("ChIJresolved");
+  });
 });

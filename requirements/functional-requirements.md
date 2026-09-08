@@ -21,6 +21,7 @@
         - A checkbox narrows both the list and the search results to people who have an app account; unchecked by default, and kept in the page URL alongside the search so a filtered view can be shared, bookmarked and reloaded
     - Map view: a Google Maps view of where everyone lives
         - We will need to store lat/lon with addresses now (will need to use Google API for geocoding)
+            - Google's terms only allow lat/lon to be cached for 30 days unless it is isolated to the one member who looked it up, which a shared parish map is not; place_id is separately exempt. So place_id is stored permanently and the coordinates are a cache refreshed daily. That daily job also geocodes any address that has never had coordinates -- a parish whose map was switched on later, or somebody who saved an address while Google was unreachable -- so nothing has to be triggered by hand.
         - Ideally need to have address completion at entry now to make sure addresses can be geocoded, but this is probably too expensive, so maybe fallback to attempting geocoding during save, and, if it fails, warn the user
         - The map view page is not a separate menu item; it's accessible from the directory page via tapping a map icon with "Map View" text
         - When the map view opens, it should be centered on the church and show approximately a 30 mile radius around the church

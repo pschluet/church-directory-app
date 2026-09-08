@@ -177,8 +177,12 @@ Accounts are invite-only, created by a parish administrator.
   Directory's link to it, and geocoding itself. That last one is the point rather than a
   detail: a parish with the map off makes *no* calls to Google at all, so in a multi-tenant
   deployment the bill is proportional to the parishes using the map rather than to the parishes
-  that exist. It defaults off, so the flag alone populates nothing -- invoke the refresh
-  function with `{"backfill": true}` after switching a parish on.
+  that exist. It defaults off, and switching it on is all there is to do: the daily
+  refresh picks up addresses that have never been geocoded as well as ones whose coordinates
+  are ageing, so a parish enabled today is on the map tomorrow with nobody remembering a manual
+  step. Invoking the function by hand only makes that happen sooner. That default was the other
+  way round at first, and wrong in a way nothing surfaced -- see the note on
+  `RefreshEvent.backfill`.
 
   **Two API keys, and the distinction is load-bearing.** The browser key necessarily reaches a
   page, so it is restricted in the Google console to this site's referrers and capped there;
@@ -350,20 +354,22 @@ Two more things to do once, or the map will be correct and empty:
 1. **Add `http://localhost:5173/*`** to the browser key's referrer restrictions in the Google
    console. Without it Maps refuses the script and the address field falls back to a plain
    input — which is the designed behaviour for a missing key, so nothing looks broken.
-2. **Switch Map View on** for the parish, from *Churches* as the super administrator, and then
-   backfill. Until the switch, `GET /api/me` returns a null key however many are set, `/map`
-   redirects home and the Directory offers no link; and the switch alone populates nothing,
-   because a parish with the map off was never geocoded:
+2. **Switch Map View on** for the parish, from *Churches* as the super administrator. Until
+   then `GET /api/me` returns a null key however many are set, `/map` redirects home and the
+   Directory offers no link.
+3. **Geocode the addresses that are already there.** A parish that had the map off was never
+   geocoded, so its addresses have no `place_id` and its map opens correctly empty. Deployed,
+   the daily job does this on its own; locally there is no schedule, so run it:
 
    ```sh
    npm run geocode:backfill -w api            # every enabled parish
    npm run geocode:backfill -w api -- <orgId> # just one
    ```
 
-   It reads `api/.env` too, and prints what it did — `{ refreshed, backfilled, dropped,
-   failed }`. Editing an address through the UI and picking a suggestion is the other way, and
-   the one that exercises Autocomplete. The same handler runs on the daily schedule in
-   production, where it is invoked with `{"backfill": true}`.
+   It reads `api/.env` and prints what it did — `{ refreshed, backfilled, dropped, failed }`.
+   It talks to the docker-compose Postgres, so `docker compose up -d` first or it fails with a
+   connection refused. Editing an address through the UI and picking a suggestion is the other
+   way, and the one that exercises Autocomplete.
 
 `PUSH_MODE=local` makes push a no-op, so everything except the notification itself works
 with no VAPID keys. The in-app bell is unaffected and is the part worth exercising locally;
@@ -561,9 +567,12 @@ normal `git push`.
      server key missing no address ever gets a pin, and both look like a working deployment
      until somebody opens the page.
 
-   Then switch Map View on for a parish from *Churches* and **run the backfill**. The switch
-   alone populates nothing: a parish that had the map off was never geocoded, so its addresses
-   arrive with no `place_id` and its map opens correctly empty.
+   Then switch Map View on for a parish from *Churches*. **The daily job does the rest**, within
+   a day: it refreshes coordinates before they age out of Google's thirty-day caching window and
+   picks up any address that has never been geocoded -- a parish switched on after the fact, or
+   somebody who saved their address while Google was unreachable. There is nothing to remember.
+
+   To do it now rather than tomorrow, invoke the same function by hand. It needs no payload:
 
    ```sh
    FN=$(aws cloudformation describe-stacks --stack-name ChurchDirectoryStack \
@@ -573,26 +582,35 @@ normal `git push`.
 
    aws lambda invoke \
      --function-name "$FN" --region us-east-1 \
-     --payload '{"backfill":true}' \
-     --cli-binary-format raw-in-base64-out \
      --cli-read-timeout 0 \
      /dev/stdout
    ```
 
    It prints what it did -- `{ refreshed, backfilled, dropped, failed }` -- and is safe to
-   re-run: an address that already has a pin is skipped, so a second run costs nothing. Add
-   `"organizationId": "<uuid>"` to the payload to do one parish rather than every enabled one.
+   re-run: an address that already has a pin is skipped, so a second run costs nothing. To
+   narrow it to one parish, add a payload, and note that CLI v2 needs to be told the payload is
+   not base64 or it rejects plain JSON complaining about invalid base64:
 
-   Two flags that are not optional. **`--cli-binary-format raw-in-base64-out`**, because CLI v2
-   otherwise expects the payload base64-encoded and rejects plain JSON with a message about
-   invalid base64. And **`--cli-read-timeout 0`**, because the function may run for up to five
-   minutes against the default sixty-second socket timeout -- without it the CLI gives up and
-   reports a failure while the backfill is still running perfectly well, and re-running it looks
-   like the fix when it is only a second run of something that already worked.
+   ```sh
+   aws lambda invoke --function-name "$FN" --region us-east-1 \
+     --payload '{"organizationId":"<uuid>"}' \
+     --cli-binary-format raw-in-base64-out \
+     --cli-read-timeout 0 \
+     /dev/stdout
+   ```
 
-   The same handler runs on the daily EventBridge schedule, which is what keeps coordinates
-   inside Google's thirty-day caching window; the payload is only needed for the one-off
-   backfill. Locally there is a script instead, which reads `api/.env`:
+   `--cli-read-timeout 0` is not optional in either form: the function may run for five minutes
+   against the CLI's sixty-second socket timeout, so without it the CLI reports a failure while
+   the run is still going perfectly well, and re-running looks like the fix when it is only a
+   second run of something that already worked.
+
+   **No tunnel is involved.** `scripts/db-tunnel.sh` exists so a laptop can reach the database;
+   this function is already inside the VPC and authenticates with RDS IAM. Pointing a local
+   script at the deployed database through the tunnel would fail differently anyway -- an IAM
+   token is signed for a specific hostname, so one signed for `localhost` is refused.
+
+   Locally there is a script, which reads `api/.env` and talks to the docker-compose Postgres --
+   so `docker compose up -d` first, or it fails with a connection refused:
 
    ```sh
    npm run geocode:backfill -w api            # every enabled parish
