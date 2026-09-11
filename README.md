@@ -209,7 +209,7 @@ Accounts are invite-only, created by a parish administrator.
   per-request SKU, which works perfectly and costs money.
 
   **Pins are two weights of one red**, with gold kept for the church: a household is
-  `--color-primary` and somebody living alone `--color-primary-light`, so they read as one set
+  `--color-primary` and somebody on their own at that address `--color-primary-light`, so they read as one set
   rather than two unrelated colours, and the one gold pin on the map is the only one that is
   not somebody's home. It gets a popover of its own naming the parish, because a marker whose
   only affordance is a browser tooltip does nothing at all on a phone.
@@ -219,7 +219,9 @@ Accounts are invite-only, created by a parish administrator.
   one household. It is a Google `InfoWindow`, which buys two things that would otherwise be
   rebuilt by hand: it stays attached to its marker through a pan or a zoom, and it moves the map
   if it would open off the edge. An individual gets their photo, name and address; a family gets
-  its name, the members who live *there*, and the same address. The address is stated once for
+  its name, the members who live *there*, and the same address. A household of one at an address
+  is an individual -- if the rest of a family lives across town, the pin is about the person who
+  lives here, not about a group of one. The address is stated once for
   the whole pin and behaves exactly as an address does anywhere else in the app, because it is
   the same `AddressLink` -- which grew a second form taking a pre-formatted string, since a pin
   is a place rather than a person.

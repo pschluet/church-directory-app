@@ -57,6 +57,10 @@ routes.get("/", async (c) => {
    * so this is what puts families in alphabetical order at a shared address and
    * leaves people with no family after them. It already concatenates families
    * before individuals, so this makes the SQL agree rather than relying on it.
+   * It also settles where somebody who is the only one of their family at an
+   * address lands -- the grouper shows them as an individual, and sorting on
+   * the family name they still have puts them among the individuals ahead of
+   * the people who have no family at all.
    *
    * Then family_order, so a household's members come back in the order somebody
    * dragged them into on the family page -- the same order the families list

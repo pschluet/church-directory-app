@@ -857,9 +857,14 @@ export interface UpcomingDatesDto {
  * "If people share the exact same address AND are in the same family, show only
  * the family name; if people share an address that aren't in the same family,
  * you must show all of those people." So an address yields a mixture: one entry
- * per family present, plus one entry per person present who has no family. A
- * house shared by two families and a lodger is three entries, not six people
- * and not one address.
+ * per family with two or more people there, plus one entry per person who is
+ * the only one of theirs there. A house shared by two families and a lodger is
+ * three entries, not six people and not one address.
+ *
+ * A `"person"` entry is therefore not the same as somebody with no family. It
+ * is whoever is on their own at this address -- a lodger, or the one member of
+ * a household who lives here while the rest of them are elsewhere. There is no
+ * group to name in either case, so both are shown as themselves.
  */
 /**
  * One person at an address.
@@ -876,6 +881,10 @@ export interface MapMemberDto {
 }
 
 export interface MapOccupantDto {
+  /**
+   * `"family"` only when two or more of them live at this address. One on
+   * their own is a `"person"`, however many relatives they have elsewhere.
+   */
   kind: "family" | "person";
   /** A family id or a person id, depending on `kind`. */
   id: string;
@@ -883,9 +892,10 @@ export interface MapOccupantDto {
   label: string;
   /**
    * For a family, everyone in it who lives here -- the drawer lists them and
-   * each one links into the directory. For a person, just themselves: the
-   * panel needs their name in parts for an avatar, and a one-element list beats
-   * a second optional field that only one of the two kinds ever fills in.
+   * each one links into the directory, and there are always at least two of
+   * them. For a person, just themselves: the panel needs their name in parts
+   * for an avatar, and a one-element list beats a second optional field that
+   * only one of the two kinds ever fills in.
    */
   members: MapMemberDto[];
 }

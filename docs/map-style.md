@@ -16,9 +16,10 @@ look at the preview before publishing.
 
 ## Why it looks like this
 
-The pins carry the page. A household is `--color-primary` (`#b42d23`) and somebody living
-alone is `--color-primary-light` (`#d4564a`), a lighter tint of the same red, so the two read
-as one set at two weights. `--color-accent` gold is reserved for the church, which is then the
+The pins carry the page. A household is `--color-primary` (`#b42d23`) and somebody on their
+own at that address is `--color-primary-light` (`#d4564a`), a lighter tint of the same red, so
+the two read as one set at two weights. "On their own" counts the address rather than the
+family, so one member of a household living apart from the rest gets the lighter pin. `--color-accent` gold is reserved for the church, which is then the
 only pin that is not somebody's home. The base map's whole job is to stay out of all of it:
 
 - **Landscape is `#faf8f5`**, which is `--color-surface-muted` — the same off-white as the rest

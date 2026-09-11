@@ -20,7 +20,10 @@ export function FamilyGlyphPaths() {
   );
 }
 
-/** One person, centred. Somebody with no family. */
+/**
+ * One person, centred. Somebody on their own at an address -- a lodger, or the
+ * one member of a family who lives there while the rest of them are elsewhere.
+ */
 export function PersonGlyphPaths() {
   return (
     <>

@@ -207,11 +207,16 @@ function PopoverShell({
 }
 
 /**
- * One household, or one person who has none.
+ * One household, or one person on their own here.
  *
  * A family shows the names of whoever lives *here* rather than its whole
  * roster, with the same overflow the families list uses. The family name is the
  * way to the rest of them.
+ *
+ * A `"person"` is not necessarily somebody with no family: the API sends one
+ * for whoever is the only member of theirs at this address, because a group of
+ * one has nothing to group. So this branch links to a record rather than to a
+ * household, and their family is one tap further on from there.
  */
 function Occupant({ occupant }: { occupant: MapOccupantDto }) {
   if (occupant.kind === "person") {

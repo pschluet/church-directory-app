@@ -619,7 +619,10 @@ function ClusteredPin({
  * The liturgical red for a household and a lighter tint of it for somebody on
  * their own -- the "visual indicating that it's a family" the requirement asks
  * for, done as two weights of one colour rather than two colours, so the pins
- * read as one set. Gold is left to the church, which is then the only thing on
+ * read as one set. "On their own" is decided per address rather than per
+ * person, so the one member of a family who lives here while the rest of them
+ * are elsewhere gets the lighter pin: the API has already sent them as an
+ * individual, and nothing here has to know that. Gold is left to the church, which is then the only thing on
  * the map that is not somebody's home. A badge counts the households at an
  * address, so a two-flat reads as two before you tap it.
  */

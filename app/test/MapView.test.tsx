@@ -118,10 +118,20 @@ function mapDto(overrides: Partial<MapDto> = {}): MapDto {
         formattedAddress: "4129 W Newport Ave",
         occupants: [
           {
+            /*
+             * Two members, because a family is only sent as a family when two
+             * or more of them live at the address -- one is sent as that
+             * person. A one-member family here would be a payload the API
+             * cannot produce, and it would quietly flip every pin in this file
+             * to the individual's glyph and tint.
+             */
             kind: "family",
             id: "fam-1",
             label: "Schlueter",
-            members: [{ id: "p1", firstName: "Paul", lastName: "Schlueter", thumbUrl: null }],
+            members: [
+              { id: "p1", firstName: "Paul", lastName: "Schlueter", thumbUrl: null },
+              { id: "p2", firstName: "Anna", lastName: "Schlueter", thumbUrl: null },
+            ],
           },
         ],
       },
@@ -265,9 +275,61 @@ describe("MapView", () => {
         "href",
         "/families/fam-1"
       );
-      expect(within(popover).getByText("Paul")).toBeInTheDocument();
+      expect(within(popover).getByText("Paul, Anna")).toBeInTheDocument();
       // Once for the whole pin, because every occupant shares it.
       expect(within(popover).getAllByRole("link", { name: /4129 W Newport Ave/i })).toHaveLength(1);
+    });
+
+    it("shows somebody who is the only one of their family here as themselves", async () => {
+      /*
+       * The pin the API sends as `kind: "person"` even though they have a
+       * family: the rest of the Popovs live elsewhere. So it is their name,
+       * their record it links to, and the lighter tint rather than the
+       * household's red -- and none of that is a decision this page makes, it
+       * follows from the kind.
+       */
+      api.mockResolvedValue(
+        mapDto({
+          locations: [
+            ...mapDto().locations,
+            {
+              placeId: "ChIJb",
+              latitude: 41.95,
+              longitude: -87.74,
+              formattedAddress: "12 Elm St",
+              occupants: [
+                {
+                  kind: "person",
+                  id: "p9",
+                  label: "Maria Popov",
+                  members: [{ id: "p9", firstName: "Maria", lastName: "Popov", thumbUrl: null }],
+                },
+              ],
+            },
+          ],
+        })
+      );
+      renderWithProviders(<MapView />);
+      await screen.findByTestId("map");
+
+      const markers = screen.getAllByTestId("marker");
+      const household = markers.find((m) => m.dataset.title === "4129 W Newport Ave");
+      const alone = markers.find((m) => m.dataset.title === "12 Elm St");
+
+      // Two weights of one red: the household's and the lighter tint for
+      // somebody on their own. The only coverage either has.
+      expect(household!.querySelector(".bg-primary")).not.toBeNull();
+      expect(alone!.querySelector(".bg-primary-light")).not.toBeNull();
+
+      await userEvent.click(alone as HTMLElement);
+
+      const popover = await screen.findByTestId("popover");
+      expect(within(popover).getByRole("link", { name: "Maria Popov" })).toHaveAttribute(
+        "href",
+        "/people/p9"
+      );
+      // Nothing on this pin claims to be a household.
+      expect(within(popover).queryByRole("link", { name: /families/ })).not.toBeInTheDocument();
     });
 
     it("does not remount the map to open one", async () => {

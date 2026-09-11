@@ -22,7 +22,10 @@ const hasDb = inject("hasDatabase");
  *
  * "If people share the exact same address AND are in the same family, show only
  * the family name; if people share an address that aren't in the same family,
- * you must show all of those people." Most of these cases are that sentence,
+ * you must show all of those people." A family needs two or more people at the
+ * address to be one -- hence the pairs in these fixtures, where a single
+ * member would be shown as an individual. Most of these cases are that
+ * sentence,
  * because it is the one part of this feature with a wrong answer that would
  * look plausible: collapsing everybody at an address into one entry reads fine
  * until two families live in a two-flat.
@@ -140,9 +143,13 @@ describe.skipIf(!hasDb)("map view", () => {
     await createGeocode(db(), { placeId: "ChIJmixed" });
     const zolotov = await createFamily(db(), orgId, "Zolotov");
     const antonov = await createFamily(db(), orgId, "Antonov");
+    // Two to a family, or each of them would be an individual and there would
+    // be no family left to order.
     for (const [familyId, firstName] of [
       [zolotov, "Zoya"],
+      [zolotov, "Zakhar"],
       [antonov, "Anton"],
+      [antonov, "Alla"],
       [null, "Lodger"],
     ] as const) {
       const id = await createNonUserPerson(db(), {
@@ -166,6 +173,7 @@ describe.skipIf(!hasDb)("map view", () => {
       [schlueters, "Paul", "Schlueter"],
       [schlueters, "Anna", "Schlueter"],
       [popovs, "Ivan", "Popov"],
+      [popovs, "Boris", "Popov"],
     ] as const) {
       const id = await createNonUserPerson(db(), {
         organizationId: orgId,
@@ -194,6 +202,14 @@ describe.skipIf(!hasDb)("map view", () => {
       firstName: "Paul",
       lastName: "Schlueter",
     });
+    // Anna is what makes the Schlueters a household here rather than one more
+    // individual at the address.
+    const anna = await createNonUserPerson(db(), {
+      organizationId: orgId,
+      familyId,
+      firstName: "Anna",
+      lastName: "Schlueter",
+    });
     const lodger = await createNonUserPerson(db(), {
       organizationId: orgId,
       familyId: null,
@@ -201,6 +217,7 @@ describe.skipIf(!hasDb)("map view", () => {
       lastName: "Volkov",
     });
     await setPlaceId(db(), paul, "ChIJlodger");
+    await setPlaceId(db(), anna, "ChIJlodger");
     await setPlaceId(db(), lodger, "ChIJlodger");
 
     const occupants = (await getMap()).locations[0]!.occupants;
@@ -212,6 +229,35 @@ describe.skipIf(!hasDb)("map view", () => {
     expect(occupants[1]).toMatchObject({ kind: "person", label: "Dmitri Volkov" });
     expect(occupants[1]!.members).toEqual([
       { id: expect.any(String), firstName: "Dmitri", lastName: "Volkov", thumbUrl: null },
+    ]);
+  });
+
+  it("shows the only member of a family at an address as that person", async () => {
+    /*
+     * The other half of the rule, end to end. Ivan's family exists and has a
+     * name, but he is the only one of them here -- so the pin is about him,
+     * carrying his id rather than the family's, and the popover links to his
+     * record. This is the case the SQL makes easy to get wrong: the row has a
+     * `family_name`, and ordering by it is right while labelling by it is not.
+     */
+    const familyId = await createFamily(db(), orgId, "Popov");
+    await createGeocode(db(), { placeId: "ChIJalone" });
+    const ivan = await createNonUserPerson(db(), {
+      organizationId: orgId,
+      familyId,
+      firstName: "Ivan",
+      lastName: "Popov",
+    });
+    await setPlaceId(db(), ivan, "ChIJalone");
+
+    const occupants = (await getMap()).locations[0]!.occupants;
+    expect(occupants).toEqual([
+      {
+        kind: "person",
+        id: ivan,
+        label: "Ivan Popov",
+        members: [{ id: ivan, firstName: "Ivan", lastName: "Popov", thumbUrl: null }],
+      },
     ]);
   });
 

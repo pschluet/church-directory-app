@@ -149,6 +149,13 @@ describe("MapPopover", () => {
   });
 
   it("keeps two families at one address apart", () => {
+    /*
+     * Empty `members` deliberately, which the API cannot send -- a family
+     * exists here because somebody is in it, and needs two of them at the
+     * address to be sent as a family at all. It is the one exercise of the
+     * `names.length > 0` guard, which is what keeps a bare name from being
+     * followed by an empty line if an older payload ever reaches a new bundle.
+     */
     render({
       ...FAMILY_AND_LODGER,
       occupants: [
