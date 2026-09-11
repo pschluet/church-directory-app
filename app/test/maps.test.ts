@@ -70,12 +70,13 @@ describe("mapsProvidersFor", () => {
 });
 
 /*
- * Reported: on iOS the Google Maps app was reached via an in-app browser that
- * loaded the web map first and then bounced. A standalone PWA's `_blank` is an
- * in-app web view, and one of those will not hand a universal link to an app.
+ * Google's destination on an iPhone is a `comgooglemaps://` URL, which has no
+ * page to render -- a new context would leave a blank tab beside the map app.
+ * Dropping the tab was tried as the whole fix first and did not work; see
+ * `mapsUrl`.
  */
 describe("linkTarget", () => {
-  it("opens Google in place on an iPhone, so iOS can give it to the app", () => {
+  it("opens Google in place on an iPhone, where there is no page to show", () => {
     expect(linkTarget("google", IPHONE, 5)).toBeUndefined();
     expect(linkTarget("google", IPHONE_CHROME, 5)).toBeUndefined();
     expect(linkTarget("google", IPAD_MOBILE, 5)).toBeUndefined();
@@ -98,18 +99,58 @@ describe("linkTarget", () => {
 });
 
 describe("mapsUrl", () => {
-  it("builds https links, so a tap with no app installed still lands on a map", () => {
-    expect(mapsUrl("apple", ADDRESS)).toBe(
-      "https://maps.apple.com/?q=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641"
-    );
-    expect(mapsUrl("google", ADDRESS)).toBe(
+  it("builds https links off an Apple phone, which reach the app or a web map", () => {
+    expect(mapsUrl("google", ADDRESS, ANDROID, 5)).toBe(
       "https://www.google.com/maps/search/?api=1&query=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641"
+    );
+    expect(mapsUrl("google", ADDRESS, MAC, 0)).toBe(
+      "https://www.google.com/maps/search/?api=1&query=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641"
+    );
+  });
+
+  it("sends Apple Maps to its universal link on every platform", () => {
+    // It is claimed by Maps.app on an Apple device and a web map elsewhere, so
+    // there is nothing for the platform to change.
+    for (const agent of [IPHONE, IPAD_MOBILE, ANDROID, MAC, WINDOWS]) {
+      expect(mapsUrl("apple", ADDRESS, agent, 5)).toBe(
+        "https://maps.apple.com/?q=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641"
+      );
+    }
+  });
+
+  /*
+   * Reported twice: an https link could not reach the Google Maps app on iOS
+   * without loading a web map in an in-app browser first. A custom scheme is
+   * the only thing the OS routes to an app whatever the context, at the price
+   * of doing nothing when the app is absent.
+   */
+  it("sends Google to its own scheme on an iPhone, so iOS routes it to the app", () => {
+    expect(mapsUrl("google", ADDRESS, IPHONE, 5)).toBe(
+      "comgooglemaps://?q=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641"
+    );
+    expect(mapsUrl("google", ADDRESS, IPHONE_CHROME, 5)).toBe(
+      "comgooglemaps://?q=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641"
+    );
+    expect(mapsUrl("google", ADDRESS, IPAD_MOBILE, 5)).toBe(
+      "comgooglemaps://?q=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641"
+    );
+    // The iPad that calls itself a Mac; only the touch count gives it away.
+    expect(mapsUrl("google", ADDRESS, IPAD_DESKTOP, 5)).toBe(
+      "comgooglemaps://?q=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641"
     );
   });
 
   it("escapes an address that would otherwise truncate the query", () => {
     // Unescaped, the `#` ends the URL and the `&` starts a second parameter.
-    const url = mapsUrl("google", "Apt #3 & 4, Chicago IL");
+    const url = mapsUrl("google", "Apt #3 & 4, Chicago IL", ANDROID, 5);
+    expect(url).toContain("%233");
+    expect(url).toContain("%26");
+    expect(url.split("?")[1]).not.toContain("#");
+  });
+
+  it("escapes the scheme URL the same way, which carries the address bare", () => {
+    const url = mapsUrl("google", "Apt #3 & 4, Chicago IL", IPHONE, 5);
+    expect(url.startsWith("comgooglemaps://?q=")).toBe(true);
     expect(url).toContain("%233");
     expect(url).toContain("%26");
     expect(url.split("?")[1]).not.toContain("#");

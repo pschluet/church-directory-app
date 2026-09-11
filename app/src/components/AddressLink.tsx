@@ -58,7 +58,14 @@ export function AddressLink({ person, address: given, className = "" }: AddressL
    */
   const { userAgent, maxTouchPoints } = navigator;
   const providers = mapsProvidersFor(userAgent, maxTouchPoints);
-  const targetFor = (provider: MapsProviderId) => linkTarget(provider, userAgent, maxTouchPoints);
+  /*
+   * The href and the target are one decision, not two: on an iPhone the Google
+   * destination is a `comgooglemaps://` URL, which has nothing to show in a tab.
+   */
+  const linkFor = (provider: MapsProviderId) => ({
+    href: mapsUrl(provider, address, userAgent, maxTouchPoints),
+    target: linkTarget(provider, userAgent, maxTouchPoints),
+  });
 
   if (lines.length === 0) return null;
 
@@ -82,13 +89,14 @@ export function AddressLink({ person, address: given, className = "" }: AddressL
         : null;
 
   if (only) {
+    // Named rather than spread onto the anchor: a spread hides `href` from the
+    // a11y lint that checks an anchor has one.
+    const link = linkFor(only);
     return (
       <a
-        href={mapsUrl(only, address)}
-        // A new tab, so somebody who ends up on a web map still has the
-        // directory where they left it -- except where that is the very thing
-        // stopping the map app from being handed the link. See `linkTarget`.
-        target={targetFor(only)}
+        href={link.href}
+        // No tab where the href is a `comgooglemaps://` URL; see `linkTarget`.
+        target={link.target}
         // noreferrer, not merely noopener: the referrer would carry this page's
         // URL, and the person's id in it, to a provider that is already being
         // handed their home address.
@@ -125,7 +133,7 @@ export function AddressLink({ person, address: given, className = "" }: AddressL
         <MapsChooser
           address={address}
           providers={providers}
-          targetFor={targetFor}
+          linkFor={linkFor}
           onChoose={(provider, remember) => {
             if (remember) {
               rememberProvider(provider);
@@ -155,14 +163,14 @@ export function AddressLink({ person, address: given, className = "" }: AddressL
 function MapsChooser({
   address,
   providers,
-  targetFor,
+  linkFor,
   onChoose,
   onDismiss,
 }: {
   address: string;
   providers: MapsProviderId[];
   /* Decided by the caller, as `providers` is -- the sheet sniffs no platform. */
-  targetFor: (provider: MapsProviderId) => "_blank" | undefined;
+  linkFor: (provider: MapsProviderId) => { href: string; target: "_blank" | undefined };
   onChoose: (provider: MapsProviderId, remember: boolean) => void;
   onDismiss: () => void;
 }) {
@@ -181,29 +189,33 @@ function MapsChooser({
       <p className="text-sm text-ink-muted">{address}</p>
 
       <div className="mt-4 grid gap-2">
-        {providers.map((provider, index) => (
-          <a
-            key={provider}
-            ref={index === 0 ? firstRef : undefined}
-            href={mapsUrl(provider, address)}
-            target={targetFor(provider)}
-            // Kept whether or not a tab is opened: this withholds the referrer,
-            // which would carry the person's id to the map provider.
-            rel="noreferrer"
-            // Closed on the way out: coming back from the map should not find a
-            // sheet still waiting to be dismissed.
-            onClick={() => onChoose(provider, remember)}
-            className="tap-target flex items-center justify-center rounded-md border border-primary px-4 py-3 font-bold text-primary transition hover:border-accent hover:text-accent"
-          >
-            {/*
-              The label is the whole accessible name on purpose. The dialog is
-              already titled "Open in Maps" with the address as its first
-              content, so repeating the address here would have a screen reader
-              read it three times.
-            */}
-            {MAPS_PROVIDERS[provider].label}
-          </a>
-        ))}
+        {providers.map((provider, index) => {
+          // Not spread onto the anchor, for the reason given at the other one.
+          const link = linkFor(provider);
+          return (
+            <a
+              key={provider}
+              ref={index === 0 ? firstRef : undefined}
+              href={link.href}
+              target={link.target}
+              // Kept whether or not a tab is opened: this withholds the
+              // referrer, which would carry the person's id to the provider.
+              rel="noreferrer"
+              // Closed on the way out: coming back from the map should not find
+              // a sheet still waiting to be dismissed.
+              onClick={() => onChoose(provider, remember)}
+              className="tap-target flex items-center justify-center rounded-md border border-primary px-4 py-3 font-bold text-primary transition hover:border-accent hover:text-accent"
+            >
+              {/*
+                The label is the whole accessible name on purpose. The dialog is
+                already titled "Open in Maps" with the address as its first
+                content, so repeating the address here would have a screen
+                reader read it three times.
+              */}
+              {MAPS_PROVIDERS[provider].label}
+            </a>
+          );
+        })}
       </div>
 
       {/*

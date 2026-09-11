@@ -3,26 +3,25 @@
  *
  * The hard part is not the URLs, it is that a web page cannot ask the operating
  * system whether the Google Maps app is installed -- there is no API for it,
- * and the old trick of firing `comgooglemaps://` and watching for nothing to
- * happen cannot tell "not installed" from "installed and slow to switch". So
- * which maps to offer is decided by platform, and every URL is one that still
- * lands somewhere useful when the app it prefers is absent:
+ * and firing `comgooglemaps://` to watch for nothing happening cannot tell
+ * "not installed" from "installed and slow to switch". So which maps to offer
+ * is decided by platform:
  *
  *   maps.apple.com  -- a universal link: opens Maps.app on an Apple platform,
  *                      renders a web map anywhere else. `maps://` fails hard
  *                      off an Apple device.
  *   google.com/maps -- opens the Google Maps app through its app link when it
  *                      is installed, and the web map when it is not.
- *                      `comgooglemaps://` silently does nothing when it is not.
+ *   comgooglemaps:// -- opens the Google Maps app directly, and does nothing at
+ *                      all when it is absent. Used on an iPhone or iPad only,
+ *                      and only because nothing else got there; see `mapsUrl`.
  *
- * `geo:0,0?q=` was considered for Android, where it raises the OS's own chooser
- * across every installed map app. It was dropped: when nothing claims the
- * scheme the tap is a silent no-op the page cannot detect, and the https URL
- * already reaches the Google Maps app on the phones that have it.
- *
- * Picking the right URL turned out not to be enough on iOS: whether the app
- * gets the link depends on *how* it is opened as well as what it is. See
- * `linkTarget`.
+ * Every URL here used to be an https one, so that a tap finding no app still
+ * landed on a web map rather than doing nothing. That held everywhere except
+ * the one platform with two map apps to choose between, where an https link
+ * could not reach the Google Maps app without going through a browser first.
+ * `geo:0,0?q=` is still not used on Android, where the https link does reach
+ * the app and a scheme nothing claims would be a silent no-op.
  *
  * Nothing here touches `navigator` or React. The platform arrives as arguments
  * so the branches that a laptop never takes can still be tested on one.
@@ -71,17 +70,20 @@ export function mapsProvidersFor(userAgent: string, maxTouchPoints: number): Map
 /**
  * Whether a provider's link may open a new browsing context.
  *
- * Everything here opens in a new tab except Google Maps on an iPhone or iPad,
- * and that exception is a bug fix. An installed copy of this app runs
- * standalone, so `target="_blank"` does not open a tab at all -- iOS hands the
- * URL to an in-app web view, and an in-app web view will not give a universal
- * link to the app that claims it. The Google Maps app was therefore reached the
- * slow way: the web map loaded, and its own page bounced to the app.
+ * Everything opens in a new tab, so that a member who lands on a web map still
+ * has the directory behind it, except Google Maps on an iPhone or iPad -- where
+ * `mapsUrl` hands back a `comgooglemaps://` URL. A custom scheme has no page to
+ * render, so a new context would be a blank tab left over beside the map app.
  *
- * Apple Maps never had the problem and keeps its new tab: `maps.apple.com` is
+ * This started life as the whole fix, on the theory that iOS was refusing to
+ * hand a universal link to an app because the tap opened a new context. It was
+ * not: dropping the tab alone changed nothing, which is what sent `mapsUrl` to
+ * a custom scheme. It stays because it is right for a scheme, not because it
+ * was right about universal links.
+ *
+ * Apple Maps keeps its tab and never had the problem: `maps.apple.com` is
  * special-cased by iOS below universal-link handling, so Maps.app claims it
- * even from inside a web view. Android app links resolve from a new tab too,
- * and at a desk a new tab is simply the right behaviour.
+ * even from inside a web view.
  *
  * Returns the attribute value rather than a boolean so a caller can hand it
  * straight to `target`, which React omits entirely when it is `undefined`.
@@ -95,13 +97,42 @@ export function linkTarget(
   return inPlace ? undefined : "_blank";
 }
 
-export function mapsUrl(provider: MapsProviderId, address: string): string {
+/**
+ * Where the tap goes.
+ *
+ * Google Maps on an iPhone or iPad gets `comgooglemaps://`, which is a reversal
+ * worth explaining because the https-only rule it breaks was deliberate. On
+ * that platform the https link could not reach the app without a browser in
+ * between: an installed copy of this app runs standalone, and the in-app web
+ * view it opens links in loads a universal link itself rather than handing it
+ * over, so the web map appeared and then bounced into the app. Opening it in
+ * place instead of a new tab was tried first and was not enough -- iOS declined
+ * to hand the link over either way. A custom scheme is the only thing the OS
+ * routes to an app regardless of the context it was tapped in.
+ *
+ * The cost, accepted knowingly: a tap with Google Maps not installed does
+ * nothing at all, where before it would have shown a web map. It buys the
+ * behaviour Apple Maps has always had, and someone choosing Google Maps from a
+ * sheet on an iPhone is telling us they have it. There is no fallback because
+ * there is no reliable one -- a timer cannot tell a missing app from a slow
+ * switch, which is the same wall this module started at.
+ *
+ * Everywhere else keeps the https URL, which already reaches the app on Android
+ * and is the only sensible thing at a desk.
+ */
+export function mapsUrl(
+  provider: MapsProviderId,
+  address: string,
+  userAgent: string,
+  maxTouchPoints: number
+): string {
   // A search rather than an exact-address lookup, which is what a hand-typed
   // directory entry needs: Apple's `?address=` wants a well-formed address and
   // shows nothing at all when it does not get one.
   const query = encodeURIComponent(address);
-  return provider === "apple"
-    ? `https://maps.apple.com/?q=${query}`
+  if (provider === "apple") return `https://maps.apple.com/?q=${query}`;
+  return isAppleMobile(userAgent, maxTouchPoints)
+    ? `comgooglemaps://?q=${query}`
     : `https://www.google.com/maps/search/?api=1&query=${query}`;
 }
 

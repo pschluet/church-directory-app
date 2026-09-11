@@ -52,6 +52,8 @@ const PERSON = {
 };
 
 const APPLE_URL = "https://maps.apple.com/?q=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641";
+/** What an iPhone gets: the only form iOS routes to the app on its own. */
+const GOOGLE_APP_URL = "comgooglemaps://?q=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641";
 const GOOGLE_URL =
   "https://www.google.com/maps/search/?api=1&query=4129%20W%20Newport%20Ave%2C%20Chicago%20IL%2060641";
 
@@ -99,35 +101,39 @@ describe("AddressLink", () => {
     const choices = screen.getAllByRole("link");
     expect(choices.map((choice) => choice.textContent)).toEqual(["Apple Maps", "Google Maps"]);
     expect(choices[0]).toHaveAttribute("href", APPLE_URL);
-    expect(choices[1]).toHaveAttribute("href", GOOGLE_URL);
+    expect(choices[1]).toHaveAttribute("href", GOOGLE_APP_URL);
   });
 
   /*
    * Reported: choosing Google Maps on iOS opened an in-app browser that loaded
-   * the web map and then bounced to the app. That browser is what `_blank` gets
-   * you in a standalone PWA, and it will not hand a universal link to an app.
+   * the web map and then bounced to the app. Only the app's own scheme gets
+   * routed straight there, and it has no page to render in a tab -- while
+   * Apple Maps keeps its tab, being claimed by Maps.app from anywhere.
    */
-  it("opens Google in place on an iPhone, and Apple Maps still in a tab", async () => {
+  it("sends Google to the app on an iPhone, with no tab to leave behind", async () => {
     withDevice(IPHONE, 5);
     render(<AddressLink person={PERSON} />);
     await userEvent.click(screen.getByRole("button"));
 
     const apple = screen.getByRole("link", { name: "Apple Maps" });
     const google = screen.getByRole("link", { name: "Google Maps" });
-    expect(apple).toHaveAttribute("target", "_blank");
+    expect(google).toHaveAttribute("href", GOOGLE_APP_URL);
     expect(google).not.toHaveAttribute("target");
+    expect(apple).toHaveAttribute("href", APPLE_URL);
+    expect(apple).toHaveAttribute("target", "_blank");
     // Not a consequence of the tab: it withholds the person's id either way.
     expect(apple).toHaveAttribute("rel", "noreferrer");
     expect(google).toHaveAttribute("rel", "noreferrer");
   });
 
-  it("opens a remembered Google in place too, not only from the sheet", async () => {
+  it("does the same for a remembered Google, not only from the sheet", async () => {
+    // The path somebody who ticked the box takes, which the sheet never shows.
     localStorage.setItem("directory.mapsProvider", "google");
     withDevice(IPHONE, 5);
     render(<AddressLink person={PERSON} />);
 
     const link = screen.getByRole("link");
-    expect(link).toHaveAttribute("href", GOOGLE_URL);
+    expect(link).toHaveAttribute("href", GOOGLE_APP_URL);
     expect(link).not.toHaveAttribute("target");
   });
 
