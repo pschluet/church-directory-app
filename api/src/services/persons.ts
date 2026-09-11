@@ -285,7 +285,17 @@ export async function loadSpecialDatesFor(
 ): Promise<SpecialDateDto[]> {
   const { rows } = await q.query<SpecialDateRow>(
     `${SPECIAL_DATE_SELECT}
-      where sd.person_id = $1 or sd.related_person_id = $1
+      where (sd.person_id = $1 or sd.related_person_id = $1)
+        -- Never serve a link to someone who has been deleted. The delete path
+        -- removes these anniversaries now, so this only catches rows orphaned
+        -- before it did -- but it has to check both halves, because the row is
+        -- stored against one spouse and listed on both: guarding only the
+        -- related half still shows the pair on the survivor's profile when it
+        -- was the *owner* who went. Same rule as loadAnniversaries in
+        -- routes/families.ts. Null-safe on the related side, since a birthday
+        -- or feast day has no second person and must still come back.
+        and p.deleted_at is null
+        and (sd.related_person_id is null or rp.deleted_at is null)
       order by sd.month, sd.day, sd.type`,
     [personId]
   );

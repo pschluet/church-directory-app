@@ -47,6 +47,10 @@ async function loadOccurrences(
     `${SPECIAL_DATE_SELECT}
       where sd.organization_id = $1
         and p.deleted_at is null
+        -- Deleted on the related side counts as deleted too, or a couple
+        -- keeps appearing here with one spouse's name rendered as a link
+        -- that 404s. Null-safe: only an anniversary has a second person.
+        and (sd.related_person_id is null or rp.deleted_at is null)
         and (sd.month * 100 + sd.day) = any($2::int[])
         -- The related person as well as the owner: an anniversary is stored
         -- once against one spouse, so a couple where only the related half is
@@ -183,6 +187,32 @@ async function assertCanEditPersonById(
   });
 }
 
+/**
+ * The other half of an anniversary has to be a live person in the same parish.
+ *
+ * Shared by POST and PATCH: the update used to write `related_person_id`
+ * unchecked, which was a second way to produce the dangling link that deleting
+ * a person used to leave behind -- an edit could point an anniversary at
+ * someone soft-deleted, or at another parish's member entirely.
+ */
+async function assertRelatedPersonIsUsable(
+  db: AppEnv["Variables"]["db"],
+  relatedPersonId: string | null | undefined,
+  personId: string,
+  organizationId: string
+): Promise<void> {
+  if (!relatedPersonId) return;
+  if (relatedPersonId === personId) {
+    throw new HTTPException(400, { message: "An anniversary must link two different people" });
+  }
+  const related = await one<{ id: string }>(
+    db,
+    "select id from persons where id = $1 and organization_id = $2 and deleted_at is null",
+    [relatedPersonId, organizationId]
+  );
+  if (!related) throw new HTTPException(404, { message: "The other person was not found" });
+}
+
 routes.post("/", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
@@ -193,17 +223,7 @@ routes.post("/", async (c) => {
 
   await assertCanEditPersonById(db, caller, personId, organizationId);
 
-  if (payload.relatedPersonId) {
-    if (payload.relatedPersonId === personId) {
-      throw new HTTPException(400, { message: "An anniversary must link two different people" });
-    }
-    const related = await one<{ id: string }>(
-      db,
-      "select id from persons where id = $1 and organization_id = $2 and deleted_at is null",
-      [payload.relatedPersonId, organizationId]
-    );
-    if (!related) throw new HTTPException(404, { message: "The other person was not found" });
-  }
+  await assertRelatedPersonIsUsable(db, payload.relatedPersonId, personId, organizationId);
 
   const created = await one<{ id: string }>(
     db,
@@ -251,6 +271,12 @@ routes.patch("/:id", async (c) => {
   );
   if (!existing) throw new HTTPException(404, { message: "Date not found" });
   await assertCanEditPersonById(db, caller, existing.person_id, organizationId);
+  await assertRelatedPersonIsUsable(
+    db,
+    payload.relatedPersonId,
+    existing.person_id,
+    organizationId
+  );
 
   await db.query(
     `update special_dates

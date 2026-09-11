@@ -299,6 +299,96 @@ describe.skipIf(!hasDb)("people and attribute inheritance", () => {
 
       expect((await as(admin).call("DELETE", `/api/persons/${child}`)).status).toBe(204);
     });
+
+    /**
+     * Reported: someone linked an anniversary to a profile they had keyed in
+     * by hand, then deleted that profile as a duplicate once the real invite
+     * was accepted. The link stayed on their own profile and answered "Person
+     * not found" when followed.
+     *
+     * Both directions, because an anniversary is one row shown on two
+     * profiles -- a fix that only cleared `related_person_id` would leave the
+     * mirrored case broken.
+     */
+    it("removes an anniversary linking the deleted person to someone else", async () => {
+      const spouse = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId,
+        firstName: "Sarah",
+      });
+      const created = await as(parent).call("POST", "/api/special-dates", {
+        personId: parent.personId,
+        type: "ANNIVERSARY",
+        month: 6,
+        day: 14,
+        year: 2010,
+        relatedPersonId: spouse,
+      });
+      expect(created.status).toBe(201);
+
+      expect((await as(parent).call("DELETE", `/api/persons/${spouse}`)).status).toBe(204);
+
+      // The page in the report: it still loads, and no longer offers the link.
+      const { status, body } = await as(parent).call("GET", `/api/persons/${parent.personId}`);
+      expect(status).toBe(200);
+      expect(body.specialDates).toHaveLength(0);
+
+      const { rows } = await db().query<{ count: string }>(
+        "select count(*) as count from special_dates where type = 'ANNIVERSARY'"
+      );
+      expect(Number(rows[0]!.count)).toBe(0);
+    });
+
+    it("removes an anniversary the deleted person owned", async () => {
+      const husband = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId,
+        firstName: "Ivan",
+      });
+      const wife = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId,
+        firstName: "Olga",
+      });
+      await as(parent).call("POST", "/api/special-dates", {
+        personId: husband,
+        type: "ANNIVERSARY",
+        month: 6,
+        day: 14,
+        year: 2010,
+        relatedPersonId: wife,
+      });
+
+      // Delete the half the row is stored against, not the related half.
+      expect((await as(parent).call("DELETE", `/api/persons/${husband}`)).status).toBe(204);
+
+      const { body } = await as(parent).call("GET", `/api/persons/${wife}`);
+      expect(body.specialDates).toHaveLength(0);
+    });
+
+    it("keeps the deleted person's own birthday", async () => {
+      const child = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId,
+        firstName: "Anna",
+      });
+      await as(parent).call("POST", "/api/special-dates", {
+        personId: child,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 4,
+      });
+
+      expect((await as(parent).call("DELETE", `/api/persons/${child}`)).status).toBe(204);
+
+      // Only an anniversary is shared with someone else, so only an
+      // anniversary goes -- their own dates are retained forever.
+      const { rows } = await db().query<{ count: string }>(
+        "select count(*) as count from special_dates where person_id = $1",
+        [child]
+      );
+      expect(Number(rows[0]!.count)).toBe(1);
+    });
   });
 });
 

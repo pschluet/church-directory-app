@@ -550,8 +550,9 @@ export function PersonDetail() {
           onClose={() => setConfirmDelete(false)}
         >
           {name} will be removed from the directory, along with any special dates recorded for them.
-          Anyone in the family who takes a detail from them — a surname, an address — will go back
-          to their own. This cannot be undone from here.
+          An anniversary they share with someone else goes as well, and will stop appearing on that
+          person's profile. Anyone in the family who takes a detail from them — a surname, an
+          address — will go back to their own. This cannot be undone from here.
         </ConfirmDialog>
       )}
 

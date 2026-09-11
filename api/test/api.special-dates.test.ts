@@ -287,6 +287,18 @@ describe.skipIf(!hasDb)("special dates", () => {
       expect(may4.dates.map((d: any) => d.type)).toEqual(["BIRTHDAY"]);
     });
 
+    /**
+     * The other half of the same rule. Soft-deleting in SQL rather than
+     * through the API on purpose: the delete route now clears these rows, so
+     * this is the guard for the ones orphaned before it did.
+     */
+    it("leaves out an anniversary whose partner is deleted", async () => {
+      await db().query("update persons set deleted_at = now() where id = $1", [maria.personId]);
+      const { body } = await as(paul).call("GET", "/api/special-dates/upcoming?start=2026-05-01");
+      const may6 = body.days.find((d: any) => d.date === "2026-05-06");
+      expect(may6.dates.map((d: any) => d.type)).toEqual(["BIRTHDAY"]);
+    });
+
     it("rejects a malformed start date", async () => {
       const { status } = await as(paul).call("GET", "/api/special-dates/upcoming?start=05/01/2026");
       expect(status).toBe(400);
@@ -485,6 +497,67 @@ describe.skipIf(!hasDb)("special dates", () => {
       expect((await as(paul).call("DELETE", `/api/special-dates/${created.body.id}`)).status).toBe(
         403
       );
+    });
+
+    /**
+     * The update used to write `related_person_id` unchecked, which was a
+     * second way to make the dangling link that deleting a person left
+     * behind -- POST has always validated the partner.
+     */
+    describe("the other half of an anniversary", () => {
+      const anniversary = async (): Promise<string> => {
+        const { body } = await as(paul).call("POST", "/api/special-dates", {
+          personId: paul.personId,
+          type: "ANNIVERSARY",
+          month: 6,
+          day: 14,
+          year: 2010,
+          relatedPersonId: maria.personId,
+        });
+        return body.id;
+      };
+
+      const repoint = (id: string, relatedPersonId: string | null) =>
+        as(paul).call("PATCH", `/api/special-dates/${id}`, {
+          type: "ANNIVERSARY",
+          month: 6,
+          day: 14,
+          year: 2010,
+          relatedPersonId,
+        });
+
+      it("refuses to point an update at someone deleted", async () => {
+        const id = await anniversary();
+        await db().query("update persons set deleted_at = now() where id = $1", [anna]);
+
+        const { status, body } = await repoint(id, anna);
+        expect(status).toBe(404);
+        expect(body.error).toMatch(/other person was not found/i);
+      });
+
+      it("refuses to point an update at another parish's member", async () => {
+        const id = await anniversary();
+        const otherOrg = await createOrganization(db(), "St. George", "st-george");
+        const outsider = await createNonUserPerson(db(), {
+          organizationId: otherOrg,
+          familyId: null,
+          firstName: "Elsewhere",
+        });
+
+        expect((await repoint(id, outsider)).status).toBe(404);
+      });
+
+      it("refuses to point an anniversary at its own owner", async () => {
+        const id = await anniversary();
+        expect((await repoint(id, paul.personId)).status).toBe(400);
+      });
+
+      it("still allows an ordinary edit that keeps the partner", async () => {
+        const id = await anniversary();
+        const { status, body } = await repoint(id, maria.personId);
+        expect(status).toBe(200);
+        expect(body.relatedPersonId).toBe(maria.personId);
+      });
     });
   });
 

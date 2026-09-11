@@ -284,10 +284,14 @@ routes.put("/:id/photo", async (c) => {
 });
 
 /**
- * Soft delete, because data is kept forever. Only family members without an
- * account can be removed this way -- deleting the Person behind an account
- * would leave the account with nothing to point at, so admins disable the
- * account instead (routes/admin.ts).
+ * Soft delete, because data is kept forever. The one thing actually removed is
+ * an anniversary: it belongs to two people at once, so it is not this person's
+ * alone to keep, and leaving it behind strands the other spouse with a link to
+ * a profile that 404s.
+ *
+ * Only family members without an account can be removed this way -- deleting
+ * the Person behind an account would leave the account with nothing to point
+ * at, so admins disable the account instead (routes/admin.ts).
  */
 routes.delete("/:id", async (c) => {
   const caller = c.get("caller");
@@ -306,6 +310,23 @@ routes.delete("/:id", async (c) => {
 
   await db.transaction(async (tx) => {
     await clearInheritanceFor(tx, id);
+
+    // An anniversary is one row shared by two people, so it cannot outlive
+    // either of them: the surviving spouse's profile would keep rendering the
+    // deleted half as a link, and following it answers 404. Both sides of the
+    // pair, because the row is stored against one spouse but shows on both --
+    // filtering only `related_person_id` would leave the mirrored case broken.
+    // The `on delete cascade` on those columns never fires here; this is a
+    // soft delete, so the persons row stays.
+    await tx.query(
+      `delete from special_dates
+        where type = 'ANNIVERSARY'
+          and (person_id = $1 or related_person_id = $1)`,
+      [id]
+    );
+
+    // Last, once nothing points at them any more -- the same ordering
+    // services/merge.ts uses when it retires a duplicate.
     await tx.query("update persons set deleted_at = now() where id = $1", [id]);
   });
 
