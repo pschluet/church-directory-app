@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   forgetPreferredProvider,
   isAppleMobile,
+  linkTarget,
   mapsProvidersFor,
   mapsUrl,
   preferredProvider,
@@ -65,6 +66,34 @@ describe("mapsProvidersFor", () => {
   it("offers one destination off an Apple device, so no sheet is raised", () => {
     expect(mapsProvidersFor(ANDROID, 5)).toEqual(["google"]);
     expect(mapsProvidersFor(MAC, 0)).toEqual(["google"]);
+  });
+});
+
+/*
+ * Reported: on iOS the Google Maps app was reached via an in-app browser that
+ * loaded the web map first and then bounced. A standalone PWA's `_blank` is an
+ * in-app web view, and one of those will not hand a universal link to an app.
+ */
+describe("linkTarget", () => {
+  it("opens Google in place on an iPhone, so iOS can give it to the app", () => {
+    expect(linkTarget("google", IPHONE, 5)).toBeUndefined();
+    expect(linkTarget("google", IPHONE_CHROME, 5)).toBeUndefined();
+    expect(linkTarget("google", IPAD_MOBILE, 5)).toBeUndefined();
+    // The iPad that calls itself a Mac; only the touch count gives it away.
+    expect(linkTarget("google", IPAD_DESKTOP, 5)).toBeUndefined();
+  });
+
+  it("leaves Apple Maps in a new tab, which was never the broken one", () => {
+    // maps.apple.com is claimed by Maps.app even from inside a web view.
+    expect(linkTarget("apple", IPHONE, 5)).toBe("_blank");
+    expect(linkTarget("apple", IPAD_MOBILE, 5)).toBe("_blank");
+  });
+
+  it("keeps the new tab everywhere else", () => {
+    // Android app links resolve from a new tab, and at a desk a tab is right.
+    expect(linkTarget("google", ANDROID, 5)).toBe("_blank");
+    expect(linkTarget("google", MAC, 0)).toBe("_blank");
+    expect(linkTarget("google", WINDOWS, 0)).toBe("_blank");
   });
 });
 

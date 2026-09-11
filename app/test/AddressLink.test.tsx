@@ -102,6 +102,35 @@ describe("AddressLink", () => {
     expect(choices[1]).toHaveAttribute("href", GOOGLE_URL);
   });
 
+  /*
+   * Reported: choosing Google Maps on iOS opened an in-app browser that loaded
+   * the web map and then bounced to the app. That browser is what `_blank` gets
+   * you in a standalone PWA, and it will not hand a universal link to an app.
+   */
+  it("opens Google in place on an iPhone, and Apple Maps still in a tab", async () => {
+    withDevice(IPHONE, 5);
+    render(<AddressLink person={PERSON} />);
+    await userEvent.click(screen.getByRole("button"));
+
+    const apple = screen.getByRole("link", { name: "Apple Maps" });
+    const google = screen.getByRole("link", { name: "Google Maps" });
+    expect(apple).toHaveAttribute("target", "_blank");
+    expect(google).not.toHaveAttribute("target");
+    // Not a consequence of the tab: it withholds the person's id either way.
+    expect(apple).toHaveAttribute("rel", "noreferrer");
+    expect(google).toHaveAttribute("rel", "noreferrer");
+  });
+
+  it("opens a remembered Google in place too, not only from the sheet", async () => {
+    localStorage.setItem("directory.mapsProvider", "google");
+    withDevice(IPHONE, 5);
+    render(<AddressLink person={PERSON} />);
+
+    const link = screen.getByRole("link");
+    expect(link).toHaveAttribute("href", GOOGLE_URL);
+    expect(link).not.toHaveAttribute("target");
+  });
+
   it("puts focus in the sheet, because Modal does not", async () => {
     withDevice(IPHONE, 5);
     render(<AddressLink person={PERSON} />);
@@ -150,6 +179,13 @@ describe("AddressLink", () => {
     withDevice(IPHONE, 5);
     render(<AddressLink person={PERSON} />);
     await userEvent.click(screen.getByRole("button", { name: /maps app/i }));
+    /*
+     * Google opens in place on an iPhone now, and jsdom implements no
+     * navigation -- following the href would log an unimplemented-navigation
+     * error over a suite that is otherwise quiet. The handler under test has
+     * already run by the time this cancels the default.
+     */
+    document.addEventListener("click", (event) => event.preventDefault(), { once: true });
     await userEvent.click(screen.getByRole("link", { name: "Google Maps" }));
 
     expect(screen.getByRole("button", { name: /maps app/i })).toBeInTheDocument();

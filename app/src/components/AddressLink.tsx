@@ -4,6 +4,7 @@ import { formatMultilineAddress, formatSingleLineAddress, hasMappableAddress } f
 import {
   MAPS_PROVIDERS,
   type MapsProviderId,
+  linkTarget,
   mapsProvidersFor,
   mapsUrl,
   preferredProvider,
@@ -55,7 +56,9 @@ export function AddressLink({ person, address: given, className = "" }: AddressL
    * touch count can change while the page is open, and the decision they feed
    * is unit-tested on its own, so this component only passes them along.
    */
-  const providers = mapsProvidersFor(navigator.userAgent, navigator.maxTouchPoints);
+  const { userAgent, maxTouchPoints } = navigator;
+  const providers = mapsProvidersFor(userAgent, maxTouchPoints);
+  const targetFor = (provider: MapsProviderId) => linkTarget(provider, userAgent, maxTouchPoints);
 
   if (lines.length === 0) return null;
 
@@ -83,9 +86,9 @@ export function AddressLink({ person, address: given, className = "" }: AddressL
       <a
         href={mapsUrl(only, address)}
         // A new tab, so somebody who ends up on a web map still has the
-        // directory where they left it. On a phone the OS claims the link
-        // before a tab is ever opened.
-        target="_blank"
+        // directory where they left it -- except where that is the very thing
+        // stopping the map app from being handed the link. See `linkTarget`.
+        target={targetFor(only)}
         // noreferrer, not merely noopener: the referrer would carry this page's
         // URL, and the person's id in it, to a provider that is already being
         // handed their home address.
@@ -122,6 +125,7 @@ export function AddressLink({ person, address: given, className = "" }: AddressL
         <MapsChooser
           address={address}
           providers={providers}
+          targetFor={targetFor}
           onChoose={(provider, remember) => {
             if (remember) {
               rememberProvider(provider);
@@ -151,11 +155,14 @@ export function AddressLink({ person, address: given, className = "" }: AddressL
 function MapsChooser({
   address,
   providers,
+  targetFor,
   onChoose,
   onDismiss,
 }: {
   address: string;
   providers: MapsProviderId[];
+  /* Decided by the caller, as `providers` is -- the sheet sniffs no platform. */
+  targetFor: (provider: MapsProviderId) => "_blank" | undefined;
   onChoose: (provider: MapsProviderId, remember: boolean) => void;
   onDismiss: () => void;
 }) {
@@ -179,7 +186,9 @@ function MapsChooser({
             key={provider}
             ref={index === 0 ? firstRef : undefined}
             href={mapsUrl(provider, address)}
-            target="_blank"
+            target={targetFor(provider)}
+            // Kept whether or not a tab is opened: this withholds the referrer,
+            // which would carry the person's id to the map provider.
             rel="noreferrer"
             // Closed on the way out: coming back from the map should not find a
             // sheet still waiting to be dismissed.

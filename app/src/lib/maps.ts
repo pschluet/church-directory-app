@@ -20,6 +20,10 @@
  * scheme the tap is a silent no-op the page cannot detect, and the https URL
  * already reaches the Google Maps app on the phones that have it.
  *
+ * Picking the right URL turned out not to be enough on iOS: whether the app
+ * gets the link depends on *how* it is opened as well as what it is. See
+ * `linkTarget`.
+ *
  * Nothing here touches `navigator` or React. The platform arrives as arguments
  * so the branches that a laptop never takes can still be tested on one.
  */
@@ -62,6 +66,33 @@ export function isAppleMobile(userAgent: string, maxTouchPoints: number): boolea
  */
 export function mapsProvidersFor(userAgent: string, maxTouchPoints: number): MapsProviderId[] {
   return isAppleMobile(userAgent, maxTouchPoints) ? ["apple", "google"] : ["google"];
+}
+
+/**
+ * Whether a provider's link may open a new browsing context.
+ *
+ * Everything here opens in a new tab except Google Maps on an iPhone or iPad,
+ * and that exception is a bug fix. An installed copy of this app runs
+ * standalone, so `target="_blank"` does not open a tab at all -- iOS hands the
+ * URL to an in-app web view, and an in-app web view will not give a universal
+ * link to the app that claims it. The Google Maps app was therefore reached the
+ * slow way: the web map loaded, and its own page bounced to the app.
+ *
+ * Apple Maps never had the problem and keeps its new tab: `maps.apple.com` is
+ * special-cased by iOS below universal-link handling, so Maps.app claims it
+ * even from inside a web view. Android app links resolve from a new tab too,
+ * and at a desk a new tab is simply the right behaviour.
+ *
+ * Returns the attribute value rather than a boolean so a caller can hand it
+ * straight to `target`, which React omits entirely when it is `undefined`.
+ */
+export function linkTarget(
+  provider: MapsProviderId,
+  userAgent: string,
+  maxTouchPoints: number
+): "_blank" | undefined {
+  const inPlace = provider === "google" && isAppleMobile(userAgent, maxTouchPoints);
+  return inPlace ? undefined : "_blank";
 }
 
 export function mapsUrl(provider: MapsProviderId, address: string): string {
