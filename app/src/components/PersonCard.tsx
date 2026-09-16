@@ -144,6 +144,12 @@ function revealsFor(person: PersonSummaryDto, terms: readonly string[]): Reveal[
  * `min-h-22` only when that happens, and the article is `h-full` so the taller
  * card lifts its whole grid row rather than sitting in a well of dead space.
  *
+ * The truncation throughout needs one thing from whatever lays this card out:
+ * a column with a zero minimum. `truncate` is `white-space: nowrap`, so this
+ * card's min-content is its longest line in full, and any track sized to
+ * min-content -- a bare `auto` column, a `1fr` without the `minmax(0, ...)` --
+ * grows to that and clips nothing. See PersonGrid in pages/Directory.tsx.
+ *
  * Memoized: the directory accumulates every page it has loaded into one array
  * and re-renders the lot when "Show more" appends to it. This was pointless
  * while photoUrl was a freshly-signed URL on every fetch, because no prop was

@@ -147,6 +147,22 @@ describe("Directory", () => {
     expect(calls("/directory/search")).toHaveLength(0);
   });
 
+  /*
+   * jsdom does not lay anything out, so the class is as close as this can get
+   * to the real assertion: that a card with a long name stays inside the
+   * column instead of taking the page sideways with it.
+   *
+   * `grid-cols-1` is what makes the phone column `minmax(0, 1fr)` rather than
+   * the implicit `auto`, whose minimum is min-content -- and a truncated line
+   * is `nowrap`, so its min-content is the full name. See PersonGrid.
+   */
+  it("gives the phone layout a column a long name cannot widen", async () => {
+    renderDirectory();
+    await card("Anna Ivanova");
+
+    expect(screen.getByRole("list").className).toContain("grid-cols-1");
+  });
+
   it("searches once the typing pauses, not on every keystroke", async () => {
     renderDirectory();
     await card("Anna Ivanova");
