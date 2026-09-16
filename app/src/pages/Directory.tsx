@@ -377,7 +377,19 @@ const PersonGrid = memo(function PersonGrid({
   terms?: readonly string[];
 }) {
   return (
-    <ul className="grid gap-3 md:grid-cols-2 lg:grid-cols-3">
+    /*
+      `grid-cols-1` is load-bearing, not the redundant spelling of "one column"
+      it looks like. Without it the phone layout has no declared track at all,
+      so the column is implicit and therefore `auto` -- and an `auto` track is
+      at least as wide as its content's min-content. PersonCard truncates, which
+      means `white-space: nowrap`, which means its min-content is the *whole*
+      untruncated name: a long family name sized the column past the viewport,
+      took the page sideways with it, and the truncation never got to happen.
+      Tailwind writes this as `repeat(1, minmax(0, 1fr))`, and that `0` floor is
+      the fix -- the same reason the two- and three-column rules below never had
+      the bug, and the same guard PageHeading uses. See ui.tsx.
+    */
+    <ul className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
       {people.map((person) => (
         <li key={person.id}>
           <PersonCard person={person} terms={terms} />
