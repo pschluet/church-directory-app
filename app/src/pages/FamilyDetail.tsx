@@ -7,6 +7,7 @@ import { qk } from "../lib/queryKeys";
 import { todayIso } from "../lib/format";
 import { useMe } from "../context/MeContext";
 import { FamilyMemberList } from "../components/FamilyMemberList";
+import { PersonPicker, type PickedPerson } from "../components/PersonPicker";
 import { usePhotoPicker } from "../components/usePhotoPicker";
 import { FamilyPhoto } from "../components/FamilyPhoto";
 import { SpecialDateList } from "../components/SpecialDateList";
@@ -480,9 +481,12 @@ export function FamilyDetail() {
           familyId={family.id}
           familyName={family.name}
           onClose={() => setAddingExisting(false)}
-          onAdded={async () => {
+          onAdded={async (personId) => {
             setAddingExisting(false);
+            // Invalidates every family, so the one they left recounts too.
             await reload();
+            // An admin who adds themselves has just changed what they can edit.
+            if (personId === myPersonId) await reloadMe();
           }}
         />
       )}
@@ -491,9 +495,13 @@ export function FamilyDetail() {
 }
 
 /**
- * Adds someone already in the directory who has no family. Only people without
- * an account appear: anyone with one joins by asking, which is the whole point
- * of the request flow.
+ * Adds someone already in the directory to the family.
+ *
+ * For a member, only people with no account and no family appear: anyone with
+ * an account joins by asking, which is the whole point of the request flow.
+ * An admin can add anyone in the parish, so they search the whole directory
+ * instead of choosing from a list -- and picking someone who is in another
+ * family says, before they commit, that this moves them out of it.
  */
 function AddExistingMemberModal({
   familyId,
@@ -504,14 +512,16 @@ function AddExistingMemberModal({
   familyId: string;
   familyName: string;
   onClose: () => void;
-  onAdded: () => Promise<void>;
+  onAdded: (personId: string) => Promise<void>;
 }) {
-  const { organizationId } = useMe();
+  const { organizationId, isAdmin } = useMe();
   const [personId, setPersonId] = useState("");
+  const [picked, setPicked] = useState<PickedPerson | null>(null);
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const candidatesQuery = useQuery({
+    enabled: !isAdmin,
     queryKey: qk.familyCandidates(organizationId, familyId),
     queryFn: ({ signal }) =>
       api<{ candidates: { id: string; name: string }[] }>(`/families/${familyId}/candidates`, {
@@ -524,17 +534,69 @@ function AddExistingMemberModal({
   const candidates = candidatesQuery.isPending ? null : (candidatesQuery.data?.candidates ?? []);
   const error = actionError ?? candidatesQuery.error?.message ?? null;
 
+  const chosenId = isAdmin ? (picked?.id ?? "") : personId;
+
   async function submit(): Promise<void> {
     setBusy(true);
     setActionError(null);
     try {
-      await api(`/families/${familyId}/members`, { method: "POST", body: { personId } });
-      await onAdded();
+      await api(`/families/${familyId}/members`, { method: "POST", body: { personId: chosenId } });
+      await onAdded(chosenId);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Could not add them");
     } finally {
       setBusy(false);
     }
+  }
+
+  const buttons = (label: string) => (
+    <div className="flex flex-col gap-2 sm:flex-row">
+      <Button type="submit" disabled={busy || chosenId === ""}>
+        {busy ? "Adding…" : label}
+      </Button>
+      <Button variant="ghost" onClick={onClose} disabled={busy}>
+        Cancel
+      </Button>
+    </div>
+  );
+
+  const errorNotice = error && (
+    <p role="alert" className="font-bold text-primary">
+      {error}
+    </p>
+  );
+
+  if (isAdmin) {
+    return (
+      <Modal title="Add an existing person" onClose={onClose}>
+        <form
+          className="space-y-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            void submit();
+          }}
+        >
+          <p className="text-ink-muted">
+            Anyone in the directory, including people with an account. They are added straight away,
+            without being asked.
+          </p>
+          <PersonPicker
+            label="Person"
+            value={picked}
+            onChange={setPicked}
+            excludeFamilyId={familyId}
+          />
+          {picked?.familyName && (
+            <p className="text-ink-muted">
+              This moves {picked.name} out of the {picked.familyName} family, and any details they
+              share with that family will be cleared.
+            </p>
+          )}
+          {errorNotice}
+          {buttons(picked?.familyName ? `Move to ${familyName}` : "Add")}
+        </form>
+      </Modal>
+    );
   }
 
   return (
@@ -571,19 +633,8 @@ function AddExistingMemberModal({
               ))}
             </select>
           </Field>
-          {error && (
-            <p role="alert" className="font-bold text-primary">
-              {error}
-            </p>
-          )}
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <Button type="submit" disabled={busy || personId === ""}>
-              {busy ? "Adding…" : "Add"}
-            </Button>
-            <Button variant="ghost" onClick={onClose} disabled={busy}>
-              Cancel
-            </Button>
-          </div>
+          {errorNotice}
+          {buttons("Add")}
         </form>
       )}
     </Modal>

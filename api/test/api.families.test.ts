@@ -428,18 +428,174 @@ describe.skipIf(!hasDb)("families and the gated join flow", () => {
     });
 
     it("refuses someone already in a family", async () => {
+      const popovs = await createFamily(db(), orgId, "Popov");
       const child = await createNonUserPerson(db(), {
         organizationId: orgId,
-        familyId: schlueters,
+        familyId: popovs,
         firstName: "Anna",
       });
-      const popovs = await createFamily(db(), orgId, "Popov");
-      await as(admin).call("POST", `/api/families/${popovs}/members`, { personId: child });
 
-      const { status } = await as(admin).call("POST", `/api/families/${popovs}/members`, {
+      const { status } = await as(member).call("POST", `/api/families/${schlueters}/members`, {
         personId: child,
       });
       expect(status).toBe(409);
+    });
+
+    it("refuses someone already in this family, even for an admin", async () => {
+      const { status, body } = await as(admin).call("POST", `/api/families/${schlueters}/members`, {
+        personId: member.personId,
+      });
+      expect(status).toBe(409);
+      expect(body.error).toMatch(/this family/i);
+    });
+
+    describe("as an admin", () => {
+      it("adds someone with an account who has no family", async () => {
+        const { status } = await as(admin).call("POST", `/api/families/${schlueters}/members`, {
+          personId: joiner.personId,
+        });
+        expect(status).toBe(204);
+
+        const { rows } = await db().query("select family_id from persons where id = $1", [
+          joiner.personId,
+        ]);
+        expect(rows[0]!.family_id).toBe(schlueters);
+
+        const { rows: audit } = await db().query(
+          "select changes from audit_log where action = 'family.addMember' and entity_id = $1",
+          [schlueters]
+        );
+        expect(audit[0]!.changes).toEqual({
+          personId: joiner.personId,
+          hadAccount: true,
+          fromFamilyId: null,
+        });
+      });
+
+      it("moves an account holder out of the family they were in", async () => {
+        const popovs = await createFamily(db(), orgId, "Popov");
+        const ivanovs = await createFamily(db(), orgId, "Ivanov");
+        await db().query("update persons set family_order = 0 where id = $1", [member.personId]);
+        for (const familyId of [popovs, ivanovs]) {
+          await db().query(
+            `insert into family_join_requests (organization_id, family_id, person_id)
+             values ($1, $2, $3)`,
+            [orgId, familyId, member.personId]
+          );
+        }
+
+        const { status } = await as(admin).call("POST", `/api/families/${popovs}/members`, {
+          personId: member.personId,
+        });
+        expect(status).toBe(204);
+
+        const { rows } = await db().query(
+          "select family_id, family_order from persons where id = $1",
+          [member.personId]
+        );
+        expect(rows[0]).toEqual({ family_id: popovs, family_order: null });
+
+        // The request to the family they landed in is granted; any other is moot.
+        const { rows: requests } = await db().query<{ family_id: string; status: string }>(
+          "select family_id, status from family_join_requests where person_id = $1",
+          [member.personId]
+        );
+        expect(Object.fromEntries(requests.map((r) => [r.family_id, r.status]))).toEqual({
+          [popovs]: "APPROVED",
+          [ivanovs]: "CANCELLED",
+        });
+
+        const { rows: audit } = await db().query(
+          "select changes from audit_log where action = 'family.addMember' and entity_id = $1",
+          [popovs]
+        );
+        expect(audit[0]!.changes.fromFamilyId).toBe(schlueters);
+      });
+
+      it("clears inheritance both ways when it moves someone", async () => {
+        const popovs = await createFamily(db(), orgId, "Popov");
+        await db().query(
+          "update persons set last_name = null, address_line1 = '1 Mover St' where id = $1",
+          [joiner.personId]
+        );
+        await db().query("update persons set family_id = $2 where id = $1", [
+          joiner.personId,
+          schlueters,
+        ]);
+        await db().query("update persons set address_line1 = '2 Stay St' where id = $1", [
+          member.personId,
+        ]);
+        const child = await createNonUserPerson(db(), {
+          organizationId: orgId,
+          familyId: schlueters,
+          firstName: "Anna",
+        });
+        // The mover takes the family surname; the child takes the mover's address.
+        await setInheritance(db(), joiner.personId!, { lastName: member.personId! });
+        await setInheritance(db(), child, { address: joiner.personId! });
+
+        const { status } = await as(admin).call("POST", `/api/families/${popovs}/members`, {
+          personId: joiner.personId,
+        });
+        expect(status).toBe(204);
+
+        const { rows: pointers } = await db().query(
+          `select id, inherit_last_name_from_person_id, inherit_address_from_person_id
+             from persons where id = any($1)`,
+          [[joiner.personId, child]]
+        );
+        for (const row of pointers) {
+          expect(row.inherit_last_name_from_person_id).toBeNull();
+          expect(row.inherit_address_from_person_id).toBeNull();
+        }
+
+        const { rows: resolved } = await db().query(
+          "select id, last_name, address_line1 from persons_resolved where id = any($1)",
+          [[joiner.personId, child]]
+        );
+        const byId = Object.fromEntries(resolved.map((r: any) => [r.id, r]));
+        expect(byId[joiner.personId!].last_name).toBeNull();
+        expect(byId[child].address_line1).toBeNull();
+      });
+
+      it("will not reach into another church", async () => {
+        const stGeorge = await createOrganization(db(), "St. George", "st-george");
+        const stranger = await createUser(db(), {
+          organizationId: stGeorge,
+          email: "stranger@test.example",
+        });
+
+        const { status } = await as(admin).call("POST", `/api/families/${schlueters}/members`, {
+          personId: stranger.personId,
+        });
+        expect(status).toBe(404);
+      });
+
+      it("lets a super admin add someone in the church they are viewing", async () => {
+        const stGeorge = await createOrganization(db(), "St. George", "st-george");
+        const popovs = await createFamily(db(), stGeorge, "Popov");
+        const local = await createUser(db(), {
+          organizationId: stGeorge,
+          email: "local@test.example",
+        });
+        const superAdmin = await createUser(db(), {
+          organizationId: null,
+          role: "SUPER_ADMIN",
+          email: "super@test.example",
+        });
+
+        const { status } = await as(superAdmin).call(
+          "POST",
+          `/api/families/${popovs}/members?orgId=${stGeorge}`,
+          { personId: local.personId }
+        );
+        expect(status).toBe(204);
+
+        const { rows } = await db().query("select family_id from persons where id = $1", [
+          local.personId,
+        ]);
+        expect(rows[0]!.family_id).toBe(popovs);
+      });
     });
 
     it("is closed to non-members", async () => {

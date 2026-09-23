@@ -13,7 +13,7 @@ vi.mock("../src/lib/api", () => ({
   uploadPhoto: vi.fn(),
 }));
 
-const meState = { personId: "person-1" as string | null };
+const meState = { personId: "person-1" as string | null, isAdmin: false };
 const reload = vi.fn().mockResolvedValue(undefined);
 
 vi.mock("../src/context/MeContext", () => ({
@@ -22,7 +22,7 @@ vi.mock("../src/context/MeContext", () => ({
     loading: false,
     error: null,
     reload,
-    isAdmin: false,
+    isAdmin: meState.isAdmin,
     isSuperAdmin: false,
     organizationId: "org-1",
     switchOrganization: vi.fn(),
@@ -157,6 +157,7 @@ describe("FamilyDetail", () => {
     api.mockReset();
     reload.mockClear();
     meState.personId = "person-1";
+    meState.isAdmin = false;
     respondWith(buildFamily());
   });
 
@@ -420,6 +421,73 @@ describe("FamilyDetail", () => {
       await openFamilyMenu();
       await userEvent.click(screen.getByRole("menuitem", { name: /add an existing person/i }));
       expect(await screen.findByText(/nobody to add/i)).toBeInTheDocument();
+    });
+
+    describe("as an admin", () => {
+      beforeEach(() => {
+        meState.isAdmin = true;
+      });
+
+      function answer(people: { id: string; name: string; familyName: string | null }[]) {
+        api.mockImplementation((path: string, options?: { method?: string }) => {
+          if (path === "/directory/lookup") return Promise.resolve({ people });
+          if (path.startsWith("/special-dates/upcoming")) return Promise.resolve(NO_DATES);
+          if (options?.method === "POST") return Promise.resolve(undefined);
+          return Promise.resolve(buildFamily());
+        });
+      }
+
+      async function pick(name: RegExp) {
+        await openFamilyMenu();
+        await userEvent.click(screen.getByRole("menuitem", { name: /add an existing person/i }));
+        await userEvent.type(await screen.findByRole("combobox", { name: /person/i }), "g");
+        await userEvent.click(await screen.findByRole("option", { name }));
+      }
+
+      it("searches the whole directory, leaving out this family", async () => {
+        answer([{ id: "person-9", name: "Georgi Popov", familyName: null }]);
+        renderPage();
+        await pick(/Georgi Popov/);
+
+        expect(api).toHaveBeenCalledWith("/directory/lookup", {
+          signal: expect.anything(),
+          query: expect.objectContaining({ excludeFamily: "fam-1" }),
+        });
+        expect(api).not.toHaveBeenCalledWith("/families/fam-1/candidates", expect.anything());
+
+        await userEvent.click(screen.getByRole("button", { name: "Add" }));
+        await waitFor(() =>
+          expect(api).toHaveBeenCalledWith("/families/fam-1/members", {
+            method: "POST",
+            body: { personId: "person-9" },
+          })
+        );
+      });
+
+      it("warns before moving someone out of another family", async () => {
+        answer([{ id: "person-9", name: "Georgi Popov", familyName: "Popov" }]);
+        renderPage();
+        await pick(/Georgi Popov/);
+
+        expect(screen.getByText(/moves Georgi Popov out of the Popov family/)).toBeInTheDocument();
+        await userEvent.click(screen.getByRole("button", { name: "Move to Haddad" }));
+        await waitFor(() =>
+          expect(api).toHaveBeenCalledWith("/families/fam-1/members", {
+            method: "POST",
+            body: { personId: "person-9" },
+          })
+        );
+      });
+
+      it("reloads their own account when they add themselves", async () => {
+        meState.personId = "person-9";
+        answer([{ id: "person-9", name: "Georgi Popov", familyName: "Popov" }]);
+        renderPage();
+        await pick(/Georgi Popov/);
+        await userEvent.click(screen.getByRole("button", { name: "Move to Haddad" }));
+
+        await waitFor(() => expect(reload).toHaveBeenCalled());
+      });
     });
 
     it("creates a new person without an account", async () => {

@@ -51,12 +51,18 @@ export const qk = {
     orgId: string | null,
     q: string,
     exclude?: string,
-    accounts?: "only" | "none"
+    accounts?: "only" | "none",
+    excludeFamily?: string
   ) =>
     [
       ...qk.directoryRoot(orgId),
       "lookup",
-      { q, exclude: exclude ?? null, accounts: accounts ?? null },
+      {
+        q,
+        exclude: exclude ?? null,
+        accounts: accounts ?? null,
+        excludeFamily: excludeFamily ?? null,
+      },
     ] as const,
 
   /**

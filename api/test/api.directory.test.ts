@@ -404,6 +404,34 @@ describe.skipIf(!hasDb)("directory browse and search", () => {
       expect(names(body)).toEqual(["Maria Schlueter"]);
     });
 
+    it("drops everyone in an excluded family and keeps people with none", async () => {
+      await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId,
+        firstName: "Maria",
+        lastName: "Schlueter",
+      });
+      await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: null,
+        firstName: "Anna",
+        lastName: "Schlueter",
+      });
+      const popovs = await createFamily(db(), orgId, "Popov");
+      await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: popovs,
+        firstName: "Ivan",
+        lastName: "Schlueter",
+      });
+
+      const { body } = await as(me).call(
+        "GET",
+        `/api/directory/lookup?q=Schlueter&excludeFamily=${familyId}`
+      );
+      expect(names(body)).toEqual(["Anna Schlueter", "Ivan Schlueter"]);
+    });
+
     it("ignores an exclude that is not a uuid rather than failing", async () => {
       const { status, body } = await as(me).call("GET", "/api/directory/lookup?exclude=nonsense");
       expect(status).toBe(200);

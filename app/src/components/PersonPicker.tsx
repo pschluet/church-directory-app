@@ -2,7 +2,7 @@ import type { PersonLookupDto } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
-import { LookupPicker } from "./LookupPicker";
+import { LookupPicker, type PickedOption } from "./LookupPicker";
 
 /**
  * Choosing one person out of the parish by typing.
@@ -19,6 +19,8 @@ import { LookupPicker } from "./LookupPicker";
 export interface PickedPerson {
   id: string;
   name: string;
+  /** The family they are in now, if any -- enough to warn before moving them. */
+  familyName?: string | null;
 }
 
 export function PersonPicker({
@@ -28,6 +30,7 @@ export function PersonPicker({
   onChange,
   excludePersonId,
   accounts,
+  excludeFamilyId,
   placeholder = "Start typing a name…",
 }: {
   label: string;
@@ -42,27 +45,40 @@ export function PersonPicker({
    * without an account can be the duplicate.
    */
   accounts?: "only" | "none";
+  /** Leaves out everyone already in this family, for adding someone to it. */
+  excludeFamilyId?: string;
   placeholder?: string;
 }) {
   const { organizationId } = useMe();
 
   return (
-    <LookupPicker
+    <LookupPicker<PickedOption & { familyName: string | null }>
       label={label}
       hint={hint}
       placeholder={placeholder}
       value={value}
-      onChange={(option) => onChange(option && { id: option.id, name: option.name })}
-      queryKey={(term) => qk.directoryLookup(organizationId, term, excludePersonId, accounts)}
+      onChange={(option) =>
+        onChange(
+          option && {
+            id: option.id,
+            name: option.name,
+            familyName: option.familyName,
+          }
+        )
+      }
+      queryKey={(term) =>
+        qk.directoryLookup(organizationId, term, excludePersonId, accounts, excludeFamilyId)
+      }
       fetchOptions={async (term, signal) => {
         const { people } = await api<{ people: PersonLookupDto[] }>("/directory/lookup", {
           signal,
-          query: { q: term, exclude: excludePersonId, accounts },
+          query: { q: term, exclude: excludePersonId, accounts, excludeFamily: excludeFamilyId },
         });
         return people.map((person) => ({
           id: person.id,
           name: person.name,
           detail: person.familyName ? `${person.familyName} family` : null,
+          familyName: person.familyName,
         }));
       }}
     />

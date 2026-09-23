@@ -32,9 +32,9 @@ export interface PickedOption {
 /** Long enough that typing a name is one request, short enough to feel live. */
 const DEBOUNCE_MS = 250;
 
-const NO_RESULTS: PickedOption[] = [];
+const NO_RESULTS: never[] = [];
 
-export function LookupPicker({
+export function LookupPicker<T extends PickedOption = PickedOption>({
   label,
   hint,
   value,
@@ -53,10 +53,11 @@ export function LookupPicker({
   label: string;
   hint?: string;
   value: PickedOption | null;
-  onChange: (option: PickedOption | null) => void;
+  /** Handed back the very option `fetchOptions` returned, so it can carry more than a name. */
+  onChange: (option: T | null) => void;
   /** Keyed on the debounced term, so a slow earlier answer cannot overwrite a fast later one. */
   queryKey: (term: string) => QueryKey;
-  fetchOptions: (term: string, signal: AbortSignal) => Promise<PickedOption[]>;
+  fetchOptions: (term: string, signal: AbortSignal) => Promise<T[]>;
   placeholder?: string;
   emptyLabel?: string;
   clearAfterPick?: boolean;
@@ -119,7 +120,7 @@ export function LookupPicker({
     setQuery(clearAfterPick ? "" : (value?.name ?? ""));
   }
 
-  function pick(option: PickedOption): void {
+  function pick(option: T): void {
     onChange(option);
     setQuery(clearAfterPick ? "" : option.name);
     setOpen(false);

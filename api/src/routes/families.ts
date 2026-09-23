@@ -580,6 +580,7 @@ routes.post("/join-requests/:requestId/:decision{approve|deny}", async (c) => {
  * People who could be added to a family: no account, no family, same parish.
  * Anyone with an account joins through a request instead, so this is only ever
  * the accountless records -- children, and anyone a member removed by mistake.
+ * Admins, who can add anyone, search the directory lookup instead.
  */
 routes.get("/:id/candidates", async (c) => {
   const caller = c.get("caller");
@@ -613,9 +614,12 @@ routes.get("/:id/candidates", async (c) => {
  * Add someone who is already in the directory to a family -- the counterpart to
  * removing a member, so that is not a one-way door.
  *
- * Restricted to people without an account. An adult with their own account
- * consents by asking to join; being pulled into a household by someone else is
- * exactly what the request flow exists to prevent.
+ * For members, restricted to people without an account and without a family.
+ * An adult with their own account consents by asking to join; being pulled into
+ * a household by another member is exactly what the request flow exists to
+ * prevent. Admins can add anyone in the parish, account or not, and moving
+ * someone out of another family is the same move `PATCH /persons/:id` makes --
+ * the page warns them before it happens.
  */
 routes.post("/:id/members", async (c) => {
   const caller = c.get("caller");
@@ -634,24 +638,41 @@ routes.post("/:id/members", async (c) => {
     [personId, organizationId]
   );
   if (!person) throw new HTTPException(404, { message: "That person was not found" });
-  if (person.app_user_id) {
-    throw new HTTPException(400, {
-      message: "They have an account — ask them to request to join instead",
-    });
+  if (person.family_id === id) {
+    throw new HTTPException(409, { message: "They are already in this family" });
   }
-  if (person.family_id) {
-    throw new HTTPException(409, { message: "They are already in a family" });
+  if (!caller.isAdmin) {
+    if (person.app_user_id) {
+      throw new HTTPException(400, {
+        message: "They have an account — ask them to request to join instead",
+      });
+    }
+    if (person.family_id) {
+      throw new HTTPException(409, { message: "They are already in a family" });
+    }
   }
 
   await db.transaction(async (tx) => {
     await joinFamily(tx, caller, personId, id);
+    // joinFamily cancels requests to every other family. One to this family
+    // is what the admin has just granted, so it should leave the queue as approved.
+    await tx.query(
+      `update family_join_requests
+          set status = 'APPROVED', decided_at = now(), decided_by_person_id = $3
+        where person_id = $1 and family_id = $2 and status = 'PENDING'`,
+      [personId, id, caller.personId]
+    );
   });
 
   await audit(db, caller, {
     action: "family.addMember",
     entityType: "family",
     entityId: id,
-    changes: { personId },
+    changes: {
+      personId,
+      hadAccount: person.app_user_id !== null,
+      fromFamilyId: person.family_id,
+    },
   });
   return c.body(null, 204);
 });

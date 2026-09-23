@@ -163,6 +163,16 @@ routes.get("/lookup", async (c) => {
     conditions.push(`r.id <> $${params.length}::uuid`);
   }
 
+  // Leaves out everyone already in one family, which is what "add someone to
+  // this family" needs. People with no family stay in: `is distinct from`, not
+  // `<>`, which would drop them along with the null.
+  const excludeFamilyRaw = c.req.query("excludeFamily");
+  const excludeFamily = excludeFamilyRaw ? uuidSchema.safeParse(excludeFamilyRaw) : null;
+  if (excludeFamily?.success) {
+    params.push(excludeFamily.data);
+    conditions.push(`r.family_id is distinct from $${params.length}::uuid`);
+  }
+
   // Narrows the picker to one side of the account divide, which is what the two
   // merge forms need: "who am I really?" can only be an account holder, and
   // "which duplicate is me?" can only be someone without one. Unlike the browse

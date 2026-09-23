@@ -78,7 +78,11 @@ describe("PersonPicker", () => {
     // First Down opens/keeps the list on the first row; a second moves on.
     await u.keyboard("{ArrowDown}{Enter}");
 
-    expect(onChange).toHaveBeenCalledWith({ id: "mario-id", name: "Mario Popov" });
+    expect(onChange).toHaveBeenCalledWith({
+      id: "mario-id",
+      name: "Mario Popov",
+      familyName: "Popov",
+    });
     expect(screen.queryByRole("listbox")).toBeNull();
   });
 
@@ -89,7 +93,11 @@ describe("PersonPicker", () => {
     vi.advanceTimersByTime(250);
 
     await u.click(await screen.findByRole("option", { name: /Maria Schlueter/ }));
-    expect(onChange).toHaveBeenCalledWith({ id: "maria-id", name: "Maria Schlueter" });
+    expect(onChange).toHaveBeenCalledWith({
+      id: "maria-id",
+      name: "Maria Schlueter",
+      familyName: "Schlueter",
+    });
   });
 
   it("shows the family name so like-named people can be told apart", async () => {
