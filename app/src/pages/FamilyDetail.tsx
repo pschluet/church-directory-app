@@ -569,8 +569,10 @@ function AddExistingMemberModal({
   if (isAdmin) {
     return (
       <Modal title="Add an existing person" onClose={onClose}>
+        {/* Tall enough for the picker's list: Modal scrolls and clips, and
+            with nothing below the picker the list would be cut off. */}
         <form
-          className="space-y-4"
+          className="min-h-96 space-y-4"
           onSubmit={(event) => {
             event.preventDefault();
             void submit();
