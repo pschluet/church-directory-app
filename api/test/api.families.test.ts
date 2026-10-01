@@ -378,6 +378,31 @@ describe.skipIf(!hasDb)("families and the gated join flow", () => {
       expect(row.memberNames).toEqual(["Paul", "Anna"]);
     });
 
+    it("carries every member's name, not just the first few", async () => {
+      for (const firstName of ["Anna", "Zoe", "Maria", "Luke"]) {
+        await createNonUserPerson(db(), { organizationId: orgId, familyId: schlueters, firstName });
+      }
+      const { body } = await as(joiner).call("GET", "/api/families");
+      const row = body.families.find((f: any) => f.id === schlueters);
+      expect(row.memberCount).toBe(5);
+      expect(row.memberNames).toHaveLength(5);
+      expect(row.memberNames).toEqual(
+        expect.arrayContaining(["Paul", "Anna", "Zoe", "Maria", "Luke"])
+      );
+    });
+
+    it("carries the family photo's thumbnail once there is one", async () => {
+      const thumbOf = async () =>
+        (await as(joiner).call("GET", "/api/families")).body.families.find(
+          (f: any) => f.id === schlueters
+        ).thumbUrl;
+      expect(await thumbOf()).toBeNull();
+
+      const key = `photos/${orgId}/family/${schlueters}/01ABCDEFGH/`;
+      await as(member).call("PUT", `/api/families/${schlueters}/photo`, { photoKey: key });
+      expect(await thumbOf()).toBe(`/${key}thumb`);
+    });
+
     // Both of these compare the preview against the family page rather than
     // against a literal alone: the bug was not that either order was wrong on
     // its own terms, but that the two disagreed.

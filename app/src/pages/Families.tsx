@@ -1,13 +1,15 @@
-import { useState } from "react";
-import { useNavigate } from "react-router";
+import { useMemo, useState, type ReactNode } from "react";
+import { useNavigate, useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FamilySummaryDto } from "@shared";
-import { familyWriteSchema } from "@shared";
+import { familyWriteSchema, searchTerms } from "@shared";
 import { api } from "../lib/api";
-import { memberPreview } from "../lib/format";
+import { highlightRanges, matchesTerm } from "../lib/highlight";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
+import { Highlight } from "../components/Highlight";
 import { Link } from "../components/nav";
+import { SearchField } from "../components/SearchField";
 import {
   Badge,
   Button,
@@ -33,6 +35,8 @@ export function Families() {
   const { me, isAdmin, organizationId, reload: reloadMe } = useMe();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [params, setParams] = useSearchParams();
+  const query = params.get("q") ?? "";
   const [creating, setCreating] = useState(false);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [confirmMove, setConfirmMove] = useState<FamilySummaryDto | null>(null);
@@ -50,6 +54,37 @@ export function Families() {
   const families = familiesQuery.data?.families ?? [];
   const loading = familiesQuery.isPending;
   const error = actionError ?? familiesQuery.error?.message ?? null;
+
+  /*
+   * Searched on the client: the whole list is already here, so there is no
+   * request to debounce and the box can write straight to the URL. It is in
+   * the URL at all so that coming Back from a family page finds the search
+   * still in place. `replace`, as on the Directory, so Back is not an undo of
+   * single letters.
+   *
+   * Split by the same `searchTerms` the Directory uses, and every term has to
+   * be in the name -- the same AND the directory search applies.
+   */
+  function setQuery(next: string): void {
+    setParams(
+      (prev) => {
+        const updated = new URLSearchParams(prev);
+        if (next.trim() === "") updated.delete("q");
+        else updated.set("q", next);
+        return updated;
+      },
+      { replace: true }
+    );
+  }
+  const terms = useMemo(() => searchTerms(query).map((term) => term.toLowerCase()), [query]);
+  const searching = terms.length > 0;
+  const shown = useMemo(
+    () =>
+      searching
+        ? families.filter((family) => terms.every((term) => matchesTerm(family.name, term)))
+        : families,
+    [families, terms, searching]
+  );
 
   const myPersonId = me?.appUser.personId ?? null;
   const myFamilyId = me?.person?.familyId ?? null;
@@ -99,15 +134,38 @@ export function Families() {
     <>
       <PageHeading
         title="Families"
-        subtitle={`${families.length} ${families.length === 1 ? "family" : "families"}`}
+        subtitle={
+          loading
+            ? undefined
+            : searching
+              ? `${shown.length} of ${families.length} ${families.length === 1 ? "family" : "families"}`
+              : `${families.length} ${families.length === 1 ? "family" : "families"}`
+        }
         actions={
-          // Creating means joining unless you are an admin, and joining needs a
-          // directory record.
-          (isAdmin || myPersonId) && (
-            <Button onClick={() => setCreating(true)}>Create a family</Button>
-          )
+          <div className="flex w-full flex-col gap-3 md:w-auto md:flex-row md:items-center">
+            <SearchField
+              value={query}
+              onChange={setQuery}
+              label="Search families"
+              placeholder="Search by family name…"
+            />
+            {/* Creating means joining unless you are an admin, and joining
+                needs a directory record. */}
+            {(isAdmin || myPersonId) && (
+              <Button onClick={() => setCreating(true)}>Create a family</Button>
+            )}
+          </div>
         }
       />
+
+      {/* The count above is a plain <p> nothing re-reads; this announces it. */}
+      <p role="status" className="sr-only">
+        {searching && !loading
+          ? shown.length === 0
+            ? `No family matches ${query.trim()}`
+            : `${shown.length} ${shown.length === 1 ? "family matches" : "families match"} ${query.trim()}`
+          : ""}
+      </p>
 
       {error && <ErrorNotice message={error} onRetry={() => void familiesQuery.refetch()} />}
 
@@ -136,37 +194,23 @@ export function Families() {
         <EmptyState title="No families yet">
           Create the first one and everyone else can ask to join it.
         </EmptyState>
+      ) : shown.length === 0 ? (
+        <EmptyState title={`Nothing matches “${query.trim()}”`}>
+          <p>Check the spelling, or try a shorter fragment of the family name.</p>
+          <p className="mt-3">
+            <Button variant="ghost" onClick={() => setQuery("")}>
+              Show all families
+            </Button>
+          </p>
+        </EmptyState>
       ) : (
-        <ul className="space-y-3">
-          {families.map((family) => {
-            // The server caps `memberNames`, so the overflow counts against the
-            // real total rather than against the names it was handed.
-            const preview = memberPreview(family.memberNames, family.memberCount);
-            return (
-              <li
-                key={family.id}
-                className="flex flex-col gap-2 rounded-lg border border-line bg-surface p-4 sm:flex-row sm:items-center sm:justify-between"
-              >
-                <div className="min-w-0">
-                  <Link
-                    to={`/families/${family.id}`}
-                    className="font-bold text-primary hover:text-accent"
-                  >
-                    {family.name}
-                  </Link>
-                  <p className="truncate text-sm text-ink-muted">
-                    {family.memberCount} {family.memberCount === 1 ? "member" : "members"}
-                    {/* Nothing stops two households sharing a surname, so name a
-                      few people to tell them apart. The names and the overflow
-                      come from `memberPreview`, shared with the map's pins so
-                      the two cannot drift apart. */}
-                    {preview.length > 0 && ` — ${preview}`}
-                  </p>
-                </div>
-                {rowAction(family)}
-              </li>
-            );
-          })}
+        /* `grid-cols-1` is load-bearing: see PersonGrid in Directory.tsx. */
+        <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+          {shown.map((family) => (
+            <li key={family.id}>
+              <FamilyCard family={family} terms={terms} action={rowAction(family)} />
+            </li>
+          ))}
         </ul>
       )}
 
@@ -205,6 +249,80 @@ export function Families() {
         />
       )}
     </>
+  );
+}
+
+/**
+ * One family in the grid: its photo across the top where there is one, then
+ * the name -- with the join action beside it -- and everyone in it.
+ *
+ * The photo, the name and the member names all open the family page. Only the
+ * name is a tab stop: three links to one place per card would triple every
+ * keyboard user's journey. The member names stay readable to a screen reader;
+ * the photo, which says nothing the name does not, is hidden from one.
+ */
+function FamilyCard({
+  family,
+  terms,
+  action,
+}: {
+  family: FamilySummaryDto;
+  terms: readonly string[];
+  action: ReactNode;
+}) {
+  // Which URL failed rather than whether one did, as in FamilyPhoto: a
+  // replacement photo changes the prop without remounting.
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  const photo = family.thumbUrl && failedUrl !== family.thumbUrl ? family.thumbUrl : null;
+  const to = `/families/${family.id}`;
+
+  return (
+    <article className="group flex h-full flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-sm transition hover:border-accent hover:shadow-md">
+      {photo && (
+        <Link
+          to={to}
+          tabIndex={-1}
+          aria-hidden="true"
+          className="block aspect-[3/2] overflow-hidden border-b border-line bg-surface-muted"
+        >
+          <img
+            src={photo}
+            alt={`The ${family.name} family`}
+            loading="lazy"
+            decoding="async"
+            onError={() => setFailedUrl(photo)}
+            className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
+          />
+        </Link>
+      )}
+
+      {/* The names share the title's column rather than sitting under the
+          whole row, so a Join button -- a full tap target, taller than the
+          title -- cannot push them away from the name they belong to. */}
+      <div className="flex flex-1 items-start justify-between gap-3 p-4">
+        {/* `min-w-0` lets a long name wrap instead of pushing the action out
+            of the card; `break-words` handles one with no spaces. */}
+        <div className="min-w-0 flex-1">
+          <h3 className="break-words text-lg font-bold leading-snug text-ink">
+            <Link to={to} className="transition hover:text-accent">
+              <Highlight text={family.name} ranges={highlightRanges(family.name, terms)} />
+            </Link>
+          </h3>
+          <Link
+            to={to}
+            tabIndex={-1}
+            className="block break-words text-sm text-ink-muted transition hover:text-ink"
+          >
+            {family.memberNames.length > 0 ? (
+              family.memberNames.join(", ")
+            ) : (
+              <span className="italic">No members yet</span>
+            )}
+          </Link>
+        </div>
+        {action && <div className="shrink-0">{action}</div>}
+      </div>
+    </article>
   );
 }
 

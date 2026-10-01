@@ -48,6 +48,7 @@ function family(
   return {
     memberCount: 1,
     memberNames: [],
+    thumbUrl: null,
     pendingJoinRequestId: null,
     ...overrides,
   };
@@ -76,10 +77,80 @@ describe("Families", () => {
     api.mockResolvedValue({ families: [HADDAD, NASSIF] });
   });
 
-  it("lists families with their size and a few members", async () => {
+  it("lists every member by name, linking to the family page rather than each person", async () => {
+    api.mockResolvedValue({
+      families: [
+        family({
+          id: "fam-1",
+          name: "Haddad",
+          memberCount: 5,
+          memberNames: ["Layla", "Sami", "Rami", "Nour", "Sami"],
+        }),
+      ],
+    });
     renderPage();
-    expect(await screen.findByRole("link", { name: "Haddad" })).toBeInTheDocument();
-    expect(screen.getByText(/3 members — Layla, Sami/)).toBeInTheDocument();
+
+    const names = await screen.findByText("Layla, Sami, Rami, Nour, Sami");
+    expect(names.closest("a")).toHaveAttribute("href", "/families/fam-1");
+    expect(screen.queryByText(/members/)).not.toBeInTheDocument();
+    expect(document.querySelector('a[href^="/people/"]')).toBeNull();
+  });
+
+  it("shows the family photo, linking to the family page like the name does", async () => {
+    api.mockResolvedValue({
+      families: [family({ ...HADDAD, thumbUrl: "/photos/org-1/family/fam-1/thumb" }), NASSIF],
+    });
+    const { container } = renderPage();
+
+    const photo = await screen.findByAltText("The Haddad family");
+    expect(photo).toHaveAttribute("src", "/photos/org-1/family/fam-1/thumb");
+    expect(photo.closest("a")).toHaveAttribute("href", "/families/fam-1");
+    expect(screen.getByRole("link", { name: "Haddad" })).toHaveAttribute("href", "/families/fam-1");
+
+    // Nassif has no photo, so it has no banner at all -- not a placeholder.
+    expect(container.querySelector('a[href="/families/fam-2"][aria-hidden="true"]')).toBeNull();
+    expect(container.querySelectorAll("img")).toHaveLength(1);
+  });
+
+  it("filters by family name and marks the match", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole("link", { name: "Haddad" });
+
+    await user.type(screen.getByRole("searchbox", { name: "Search families" }), "dad");
+
+    expect(screen.queryByRole("link", { name: "Nassif" })).not.toBeInTheDocument();
+    const name = screen.getByRole("link", { name: "Haddad" });
+    expect(name.querySelector("mark")).toHaveTextContent("dad");
+    expect(screen.getByText("1 of 2 families")).toBeInTheDocument();
+  });
+
+  it("requires every term to be in the name", async () => {
+    const user = userEvent.setup();
+    api.mockResolvedValue({
+      families: [HADDAD, family({ id: "fam-3", name: "Haddad Nassif" }), NASSIF],
+    });
+    renderPage();
+    await screen.findByRole("link", { name: "Nassif" });
+
+    await user.type(screen.getByRole("searchbox", { name: "Search families" }), "nas had");
+
+    expect(screen.getByRole("link", { name: "Haddad Nassif" })).toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Haddad" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Nassif" })).not.toBeInTheDocument();
+  });
+
+  it("says when nothing matches, and clears back to the full list", async () => {
+    const user = userEvent.setup();
+    renderPage();
+    await screen.findByRole("link", { name: "Haddad" });
+
+    await user.type(screen.getByRole("searchbox", { name: "Search families" }), "zzz");
+    expect(screen.getByText("Nothing matches “zzz”")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Show all families" }));
+    expect(screen.getByRole("link", { name: "Haddad" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Nassif" })).toBeInTheDocument();
   });
 
   it("marks the caller's own family instead of offering to join it", async () => {

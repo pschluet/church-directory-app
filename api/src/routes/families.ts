@@ -241,11 +241,13 @@ routes.get("/", async (c) => {
     id: string;
     name: string;
     member_count: string;
+    photo_key: string | null;
     member_names: string[] | null;
     pending_join_request_id: string | null;
   }>(
     `select f.id,
             f.name,
+            f.photo_key,
             count(r.id) filter (where r.deleted_at is null) as member_count,
             array_remove(
               array_agg(r.first_name order by ${FAMILY_MEMBER_SORT})
@@ -260,7 +262,7 @@ routes.get("/", async (c) => {
        from families f
        left join persons_resolved r on r.family_id = f.id
       where f.organization_id = $1
-      group by f.id, f.name
+      group by f.id, f.name, f.photo_key
       order by f.name`,
     [organizationId, caller.personId]
   );
@@ -269,7 +271,8 @@ routes.get("/", async (c) => {
     id: r.id,
     name: r.name,
     memberCount: Number(r.member_count),
-    memberNames: (r.member_names ?? []).slice(0, 3),
+    memberNames: r.member_names ?? [],
+    thumbUrl: photoUrls(r.photo_key).thumbUrl,
     pendingJoinRequestId: r.pending_join_request_id,
   }));
   return c.json({ families });

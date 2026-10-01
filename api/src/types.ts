@@ -400,8 +400,10 @@ export interface FamilySummaryDto {
   id: string;
   name: string;
   memberCount: number;
-  /** A few member names, so same-named families can be told apart. */
+  /** Every member's first name, in family order. */
   memberNames: string[];
+  /** The family photo's thumbnail, for the card banner. */
+  thumbUrl: string | null;
   /** The caller's own undecided request to join this family, if any. */
   pendingJoinRequestId: string | null;
 }
