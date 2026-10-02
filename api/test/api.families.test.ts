@@ -160,6 +160,34 @@ describe.skipIf(!hasDb)("families and the gated join flow", () => {
       expect(body.isMember).toBe(true);
     });
 
+    /*
+     * The gap this used to leave: `person.mergeRequest` is recorded at
+     * creation, and so is the admin's instant join just above -- an ordinary
+     * member's request was the one path through this file that went in
+     * unrecorded.
+     */
+    it("records an ordinary member's request to join", async () => {
+      await as(joiner).call("POST", `/api/families/${schlueters}/join-requests`);
+
+      const { rows } = await db().query<{ action: string; changes: { personId: string } }>(
+        "select action, changes from audit_log where entity_id = $1 and action = 'family.joinRequest'",
+        [schlueters]
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.changes.personId).toBe(joiner.personId);
+    });
+
+    it("records an admin's instant join as family.join, not family.joinRequest", async () => {
+      await as(admin).call("POST", `/api/families/${schlueters}/join-requests`);
+
+      const { rows } = await db().query<{ action: string }>(
+        "select action from audit_log where entity_id = $1",
+        [schlueters]
+      );
+      expect(rows.map((r) => r.action)).toContain("family.join");
+      expect(rows.map((r) => r.action)).not.toContain("family.joinRequest");
+    });
+
     it("adds the person once a family member approves", async () => {
       const request = await as(joiner).call("POST", `/api/families/${schlueters}/join-requests`);
 

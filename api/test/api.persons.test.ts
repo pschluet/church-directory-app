@@ -339,6 +339,58 @@ describe.skipIf(!hasDb)("people and attribute inheritance", () => {
       expect(Number(rows[0]!.count)).toBe(0);
     });
 
+    /*
+     * The row is only soft-deleted, so `target.label` can still name them from
+     * `persons_resolved` today -- but the day it is ever purged, the entry
+     * should still say who it was, and the anniversary count is a real side
+     * effect that otherwise vanishes with no record at all.
+     */
+    it("records the name, family and anniversary count", async () => {
+      const spouse = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId,
+        firstName: "Sarah",
+      });
+      await as(parent).call("POST", "/api/special-dates", {
+        personId: parent.personId,
+        type: "ANNIVERSARY",
+        month: 6,
+        day: 14,
+        year: 2010,
+        relatedPersonId: spouse,
+      });
+
+      await as(parent).call("DELETE", `/api/persons/${spouse}`);
+
+      const { rows } = await db().query<{
+        changes: { name: string; familyId: string; removedAnniversaries: number };
+      }>("select changes from audit_log where entity_id = $1 and action = 'person.delete'", [
+        spouse,
+      ]);
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.changes).toEqual({
+        name: "Sarah",
+        familyId,
+        removedAnniversaries: 1,
+      });
+    });
+
+    it("records zero removed anniversaries for someone who had none", async () => {
+      const child = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId,
+        firstName: "Anna",
+      });
+
+      await as(parent).call("DELETE", `/api/persons/${child}`);
+
+      const { rows } = await db().query<{ changes: { removedAnniversaries: number } }>(
+        "select changes from audit_log where entity_id = $1 and action = 'person.delete'",
+        [child]
+      );
+      expect(rows[0]!.changes.removedAnniversaries).toBe(0);
+    });
+
     it("removes an anniversary the deleted person owned", async () => {
       const husband = await createNonUserPerson(db(), {
         organizationId: orgId,

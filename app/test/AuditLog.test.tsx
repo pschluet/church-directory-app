@@ -26,6 +26,7 @@ function entry(overrides: Partial<AuditLogEntryDto> = {}): AuditLogEntryDto {
     actor: { appUserId: "au-1", email: "ada@test.example", name: "Ada Admin" },
     target: { label: "Maria Schlueter", missing: false },
     changes: { firstName: "Maria" },
+    references: {},
     unassignedOrganization: false,
     ...overrides,
   };
@@ -190,6 +191,89 @@ describe("AuditLog", () => {
     });
   });
 
+  describe("the expanded footer", () => {
+    async function expand() {
+      const row = await screen.findByRole("button", { expanded: false });
+      await user().click(row);
+    }
+
+    it("links a person entry to its detail page", async () => {
+      respondWith(() => ({ entries: [entry()], nextCursor: null }));
+      renderPage();
+      await expand();
+
+      // Role-scoped, not text-scoped: the header above already shows "Maria
+      // Schlueter" as plain text, so a text query would be ambiguous once the
+      // footer repeats the same label as a link.
+      const link = screen.getByRole("link", { name: "Maria Schlueter" });
+      expect(link).toHaveAttribute("href", "/people/person-1");
+    });
+
+    /*
+     * An account, a church, a prayer request and a special date have only a
+     * list page -- a name linked to a list is a link that lies about where it
+     * goes.
+     */
+    it("does not link an entity type with no detail page", async () => {
+      respondWith(() => ({
+        entries: [
+          entry({
+            action: "user.update",
+            entityType: "appUser",
+            entityId: "au-5",
+            target: { label: "boris@test.example", missing: false },
+          }),
+        ],
+        nextCursor: null,
+      }));
+      renderPage();
+      await expand();
+
+      expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    });
+
+    it("does not link a target that no longer exists", async () => {
+      respondWith(() => ({
+        entries: [entry({ target: { label: null, missing: true } })],
+        nextCursor: null,
+      }));
+      renderPage();
+      await expand();
+
+      expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    });
+
+    it("still shows the raw action string and the raw record id", async () => {
+      respondWith(() => ({ entries: [entry()], nextCursor: null }));
+      renderPage();
+      await expand();
+
+      expect(screen.getByText("person.update")).toBeInTheDocument();
+      expect(screen.getByText(/person-1/)).toBeInTheDocument();
+    });
+
+    it("names the person behind a hard-deleted special date", async () => {
+      respondWith(() => ({
+        entries: [
+          entry({
+            action: "specialDate.delete",
+            entityType: "specialDate",
+            entityId: "sd-1",
+            target: { label: "Boris Popov", missing: true },
+          }),
+        ],
+        nextCursor: null,
+      }));
+      renderPage();
+      await expand();
+
+      // Named, but still not linked -- the row really is gone, and a link that
+      // 404s is worse than none.
+      expect(screen.getByText("Boris Popov")).toBeInTheDocument();
+      expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    });
+  });
+
   describe("filters", () => {
     /*
      * There were Today / 7 days / 30 days presets. They duplicated the scroll on
@@ -233,6 +317,16 @@ describe("AuditLog", () => {
       const query = lastAuditCall().query!;
       expect(query.from).toBe(new Date(2026, 2, 1).toISOString());
       expect(query.to).toBeUndefined();
+    });
+
+    it("shows the chosen window as calendar dates, not the raw yyyy-mm-dd", async () => {
+      respondWith(() => ({ entries: [entry()], nextCursor: null }));
+
+      renderPage(["/audit-log?from=2026-03-01&to=2026-03-31"]);
+      await screen.findByText("Maria Schlueter");
+
+      expect(screen.getByText("March 1, 2026 to March 31, 2026")).toBeInTheDocument();
+      expect(screen.queryByText("2026-03-01")).not.toBeInTheDocument();
     });
 
     it("writes a typed date into the URL", async () => {

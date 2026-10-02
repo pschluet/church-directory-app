@@ -12,6 +12,10 @@ import { pushSubscribeSchema, pushUnsubscribeSchema, type PushSubscriptionDto } 
  * subscription, and a shared phone signed into a second account presents the
  * same endpoint under a different owner, where the row should move to whoever
  * is signed in now.
+ *
+ * Neither handler below is audited. The SPA re-subscribes on every page load,
+ * so recording this would bury the trail under the act of opening the app --
+ * see api/src/audit.ts for the rest of what is deliberately left out.
  */
 const routes = new Hono<AppEnv>();
 

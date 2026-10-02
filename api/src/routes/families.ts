@@ -14,7 +14,7 @@ import {
   type PersonRow,
 } from "../services/persons";
 import { completedYearsOn, parseIsoDate, toIsoDate } from "../services/upcoming-dates";
-import { deletePhoto, familyCardUrl, photoUrls } from "../photos";
+import { deletePhoto, familyCardUrl, photoChange, photoUrls } from "../photos";
 import {
   familyCreateSchema,
   familyMemberOrderSchema,
@@ -462,6 +462,21 @@ routes.put("/:id/photo", async (c) => {
     "update families set photo_key = $2, photo_width = $3, photo_height = $4, photo_has_card = $5 where id = $1",
     [id, photoKey, width, height, card]
   );
+
+  // Before the delete, and not the dimensions: they are measurements of the
+  // image, not a decision anyone made, and they cannot change without the
+  // photo changing. See persons.ts's `/:id/photo` for why the key itself is
+  // never recorded.
+  const change = photoChange(family.photo_key, photoKey);
+  if (change) {
+    await audit(db, caller, {
+      action: "family.photo",
+      entityType: "family",
+      entityId: id,
+      changes: { photo: change },
+    });
+  }
+
   if (family.photo_key && family.photo_key !== photoKey) await deletePhoto(family.photo_key);
 
   return c.json({
@@ -519,6 +534,13 @@ routes.post("/:id/join-requests", async (c) => {
   if (!created) {
     throw new HTTPException(409, { message: "You have already asked to join this family" });
   }
+
+  await audit(db, caller, {
+    action: "family.joinRequest",
+    entityType: "family",
+    entityId: id,
+    changes: { personId: caller.personId },
+  });
 
   return c.json({ status: "PENDING" as const, id: created.id }, 201);
 });

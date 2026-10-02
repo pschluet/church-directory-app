@@ -410,6 +410,172 @@ describe.skipIf(!hasDb)("audit log", () => {
     });
   });
 
+  /*
+   * The uuids a payload names, resolved to the names behind them -- the read
+   * path's half of making the log legible. `audit-references.test.ts` covers
+   * the walk over `changes` without a database; these prove the SQL agrees
+   * with it.
+   */
+  describe("references", () => {
+    it("resolves a uuid inside changes to a name", async () => {
+      const familyId = await createFamily(db(), orgId, "Popov");
+      await createAuditEntry(db(), {
+        organizationId: orgId,
+        actorAppUserId: admin.appUserId,
+        action: "family.addMember",
+        entityType: "family",
+        entityId: familyId,
+        changes: { personId: admin.personId },
+      });
+
+      const { body } = await as(admin).call("GET", "/api/audit");
+      expect(body.entries[0].references[admin.personId!.toLowerCase()]).toEqual({
+        label: "Ada Admin",
+        type: "person",
+      });
+    });
+
+    it("resolves ids across all four tables in one page", async () => {
+      const familyId = await createFamily(db(), orgId, "Popov");
+      const other = await createUser(db(), {
+        organizationId: orgId,
+        role: "USER",
+        email: "other@test.example",
+        firstName: "Boris",
+        lastName: "Popov",
+      });
+      await createAuditEntry(db(), {
+        organizationId: orgId,
+        actorAppUserId: admin.appUserId,
+        action: "person.update",
+        entityType: "person",
+        changes: {
+          personId: admin.personId,
+          familyId,
+          duplicatePersonId: other.personId,
+          organizationId: orgId,
+        },
+      });
+
+      const { body } = await as(admin).call("GET", "/api/audit");
+      const references = body.entries[0].references;
+      expect(references[admin.personId!.toLowerCase()]).toEqual({
+        label: "Ada Admin",
+        type: "person",
+      });
+      expect(references[familyId.toLowerCase()]).toEqual({ label: "Popov", type: "family" });
+      expect(references[other.personId!.toLowerCase()]).toEqual({
+        label: "Boris Popov",
+        type: "person",
+      });
+      expect(references[orgId.toLowerCase()]).toEqual({
+        label: "All Saints",
+        type: "organization",
+      });
+    });
+
+    it("resolves a soft-deleted person, the same as TARGET_LABEL does", async () => {
+      const deleted = await createUser(db(), {
+        organizationId: orgId,
+        role: "USER",
+        email: "gone@test.example",
+        firstName: "Gone",
+        lastName: "Soon",
+      });
+      await db().query("update persons set deleted_at = now() where id = $1", [deleted.personId]);
+      await createAuditEntry(db(), {
+        organizationId: orgId,
+        actorAppUserId: admin.appUserId,
+        action: "family.removeMember",
+        changes: { personId: deleted.personId },
+      });
+
+      const { body } = await as(admin).call("GET", "/api/audit");
+      expect(body.entries[0].references[deleted.personId!.toLowerCase()]).toEqual({
+        label: "Gone Soon",
+        type: "person",
+      });
+    });
+
+    it("omits an id that names nothing, rather than a null label", async () => {
+      await createAuditEntry(db(), {
+        organizationId: orgId,
+        actorAppUserId: admin.appUserId,
+        action: "person.mergeRequest",
+        changes: { duplicatePersonId: "00000000-0000-0000-0000-0000000000ff" },
+      });
+
+      const { body } = await as(admin).call("GET", "/api/audit");
+      expect(body.entries[0].references).toEqual({});
+    });
+
+    it("returns no references for a page whose payloads carry no uuids", async () => {
+      await createAuditEntry(db(), {
+        organizationId: orgId,
+        actorAppUserId: admin.appUserId,
+        action: "person.update",
+        changes: { showYearCount: true },
+      });
+
+      const { body } = await as(admin).call("GET", "/api/audit");
+      expect(body.entries[0].references).toEqual({});
+    });
+
+    /*
+     * Real uuids make two tables claiming the same id vanishingly unlikely,
+     * but resolution still has to be deterministic rather than dependent on
+     * row order -- crafted here by giving an organization the same id as a
+     * family, which `TYPE_RANK` resolves in the family's favour.
+     */
+    it("resolves deterministically when an id matches more than one table", async () => {
+      const familyId = await createFamily(db(), orgId, "Popov");
+      await db().query("insert into organizations (id, name, slug) values ($1, $2, $3)", [
+        familyId,
+        "Collides",
+        `collides-${familyId.slice(0, 8)}`,
+      ]);
+      await createAuditEntry(db(), {
+        organizationId: orgId,
+        actorAppUserId: admin.appUserId,
+        action: "family.update",
+        changes: { familyId },
+      });
+
+      const { body } = await as(admin).call("GET", "/api/audit");
+      expect(body.entries[0].references[familyId.toLowerCase()]).toEqual({
+        label: "Popov",
+        type: "family",
+      });
+    });
+
+    it("names whose date it was for a hard-deleted special date", async () => {
+      await createAuditEntry(db(), {
+        organizationId: orgId,
+        actorAppUserId: admin.appUserId,
+        action: "specialDate.delete",
+        entityType: "specialDate",
+        entityId: "00000000-0000-0000-0000-0000000000ff",
+        changes: { personId: admin.personId, type: "BIRTHDAY", month: 7, day: 26 },
+      });
+
+      const { body } = await as(admin).call("GET", "/api/audit");
+      expect(body.entries[0].target).toEqual({ label: "Ada Admin", missing: true });
+    });
+
+    it("keeps the honest 'since deleted' label for an old entry that recorded nothing", async () => {
+      await createAuditEntry(db(), {
+        organizationId: orgId,
+        actorAppUserId: admin.appUserId,
+        action: "specialDate.delete",
+        entityType: "specialDate",
+        entityId: "00000000-0000-0000-0000-0000000000ff",
+      });
+
+      const { body } = await as(admin).call("GET", "/api/audit");
+      expect(body.entries[0].target).toEqual({ label: null, missing: true });
+    });
+  });
+
   describe("filter options", () => {
     it("offers only what this parish has actually recorded", async () => {
       await createAuditEntry(db(), {

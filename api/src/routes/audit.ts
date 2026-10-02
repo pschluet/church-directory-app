@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { requireOrganizationId, requireRole, type AppEnv } from "../auth";
 import { parseLimit } from "./paging";
 import { escapeLike } from "./directory";
+import { collectUuids, resolveAuditReferences } from "../services/audit-references";
 import {
   AUDIT_ACTIONS,
   fullName,
@@ -11,6 +12,7 @@ import {
   type AuditLogEntryDto,
   type AuditLogFilterOptionsDto,
   type AuditLogPageDto,
+  type AuditReferenceDto,
 } from "../types";
 
 /**
@@ -138,7 +140,7 @@ function toActor(row: ActorRow): AuditActorDto {
   };
 }
 
-function toEntry(row: EntryRow): AuditLogEntryDto {
+function toEntry(row: EntryRow, references: Record<string, AuditReferenceDto>): AuditLogEntryDto {
   return {
     id: row.id,
     createdAt: row.created_at.toISOString(),
@@ -147,12 +149,40 @@ function toEntry(row: EntryRow): AuditLogEntryDto {
     entityId: row.entity_id,
     actor: toActor(row),
     target: {
-      label: row.target_label,
+      label: row.target_label ?? specialDateFallbackLabel(row, references),
       missing: row.entity_id !== null && row.target_label === null,
     },
     changes: row.changes ?? null,
+    references,
     unassignedOrganization: row.organization_id === null,
   };
+}
+
+/**
+ * A hard-deleted special date has no row left for `TARGET_LABEL` to resolve,
+ * so the card named nothing at all. `changes.personId` is the one thing a
+ * `specialDate.delete` entry still carries that can stand in for it.
+ *
+ * Done here, in JS, rather than in `TARGET_LABEL`'s SQL: the SQL version would
+ * need `(a.changes->>'personId')::uuid` inside a correlated subquery, and the
+ * text-comparison alternative throws away the index on every row in the page.
+ * Here the lookup has already happened, as part of resolving `references`.
+ *
+ * Only lights up for entries whose `changes` actually names the person --
+ * older `specialDate.delete` rows recorded nothing and keep saying "special
+ * date, since deleted", which is the honest answer for a row that recorded
+ * nothing.
+ */
+function specialDateFallbackLabel(
+  row: EntryRow,
+  references: Record<string, AuditReferenceDto>
+): string | null {
+  if (row.target_label !== null || row.entity_type !== "specialDate") return null;
+  const changes = row.changes;
+  if (!changes || typeof changes !== "object" || Array.isArray(changes)) return null;
+  const personId = (changes as Record<string, unknown>).personId;
+  if (typeof personId !== "string") return null;
+  return references[personId.toLowerCase()]?.label ?? null;
 }
 
 /** Only the uuids Postgres will accept, so a typed-in filter cannot 500 the page. */
@@ -281,8 +311,24 @@ routes.get("/", async (c) => {
   const page = hasMore ? rows.slice(0, limit) : rows;
   const last = page[page.length - 1];
 
+  /*
+   * One lookup for the whole page's uuids, not one per row -- skipped
+   * entirely when nothing was found, which is most pages. The per-row id
+   * lists are kept from this pass rather than walked a second time in
+   * `toEntry`.
+   */
+  const idsByRow = page.map((row) => collectUuids(row.changes));
+  const resolved = await resolveAuditReferences(db, [...new Set(idsByRow.flat())]);
+
   const body: AuditLogPageDto = {
-    entries: page.map(toEntry),
+    entries: page.map((row, index) => {
+      const references: Record<string, AuditReferenceDto> = {};
+      for (const id of idsByRow[index] ?? []) {
+        const reference = resolved.get(id);
+        if (reference) references[id] = reference;
+      }
+      return toEntry(row, references);
+    }),
     nextCursor: hasMore && last ? { createdAt: last.created_at.toISOString(), id: last.id } : null,
   };
   return c.json(body);

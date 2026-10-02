@@ -311,19 +311,45 @@ routes.delete("/:id", async (c) => {
   const organizationId = requireOrganizationId(c);
   const id = uuidSchema.parse(c.req.param("id"));
 
-  const existing = await one<{ person_id: string }>(
+  /*
+   * The whole row, not just `person_id` -- this is a hard delete, so it is the
+   * only chance to record what the date actually was. Without this, the audit
+   * entry names nothing: `TARGET_LABEL` has no row left to resolve, and the
+   * card read "special date, since deleted" with an empty body.
+   */
+  const existing = await one<{
+    person_id: string;
+    related_person_id: string | null;
+    type: string;
+    month: number;
+    day: number;
+    year: number | null;
+    show_year_count: boolean;
+  }>(
     db,
-    "select person_id from special_dates where id = $1 and organization_id = $2",
+    `select person_id, related_person_id, type, month, day, year, show_year_count
+       from special_dates where id = $1 and organization_id = $2`,
     [id, organizationId]
   );
   if (!existing) throw new HTTPException(404, { message: "Date not found" });
   await assertCanEditPersonById(db, caller, existing.person_id, organizationId);
 
   await db.query("delete from special_dates where id = $1", [id]);
+  // The same shape `specialDate.create` writes, so the three entries for one
+  // date read side by side.
   await audit(db, caller, {
     action: "specialDate.delete",
     entityType: "specialDate",
     entityId: id,
+    changes: {
+      personId: existing.person_id,
+      type: existing.type,
+      month: existing.month,
+      day: existing.day,
+      year: existing.year,
+      showYearCount: existing.show_year_count,
+      relatedPersonId: existing.related_person_id,
+    },
   });
   return c.body(null, 204);
 });

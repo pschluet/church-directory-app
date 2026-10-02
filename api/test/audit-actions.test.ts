@@ -24,6 +24,7 @@ const ROUTE_FILES = [
   "prayer-requests.ts",
   "special-dates.ts",
   "me.ts",
+  "notifications.ts",
 ];
 
 /**

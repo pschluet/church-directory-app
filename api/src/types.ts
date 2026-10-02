@@ -50,9 +50,38 @@ export function rolesAtLeast(floor: Role): Role[] {
   return ROLES.filter((role) => hasRole(role, floor));
 }
 
+const ROLE_LABELS: Record<Role, string> = {
+  SUPER_ADMIN: "Super administrator",
+  ADMIN: "Administrator",
+  PRAYER_REQUEST_ADMIN: "Prayer request administrator",
+  USER: "Member",
+};
+
+/**
+ * A human label for a role, falling back to the raw string.
+ *
+ * Shared with the audit log, which finds `role` sitting in a payload next to
+ * values the admin screen already has a name for -- `AdminUsers` used to
+ * declare this label set for itself alone.
+ */
+export function roleLabel(role: string): string {
+  return ROLE_LABELS[role as Role] ?? role;
+}
+
 export const USER_STATUSES = ["INVITED", "ACTIVE", "DISABLED"] as const;
 export const userStatusSchema = z.enum(USER_STATUSES);
 export type UserStatus = z.infer<typeof userStatusSchema>;
+
+const USER_STATUS_LABELS: Record<UserStatus, string> = {
+  ACTIVE: "Active",
+  INVITED: "Invited",
+  DISABLED: "Disabled",
+};
+
+/** A human label for an account status, falling back to the raw string. */
+export function userStatusLabel(status: string): string {
+  return USER_STATUS_LABELS[status as UserStatus] ?? status;
+}
 
 export const SPECIAL_DATE_TYPES = ["BIRTHDAY", "ANNIVERSARY", "FEAST_DAY"] as const;
 export const specialDateTypeSchema = z.enum(SPECIAL_DATE_TYPES);
@@ -90,6 +119,7 @@ export const AUDIT_ACTIONS = [
   "person.create",
   "person.update",
   "person.delete",
+  "person.photo",
   "person.merge",
   "person.mergeRequest",
   "person.mergeRequest.approve",
@@ -97,8 +127,10 @@ export const AUDIT_ACTIONS = [
 
   "family.create",
   "family.update",
+  "family.photo",
   "family.delete",
   "family.join",
+  "family.joinRequest",
   "family.joinRequest.approve",
   "family.joinRequest.deny",
   "family.addMember",
@@ -109,6 +141,7 @@ export const AUDIT_ACTIONS = [
   "user.update",
   "user.delete",
   "user.changeEmail",
+  "user.changeNotifications",
   "user.adoptParish",
   "user.changeParish",
 
@@ -132,6 +165,7 @@ const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "person.create": "Person added",
   "person.update": "Person edited",
   "person.delete": "Person deleted",
+  "person.photo": "Photo changed",
   "person.merge": "People merged",
   "person.mergeRequest": "Merge requested",
   "person.mergeRequest.approve": "Merge approved",
@@ -139,8 +173,10 @@ const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
 
   "family.create": "Family created",
   "family.update": "Family edited",
+  "family.photo": "Photo changed",
   "family.delete": "Family deleted",
   "family.join": "Joined a family",
+  "family.joinRequest": "Join requested",
   "family.joinRequest.approve": "Join approved",
   "family.joinRequest.deny": "Join declined",
   "family.addMember": "Family member added",
@@ -151,6 +187,7 @@ const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "user.update": "Account edited",
   "user.delete": "Account deleted",
   "user.changeEmail": "Sign-in address changed",
+  "user.changeNotifications": "Notification settings changed",
   "user.adoptParish": "Given a parish",
   "user.changeParish": "Moved parish",
 
@@ -1149,6 +1186,17 @@ export interface AuditTargetDto {
   missing: boolean;
 }
 
+/**
+ * What a uuid found inside `changes` turned out to name, resolved at read time
+ * for the same reason `AuditTargetDto.label` is: the names move, the ids do
+ * not, and nothing was denormalized onto the row when it was written.
+ */
+export interface AuditReferenceDto {
+  label: string;
+  /** Which table it was found in. The page uses this to decide whether to link. */
+  type: AuditEntityType;
+}
+
 export interface AuditLogEntryDto {
   /**
    * A string, not a number. `id` is a bigserial, and node-postgres returns int8
@@ -1169,6 +1217,16 @@ export interface AuditLogEntryDto {
   target: AuditTargetDto;
   /** Untyped by nature -- every call site passes its own shape, and some pass none. */
   changes: unknown;
+  /**
+   * The uuids found inside `changes`, keyed by the id as it appears there
+   * (lowercased). Only the ones that resolved: an id naming nothing is absent
+   * from the map, and the page shows it verbatim rather than guessing at it.
+   *
+   * Per entry rather than per page, even though resolution runs once per page
+   * of entries: the SPA's infinite query flattens pages into one list before
+   * any component sees it, so a page-level map would have nowhere to live.
+   */
+  references: Record<string, AuditReferenceDto>;
   /**
    * The entry belongs to no organization, which happens when a super admin acts
    * before choosing a parish -- creating one, mostly. Only super admins are

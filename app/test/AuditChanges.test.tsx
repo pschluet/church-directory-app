@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AuditChanges, humanizeField } from "../src/components/AuditChanges";
 
@@ -93,6 +93,92 @@ describe("AuditChanges", () => {
     });
   });
 
+  describe("ids resolved to names", () => {
+    const PERSON_ID = "11111111-1111-4111-8111-111111111111";
+
+    it("renders a resolved uuid as a name, with the raw id in the title", () => {
+      render(
+        <AuditChanges
+          changes={{ personId: PERSON_ID }}
+          references={{ [PERSON_ID]: { label: "Maria Schlueter", type: "person" } }}
+        />
+      );
+
+      const name = screen.getByText("Maria Schlueter");
+      expect(name).toBeInTheDocument();
+      expect(name.closest("span")).toHaveAttribute("title", PERSON_ID);
+      expect(screen.queryByText(PERSON_ID)).not.toBeInTheDocument();
+    });
+
+    it("renders an unresolved uuid verbatim", () => {
+      render(<AuditChanges changes={{ personId: PERSON_ID }} references={{}} />);
+      expect(screen.getByText(PERSON_ID)).toBeInTheDocument();
+    });
+
+    it("renders an array of ids as a numbered list of names", () => {
+      const other = "22222222-2222-4222-8222-222222222222";
+      render(
+        <AuditChanges
+          changes={{ personIds: [PERSON_ID, other] }}
+          references={{
+            [PERSON_ID]: { label: "Maria Schlueter", type: "person" },
+            [other]: { label: "Paul Schlueter", type: "person" },
+          }}
+        />
+      );
+
+      const list = screen.getByRole("list");
+      expect(
+        within(list)
+          .getAllByRole("listitem")
+          .map((item) => item.textContent)
+      ).toEqual(["Maria Schlueter", "Paul Schlueter"]);
+    });
+  });
+
+  describe("known enum values", () => {
+    /*
+     * Field and value must both match. A `role` of "ADMIN" is a real role; a
+     * `note` that happens to read "ADMIN" is somebody's free text, and the
+     * field name is the only thing that tells the two apart.
+     */
+    it("labels a known role but leaves free text with the same word alone", () => {
+      render(<AuditChanges changes={{ role: "ADMIN", note: "ADMIN" }} />);
+      expect(screen.getByText("Administrator")).toBeInTheDocument();
+      expect(screen.getByText("ADMIN")).toBeInTheDocument();
+    });
+
+    it("leaves an unrecognised role as the raw string", () => {
+      render(<AuditChanges changes={{ role: "WIZARD" }} />);
+      expect(screen.getByText("WIZARD")).toBeInTheDocument();
+    });
+  });
+
+  describe("hidden fields", () => {
+    it("hides placeId from the layout but keeps it in the raw details", async () => {
+      const user = userEvent.setup();
+      render(<AuditChanges changes={{ addressLine1: "1 Main St", placeId: "ChIJabc123" }} />);
+
+      expect(screen.getByText("Address line 1")).toBeInTheDocument();
+      expect(screen.queryByText("ChIJabc123")).not.toBeInTheDocument();
+
+      await user.click(screen.getByRole("button", { name: /show raw details/i }));
+      expect(screen.getByText(/"placeId"/)).toBeInTheDocument();
+    });
+  });
+
+  describe("the raw details escape hatch", () => {
+    it("is offered for a flat payload too, not only when nothing else could render", async () => {
+      const user = userEvent.setup();
+      render(<AuditChanges changes={{ firstName: "Maria" }} />);
+
+      expect(screen.getByText("Submitted values")).toBeInTheDocument();
+      const button = screen.getByRole("button", { name: /show raw details/i });
+      await user.click(button);
+      expect(screen.getByText(/"firstName"/)).toBeInTheDocument();
+    });
+  });
+
   describe("a shape with no layout", () => {
     /*
      * Nested and array payloads -- the merge result, a list of reordered ids.
@@ -127,11 +213,15 @@ describe("humanizeField", () => {
   it("turns a camelCase field into a sentence", () => {
     expect(humanizeField("addressLine1")).toBe("Address line 1");
     expect(humanizeField("firstName")).toBe("First name");
-    expect(humanizeField("inheritLastNameFromPersonId")).toBe("Inherit last name from person id");
+    expect(humanizeField("mapViewEnabled")).toBe("Map view enabled");
   });
 
   it("uses the override for the ones it would get wrong", () => {
     expect(humanizeField("e164")).toBe("Phone number");
     expect(humanizeField("patronSaint")).toBe("Patron saint");
+    // The value renders as a name (see the uuid tests below), so a label
+    // ending in "id" would be wrong even though it is what the generic path
+    // would produce.
+    expect(humanizeField("inheritLastNameFromPersonId")).toBe("Surname taken from");
   });
 });

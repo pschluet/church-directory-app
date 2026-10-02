@@ -487,6 +487,40 @@ describe.skipIf(!hasDb)("special dates", () => {
       expect(body.specialDates).toHaveLength(0);
     });
 
+    /*
+     * The one entry in the log that used to record nothing at all, for a row
+     * that is then hard-deleted -- the card named nothing and said nothing.
+     * Same shape `specialDate.create` writes, so the three entries for one
+     * date read side by side.
+     */
+    it("records the full date before the hard delete", async () => {
+      const created = await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 4,
+        year: 2015,
+        showYearCount: true,
+      });
+
+      await as(paul).call("DELETE", `/api/special-dates/${created.body.id}`);
+
+      const { rows } = await db().query<{ changes: Record<string, unknown> }>(
+        "select changes from audit_log where entity_id = $1 and action = 'specialDate.delete'",
+        [created.body.id]
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.changes).toEqual({
+        personId: anna,
+        type: "BIRTHDAY",
+        month: 5,
+        day: 4,
+        year: 2015,
+        showYearCount: true,
+        relatedPersonId: null,
+      });
+    });
+
     it("refuses to touch a date belonging to someone else's record", async () => {
       const created = await as(maria).call("POST", "/api/special-dates", {
         personId: maria.personId,

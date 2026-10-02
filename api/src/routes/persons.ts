@@ -7,10 +7,11 @@ import { assertCanEditFamily, assertCanEditPerson } from "../services/access";
 import { clearInheritanceFor, validateInheritance } from "../services/inheritance";
 import { cancelPendingJoinRequests } from "../services/membership";
 import { loadPerson, PERSON_WRITE_COLUMNS } from "../services/persons";
-import { deletePhoto } from "../photos";
+import { deletePhoto, photoChange } from "../photos";
 import { addressToLine, mapViewEnabledFor, resolveAddress } from "../services/addresses";
 import {
   createPersonSchema,
+  fullName,
   personWriteSchema,
   photoAttachSchema,
   uuidSchema,
@@ -32,6 +33,8 @@ interface PersonFactsRow {
   family_id: string | null;
   app_user_id: string | null;
   photo_key: string | null;
+  first_name: string;
+  last_name: string | null;
 }
 
 /**
@@ -47,7 +50,7 @@ async function loadFacts(
 ): Promise<PersonFactsRow> {
   const row = await one<PersonFactsRow>(
     q,
-    `select id, organization_id, family_id, app_user_id, photo_key
+    `select id, organization_id, family_id, app_user_id, photo_key, first_name, last_name
        from persons
       where id = $1 and organization_id = $2 and deleted_at is null`,
     [id, organizationId]
@@ -275,6 +278,20 @@ routes.put("/:id/photo", async (c) => {
   }
 
   await db.query("update persons set photo_key = $2 where id = $1", [id, photoKey]);
+
+  // Before the delete: the row has already changed, and if the S3 cleanup
+  // below throws, the trail should say what happened rather than what the
+  // response returned.
+  const change = photoChange(existing.photo_key, photoKey);
+  if (change) {
+    await audit(db, caller, {
+      action: "person.photo",
+      entityType: "person",
+      entityId: id,
+      changes: { photo: change },
+    });
+  }
+
   if (existing.photo_key && existing.photo_key !== photoKey) {
     await deletePhoto(existing.photo_key);
   }
@@ -308,7 +325,7 @@ routes.delete("/:id", async (c) => {
     });
   }
 
-  await db.transaction(async (tx) => {
+  const removedAnniversaries = await db.transaction(async (tx) => {
     await clearInheritanceFor(tx, id);
 
     // An anniversary is one row shared by two people, so it cannot outlive
@@ -318,6 +335,15 @@ routes.delete("/:id", async (c) => {
     // filtering only `related_person_id` would leave the mirrored case broken.
     // The `on delete cascade` on those columns never fires here; this is a
     // soft delete, so the persons row stays.
+    //
+    // Selected before it is deleted so the audit entry below can say how many
+    // -- `Queryable.query` hands back rows, not a row count.
+    const { rows: anniversaries } = await tx.query<{ id: string }>(
+      `select id from special_dates
+        where type = 'ANNIVERSARY'
+          and (person_id = $1 or related_person_id = $1)`,
+      [id]
+    );
     await tx.query(
       `delete from special_dates
         where type = 'ANNIVERSARY'
@@ -328,9 +354,21 @@ routes.delete("/:id", async (c) => {
     // Last, once nothing points at them any more -- the same ordering
     // services/merge.ts uses when it retires a duplicate.
     await tx.query("update persons set deleted_at = now() where id = $1", [id]);
+    return anniversaries.length;
   });
 
-  await audit(db, caller, { action: "person.delete", entityType: "person", entityId: id });
+  await audit(db, caller, {
+    action: "person.delete",
+    entityType: "person",
+    entityId: id,
+    // The row is only soft-deleted, so `target.label` still names them today
+    // -- but the day it is ever purged, the entry should still say who it was.
+    changes: {
+      name: fullName({ firstName: existing.first_name, lastName: existing.last_name }),
+      familyId: existing.family_id,
+      removedAnniversaries,
+    },
+  });
   return c.body(null, 204);
 });
 

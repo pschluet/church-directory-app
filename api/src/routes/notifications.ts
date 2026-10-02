@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../auth";
+import { audit } from "../audit";
 import { loadInbox, markAllRead } from "../services/notifications";
 import { notificationPreferencesSchema, type InboxDto } from "../types";
 import { one } from "../db";
@@ -27,6 +28,9 @@ routes.get("/", async (c) => {
  *
  * Everything unread at once rather than per notification: the badge is a count
  * of things not yet looked at, and opening the panel is looking at them.
+ *
+ * Not audited. It is a read receipt, not a change -- nothing any other member
+ * can see is different afterwards, and it fires every time the bell is opened.
  */
 routes.post("/read", async (c) => {
   const caller = c.get("caller");
@@ -79,6 +83,16 @@ routes.put("/preferences", async (c) => {
      returning prayer_requests, prayer_request_reviews`,
     [caller.appUserId, payload.prayerRequests ?? null, payload.prayerRequestReviews ?? null]
   );
+
+  // Recorded from what the upsert returned, not what was sent: the `coalesce`
+  // above means a payload naming one switch leaves the other untouched, and
+  // the row says what the preferences now are rather than what was typed.
+  await audit(db, caller, {
+    action: "user.changeNotifications",
+    entityType: "appUser",
+    entityId: caller.appUserId,
+    changes: toPreferences(row),
+  });
 
   return c.json(toPreferences(row));
 });

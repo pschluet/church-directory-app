@@ -1,13 +1,15 @@
 import { useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type {
-  AppUserDto,
-  FamilySummaryDto,
-  JoinRequestDto,
-  MergeRequestDto,
-  OrganizationDto,
-  Role,
+import {
+  roleLabel,
+  userStatusLabel,
+  type AppUserDto,
+  type FamilySummaryDto,
+  type JoinRequestDto,
+  type MergeRequestDto,
+  type OrganizationDto,
+  type Role,
 } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
@@ -49,26 +51,12 @@ import { SearchField } from "../components/SearchField";
  * scope, so there is nothing to fetch.
  */
 
-const ROLE_LABELS: Record<Role, string> = {
-  SUPER_ADMIN: "Super administrator",
-  ADMIN: "Administrator",
-  PRAYER_REQUEST_ADMIN: "Prayer request administrator",
-  USER: "Member",
-};
-
 /**
  * The roles the actions menu will offer to switch someone to. Deliberately
  * without SUPER_ADMIN: that one is granted when an account is invited or moved,
  * not from a row menu, and it was never offered here.
  */
 const ASSIGNABLE_ROLES: Role[] = ["ADMIN", "PRAYER_REQUEST_ADMIN", "USER"];
-
-/** Shared by the badge and the search, so typing what is on screen matches. */
-const STATUS_LABELS: Record<AppUserDto["status"], string> = {
-  ACTIVE: "Active",
-  INVITED: "Invited",
-  DISABLED: "Disabled",
-};
 
 export function AdminUsers() {
   const { me, isSuperAdmin, organizationId, reload: reloadMe } = useMe();
@@ -172,8 +160,8 @@ export function AdminUsers() {
       const haystack = [
         user.personName,
         user.email,
-        ROLE_LABELS[user.role],
-        STATUS_LABELS[user.status],
+        roleLabel(user.role),
+        userStatusLabel(user.status),
         user.organizationName,
       ]
         .filter(Boolean)
@@ -390,7 +378,7 @@ export function AdminUsers() {
                  * forcing a width nothing could scroll to.
                  */}
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <Badge>{ROLE_LABELS[user.role]}</Badge>
+                  <Badge>{roleLabel(user.role)}</Badge>
                   <StatusBadge status={user.status} />
                   {isSuperAdmin && user.organizationName && (
                     <Badge tone="accent">{user.organizationName}</Badge>
@@ -453,7 +441,7 @@ export function AdminUsers() {
 }
 
 function StatusBadge({ status }: { status: AppUserDto["status"] }) {
-  const label = STATUS_LABELS[status];
+  const label = userStatusLabel(status);
   if (status === "ACTIVE") return <Badge tone="accent">{label}</Badge>;
   if (status === "INVITED") return <Badge tone="primary">{label}</Badge>;
   return <Badge>{label}</Badge>;
@@ -494,7 +482,7 @@ function UserActions({
     ...(canManage
       ? ASSIGNABLE_ROLES.filter((role) => role !== user.role).map((role) => (
           <MenuItem key={`role-${role}`} onSelect={() => void onUpdate(user, { role })}>
-            Make {ROLE_LABELS[role].toLowerCase()}
+            Make {roleLabel(role).toLowerCase()}
           </MenuItem>
         ))
       : []),
@@ -641,11 +629,11 @@ function InviteModal({
               value={role}
               onChange={(event) => setRole(event.target.value as Role)}
             >
-              <option value="USER">{ROLE_LABELS.USER}</option>
-              <option value="PRAYER_REQUEST_ADMIN">{ROLE_LABELS.PRAYER_REQUEST_ADMIN}</option>
-              <option value="ADMIN">{ROLE_LABELS.ADMIN}</option>
+              <option value="USER">{roleLabel("USER")}</option>
+              <option value="PRAYER_REQUEST_ADMIN">{roleLabel("PRAYER_REQUEST_ADMIN")}</option>
+              <option value="ADMIN">{roleLabel("ADMIN")}</option>
               {canInviteSuperAdmin && (
-                <option value="SUPER_ADMIN">{ROLE_LABELS.SUPER_ADMIN}</option>
+                <option value="SUPER_ADMIN">{roleLabel("SUPER_ADMIN")}</option>
               )}
             </select>
           </Field>

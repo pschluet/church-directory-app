@@ -425,6 +425,23 @@ describe.skipIf(!hasDb)("notifications", () => {
       const { body } = await as(other).call("GET", "/api/notifications/preferences");
       expect(body).toEqual({ prayerRequests: true, prayerRequestReviews: true });
     });
+
+    /*
+     * Recorded from what the upsert returns, not what was sent -- "leaves an
+     * unmentioned preference alone" above is exactly why: a payload naming one
+     * switch must not be read as having turned the other off.
+     */
+    it("records the resolved pair, not the partial payload", async () => {
+      await as(member).call("PUT", "/api/notifications/preferences", { prayerRequests: false });
+
+      const { rows } = await db().query<{ changes: Record<string, boolean> }>(
+        `select changes from audit_log
+          where entity_id = $1 and action = 'user.changeNotifications'`,
+        [member.appUserId]
+      );
+      expect(rows).toHaveLength(1);
+      expect(rows[0]!.changes).toEqual({ prayerRequests: false, prayerRequestReviews: true });
+    });
   });
 
   describe("marking read", () => {
@@ -442,6 +459,26 @@ describe.skipIf(!hasDb)("notifications", () => {
       // Read, but still listed -- the panel is a short history, not just a queue.
       expect(after.notifications).toHaveLength(2);
       expect(after.notifications.every((n: { read: boolean }) => n.read)).toBe(true);
+    });
+
+    /*
+     * A read receipt, not a change -- nothing any other member can see is
+     * different afterwards, and it fires every time the bell is opened. Making
+     * that enforceable is the point of this test, not just the comment in
+     * audit.ts.
+     */
+    it("is not audited", async () => {
+      await post();
+      const before = await db().query<{ count: string }>(
+        "select count(*)::text as count from audit_log"
+      );
+
+      await as(member).call("POST", "/api/notifications/read");
+
+      const after = await db().query<{ count: string }>(
+        "select count(*)::text as count from audit_log"
+      );
+      expect(after.rows[0]!.count).toBe(before.rows[0]!.count);
     });
 
     it("leaves one that arrived after the panel was opened unread", async () => {

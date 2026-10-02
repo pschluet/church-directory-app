@@ -199,6 +199,26 @@ export async function presignUploads(
   return result;
 }
 
+export type PhotoChange = "ADDED" | "REPLACED" | "REMOVED";
+
+/**
+ * What a photo attach did, for the audit log -- not the key itself.
+ *
+ * `deletePhoto` destroys the replaced object's bytes within the same request,
+ * so a recorded key would point at nothing moments later; the verb is the
+ * fact worth keeping. Null when the key did not actually change, which is the
+ * caller's signal to skip the audit entry entirely.
+ */
+export function photoChange(
+  previousKey: string | null,
+  nextKey: string | null
+): PhotoChange | null {
+  if (previousKey === nextKey) return null;
+  if (!previousKey) return "ADDED";
+  if (!nextKey) return "REMOVED";
+  return "REPLACED";
+}
+
 /**
  * Best-effort: a failed cleanup should not fail the user's save.
  *

@@ -14,10 +14,17 @@ import {
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
-import { formatDayLabel, formatPostedAt, formatRelativeDay } from "../lib/format";
+import {
+  formatDayLabel,
+  formatMonthDay,
+  formatPostedAt,
+  formatRelativeDay,
+  parseIsoDate,
+} from "../lib/format";
 import { AuditChanges } from "../components/AuditChanges";
 import { useInfiniteScroll } from "../components/useInfiniteScroll";
 import { LookupPicker } from "../components/LookupPicker";
+import { Link } from "../components/nav";
 import {
   Badge,
   Button,
@@ -655,10 +662,18 @@ function ActiveChips({
   );
 }
 
+/** "May 4, 2026", not the `yyyy-mm-dd` the filter stores it as. */
+function calendarDateLabel(iso: string): string {
+  const date = parseIsoDate(iso);
+  return formatMonthDay(date.getMonth() + 1, date.getDate(), date.getFullYear());
+}
+
 function dateRangeLabel(filters: Filters): string {
-  if (filters.from && filters.to) return `${filters.from} to ${filters.to}`;
-  if (filters.from) return `From ${filters.from}`;
-  return `Up to ${filters.to}`;
+  if (filters.from && filters.to) {
+    return `${calendarDateLabel(filters.from)} to ${calendarDateLabel(filters.to)}`;
+  }
+  if (filters.from) return `From ${calendarDateLabel(filters.from)}`;
+  return `Up to ${calendarDateLabel(filters.to!)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -800,7 +815,7 @@ function EntryCard({
 
       {open && (
         <div className="min-w-0 space-y-4 border-t border-line px-4 py-3">
-          <AuditChanges changes={entry.changes} />
+          <AuditChanges changes={entry.changes} references={entry.references} />
           <dl className="grid gap-x-6 gap-y-1 text-xs text-ink-muted sm:grid-cols-2">
             <div>
               <dt className="inline font-bold">When: </dt>
@@ -817,7 +832,21 @@ function EntryCard({
             {entry.entityId && (
               <div>
                 <dt className="inline font-bold">Record: </dt>
-                <dd className="inline break-all">{entry.entityId}</dd>
+                <dd className="inline break-all">
+                  {targetLabel(entry) && (
+                    <>
+                      {recordHref(entry) ? (
+                        <Link to={recordHref(entry)!} className="text-primary hover:text-accent">
+                          {targetLabel(entry)}
+                        </Link>
+                      ) : (
+                        targetLabel(entry)
+                      )}
+                      {" · "}
+                    </>
+                  )}
+                  {entry.entityId}
+                </dd>
               </div>
             )}
           </dl>
@@ -851,6 +880,22 @@ function targetLabel(entry: AuditLogEntryDto): string | null {
   }
   // Nothing was pointed at in the first place, so there is nothing to name --
   // as opposed to `missing`, where something was and has since gone.
+  return null;
+}
+
+/**
+ * Where "Record" can link to, or null when it cannot.
+ *
+ * Only `person` and `family` have a detail page at all (`app/src/App.tsx`);
+ * everything else -- an account, a church, a prayer request, a special date --
+ * has only a list, and a name linked to a list is a link that lies about where
+ * it goes. Gated on `!missing` as well: the row genuinely is not there any
+ * more, and a link that 404s is worse than no link.
+ */
+function recordHref(entry: AuditLogEntryDto): string | null {
+  if (entry.target.missing || !entry.entityId) return null;
+  if (entry.entityType === "person") return `/people/${entry.entityId}`;
+  if (entry.entityType === "family") return `/families/${entry.entityId}`;
   return null;
 }
 

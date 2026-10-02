@@ -98,6 +98,25 @@ describe.skipIf(!hasDb)("push subscriptions", () => {
     expect(rows.every((r) => r.app_user_id === member.appUserId)).toBe(true);
   });
 
+  /*
+   * The SPA re-subscribes on every page load, so recording this would bury
+   * the trail under the act of opening the app -- see api/src/audit.ts. Same
+   * for unsubscribing, covered below.
+   */
+  it("is not audited, subscribing or unsubscribing", async () => {
+    const before = await db().query<{ count: string }>(
+      "select count(*)::text as count from audit_log"
+    );
+
+    await as(member).call("POST", "/api/push/subscriptions", subscribeBody());
+    await as(member).call("DELETE", "/api/push/subscriptions", { endpoint: ENDPOINT });
+
+    const after = await db().query<{ count: string }>(
+      "select count(*)::text as count from audit_log"
+    );
+    expect(after.rows[0]!.count).toBe(before.rows[0]!.count);
+  });
+
   it("refuses a subscription that is not https", async () => {
     const { status } = await as(member).call("POST", "/api/push/subscriptions", {
       endpoint: "http://push.example.test/abc",

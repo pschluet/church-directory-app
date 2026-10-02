@@ -145,6 +145,42 @@ describe.skipIf(!hasDb)("photos", () => {
       expect(res.body.thumbUrl).toBeNull();
       expect(res.body.fullUrl).toBeNull();
     });
+
+    /*
+     * The key itself is never recorded -- `deletePhoto` destroys the replaced
+     * object's bytes in the same request, so a recorded key would point at
+     * nothing moments later. The verb is the fact worth keeping.
+     */
+    async function photoActions(personId: string): Promise<string[]> {
+      const { rows } = await db().query<{ changes: { photo: string } }>(
+        `select changes from audit_log
+          where entity_id = $1 and action = 'person.photo'
+          order by created_at`,
+        [personId]
+      );
+      return rows.map((row) => row.changes.photo);
+    }
+
+    it("records ADDED, REPLACED and REMOVED across the three transitions", async () => {
+      const key = keyFor(orgId, member.personId!);
+      const otherKey = `photos/${orgId}/person/${member.personId}/01OTHER/`;
+
+      await as(member).call("PUT", `/api/persons/${member.personId}/photo`, { photoKey: key });
+      await as(member).call("PUT", `/api/persons/${member.personId}/photo`, {
+        photoKey: otherKey,
+      });
+      await as(member).call("PUT", `/api/persons/${member.personId}/photo`, { photoKey: null });
+
+      expect(await photoActions(member.personId!)).toEqual(["ADDED", "REPLACED", "REMOVED"]);
+    });
+
+    it("records nothing when the key does not actually change", async () => {
+      const key = keyFor(orgId, member.personId!);
+      await as(member).call("PUT", `/api/persons/${member.personId}/photo`, { photoKey: key });
+      await as(member).call("PUT", `/api/persons/${member.personId}/photo`, { photoKey: key });
+
+      expect(await photoActions(member.personId!)).toEqual(["ADDED"]);
+    });
   });
 
   describe("PUT /families/:id/photo", () => {
@@ -209,6 +245,35 @@ describe.skipIf(!hasDb)("photos", () => {
         photoWidth: 1600,
       });
       expect(res.status).toBe(400);
+    });
+
+    async function photoActions(id: string): Promise<string[]> {
+      const { rows } = await db().query<{ changes: { photo: string } }>(
+        `select changes from audit_log
+          where entity_id = $1 and action = 'family.photo'
+          order by created_at`,
+        [id]
+      );
+      return rows.map((row) => row.changes.photo);
+    }
+
+    it("records ADDED, REPLACED and REMOVED, and not the dimensions", async () => {
+      const key = keyFor(orgId, familyId);
+      const otherKey = `photos/${orgId}/family/${familyId}/01OTHER/`;
+
+      await as(member).call("PUT", `/api/families/${familyId}/photo`, {
+        photoKey: key,
+        photoWidth: 1600,
+        photoHeight: 1067,
+      });
+      await as(member).call("PUT", `/api/families/${familyId}/photo`, {
+        photoKey: otherKey,
+        photoWidth: 800,
+        photoHeight: 600,
+      });
+      await as(member).call("PUT", `/api/families/${familyId}/photo`, { photoKey: null });
+
+      expect(await photoActions(familyId)).toEqual(["ADDED", "REPLACED", "REMOVED"]);
     });
   });
 
