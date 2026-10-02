@@ -105,12 +105,19 @@ export function FamilyDetail() {
   const family = familyQuery.data ?? null;
   const error = actionError ?? familyQuery.error?.message ?? null;
 
-  async function attachPhoto(photoKey: string | null, width?: number, height?: number) {
+  async function attachPhoto(
+    photoKey: string | null,
+    width?: number,
+    height?: number,
+    hasCard?: boolean
+  ) {
     // The crop is free-form here, so its dimensions go with the key: they are
     // what lets the photo's box be reserved before it loads.
     await api(`/families/${id}/photo`, {
       method: "PUT",
-      body: photoKey ? { photoKey, photoWidth: width, photoHeight: height } : { photoKey: null },
+      body: photoKey
+        ? { photoKey, photoWidth: width, photoHeight: height, hasCard }
+        : { photoKey: null },
     });
     await reload();
   }
@@ -119,7 +126,8 @@ export function FamilyDetail() {
   // render, including the one that returns the spinner below.
   const photoPicker = usePhotoPicker({
     owner: { familyId: id ?? "" },
-    onUploaded: ({ photoKey, width, height }) => attachPhoto(photoKey, width, height),
+    onUploaded: ({ photoKey, width, height, hasCard }) =>
+      attachPhoto(photoKey, width, height, hasCard),
   });
 
   // Members, the family list that counts them, and the join requests admins

@@ -62,6 +62,7 @@ routes.post("/photo", async (c) => {
   const uploadUrls = await presignUploads(photoKey, payload.contentType, {
     thumb: payload.renditions.thumb.contentLength,
     full: payload.renditions.full.contentLength,
+    card: payload.renditions.card?.contentLength,
   });
 
   const body: PhotoUploadDto = { photoKey, uploadUrls };

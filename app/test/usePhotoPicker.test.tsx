@@ -14,12 +14,38 @@ vi.mock("../src/lib/api", () => ({
 // The cropper decodes with createImageBitmap and draws to a canvas, neither of
 // which jsdom has. Stubbed to a marker so these tests can assert that choosing
 // a file opens the cropper rather than uploading -- the crop arithmetic itself
-// is covered in images.test.ts.
+// is covered in images.test.ts. The confirm button lets a test simulate the
+// cropper handing back renditions, with a `card` blob for a family and not a
+// person, same as the real one would.
 vi.mock("../src/components/PhotoCropper", () => ({
-  PhotoCropper: ({ owner, onCancel }: { owner: string; onCancel: () => void }) => (
+  PhotoCropper: ({
+    owner,
+    onCancel,
+    onCropped,
+  }: {
+    owner: "person" | "family";
+    onCancel: () => void;
+    onCropped: (renditions: unknown) => void;
+  }) => (
     <div role="dialog" aria-label={`cropper:${owner}`}>
       <button type="button" onClick={onCancel}>
         cancel crop
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          onCropped({
+            contentType: "image/webp",
+            blobs: {
+              thumb: new Blob(),
+              full: new Blob(),
+              ...(owner === "family" ? { card: new Blob() } : {}),
+            },
+            size: { width: 100, height: 100 },
+          })
+        }
+      >
+        confirm crop
       </button>
     </div>
   ),
@@ -28,10 +54,17 @@ vi.mock("../src/components/PhotoCropper", () => ({
 /**
  * The hook is headless, so a test needs something to render its `elements` and
  * an error to read. Both pages that use it do the same, with a menu item in
- * place of the button.
+ * place of the button. `onUploaded` is a prop, not baked in, so a test can spy
+ * on the payload the hook hands back.
  */
-function Harness({ owner }: { owner: { personId: string } | { familyId: string } }) {
-  const picker = usePhotoPicker({ owner, onUploaded: vi.fn() });
+function Harness({
+  owner,
+  onUploaded = vi.fn(),
+}: {
+  owner: { personId: string } | { familyId: string };
+  onUploaded?: (photo: unknown) => void;
+}) {
+  const picker = usePhotoPicker({ owner, onUploaded });
   return (
     <>
       {picker.elements}
@@ -117,5 +150,19 @@ describe("usePhotoPicker", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent(/too large/i);
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("reports whether a card rendition came back, which only a family crop produces", async () => {
+    uploadPhoto.mockResolvedValue("photos/org-1/family/f1/01/");
+    const onUploaded = vi.fn();
+    render(<Harness owner={{ familyId: "f1" }} onUploaded={onUploaded} />);
+
+    await userEvent.upload(fileInput(), pick());
+    await screen.findByLabelText("cropper:family");
+    await userEvent.click(screen.getByRole("button", { name: "confirm crop" }));
+
+    await waitFor(() =>
+      expect(onUploaded).toHaveBeenCalledWith(expect.objectContaining({ hasCard: true }))
+    );
   });
 });

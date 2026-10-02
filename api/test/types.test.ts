@@ -286,6 +286,16 @@ describe("photoUploadSchema", () => {
       photoUploadSchema.safeParse({ ...base, personId: id, contentType: "image/png" }).success
     ).toBe(false);
   });
+
+  it("accepts a card rendition for a family but not for a person", () => {
+    const withCard = {
+      ...base,
+      renditions: { ...base.renditions, card: { contentLength: 10 * 1024 } },
+    };
+    expect(photoUploadSchema.safeParse({ ...withCard, familyId: id }).success).toBe(true);
+    // A person's photo has no directory-card shape to presign one for.
+    expect(photoUploadSchema.safeParse({ ...withCard, personId: id }).success).toBe(false);
+  });
 });
 
 describe("photoAttachSchema", () => {
@@ -307,5 +317,10 @@ describe("photoAttachSchema", () => {
       photoAttachSchema.safeParse({ photoKey: prefix, photoWidth: 1200, photoHeight: 800 }).success
     ).toBe(true);
     expect(photoAttachSchema.safeParse({ photoKey: prefix, photoWidth: 1200 }).success).toBe(false);
+  });
+
+  it("refuses a card flag on a photo with no key", () => {
+    expect(photoAttachSchema.safeParse({ photoKey: prefix, hasCard: true }).success).toBe(true);
+    expect(photoAttachSchema.safeParse({ photoKey: null, hasCard: true }).success).toBe(false);
   });
 });

@@ -49,6 +49,7 @@ function family(
     memberCount: 1,
     memberNames: [],
     thumbUrl: null,
+    cardUrl: null,
     pendingJoinRequestId: null,
     ...overrides,
   };
@@ -108,8 +109,60 @@ describe("Families", () => {
     expect(screen.getByRole("link", { name: "Haddad" })).toHaveAttribute("href", "/families/fam-1");
 
     // Nassif has no photo, so it has no banner at all -- not a placeholder.
+    // The column layout (see the "packs" test below) is what makes that cheap.
     expect(container.querySelector('a[href="/families/fam-2"][aria-hidden="true"]')).toBeNull();
     expect(container.querySelectorAll("img")).toHaveLength(1);
+
+    // The geometry the card crop is framed against -- if this drifts from
+    // app/src/theme.css's --aspect-card-photo, the two have gone out of sync.
+    expect(photo.closest("a")).toHaveClass("aspect-card-photo");
+  });
+
+  it("packs cards in columns rather than a row-stretching grid", async () => {
+    api.mockResolvedValue({
+      families: [family({ ...HADDAD, thumbUrl: "/photos/org-1/family/fam-1/thumb" }), NASSIF],
+    });
+    const { container } = renderPage();
+
+    await screen.findByRole("link", { name: "Haddad" });
+    // A grid would stretch Nassif's photo-less, shorter card to match Haddad's
+    // row height; columns let it end where its own content does, so the next
+    // card packs against it instead of a placeholder-sized gap.
+    const list = container.querySelector("ul");
+    expect(list).toHaveClass("columns-1");
+    expect(list).toHaveClass("sm:columns-2");
+    expect(list).toHaveClass("lg:columns-3");
+    for (const item of container.querySelectorAll("ul > li")) {
+      expect(item).toHaveClass("break-inside-avoid");
+    }
+  });
+
+  it("prefers the card crop over the free-form thumbnail once one has been framed", async () => {
+    api.mockResolvedValue({
+      families: [
+        family({
+          ...HADDAD,
+          thumbUrl: "/photos/org-1/family/fam-1/thumb",
+          cardUrl: "/photos/org-1/family/fam-1/card",
+        }),
+      ],
+    });
+    renderPage();
+
+    const photo = await screen.findByAltText("The Haddad family");
+    expect(photo).toHaveAttribute("src", "/photos/org-1/family/fam-1/card");
+  });
+
+  it("falls back to the thumbnail for a family photographed before the card crop existed", async () => {
+    api.mockResolvedValue({
+      families: [
+        family({ ...HADDAD, thumbUrl: "/photos/org-1/family/fam-1/thumb", cardUrl: null }),
+      ],
+    });
+    renderPage();
+
+    const photo = await screen.findByAltText("The Haddad family");
+    expect(photo).toHaveAttribute("src", "/photos/org-1/family/fam-1/thumb");
   });
 
   it("filters by family name and marks the match", async () => {

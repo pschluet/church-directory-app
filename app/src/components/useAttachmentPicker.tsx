@@ -84,7 +84,7 @@ export function useAttachmentPicker(): AttachmentPicker {
           const working = await loadWorkingImage(file);
           const renditions = await renderRenditions(
             working,
-            { x: 0, y: 0, width: working.width, height: working.height },
+            { main: { x: 0, y: 0, width: working.width, height: working.height } },
             "attachment"
           );
           const photoKey = await uploadPrayerRequestImage(renditions);

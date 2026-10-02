@@ -158,15 +158,21 @@ async function putRenditions(
   uploadUrls: Record<string, string>,
   renditions: Renditions
 ): Promise<void> {
+  // The card rendition only exists for a family crop with a second framing, so
+  // it is PUT alongside thumb/full only when both a blob and a URL turned up.
+  const names = [...PHOTO_RENDITIONS, "card"] as const;
   await Promise.all(
-    PHOTO_RENDITIONS.map(async (rendition) => {
-      const put = await fetch(uploadUrls[rendition]!, {
+    names.map(async (rendition) => {
+      const blob = renditions.blobs[rendition];
+      const url = uploadUrls[rendition];
+      if (!blob || !url) return;
+      const put = await fetch(url, {
         method: "PUT",
         headers: {
           "content-type": renditions.contentType,
           "cache-control": "public, max-age=31536000, immutable",
         },
-        body: renditions.blobs[rendition],
+        body: blob,
       });
       if (!put.ok) throw new ApiError(put.status, "The photo could not be uploaded");
     })
@@ -184,6 +190,7 @@ export async function uploadPhoto(
       renditions: {
         thumb: { contentLength: renditions.blobs.thumb.size },
         full: { contentLength: renditions.blobs.full.size },
+        ...(renditions.blobs.card ? { card: { contentLength: renditions.blobs.card.size } } : {}),
       },
       ...owner,
     },

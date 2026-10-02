@@ -404,6 +404,12 @@ export interface FamilySummaryDto {
   memberNames: string[];
   /** The family photo's thumbnail, for the card banner. */
   thumbUrl: string | null;
+  /**
+   * A second crop framed for this exact card -- 3:2, rounded top corners --
+   * taken from the whole photo rather than from `thumbUrl`'s crop. Null until
+   * someone frames one; the card falls back to `thumbUrl` until then.
+   */
+  cardUrl: string | null;
   /** The caller's own undecided request to join this family, if any. */
   pendingJoinRequestId: string | null;
 }
@@ -448,6 +454,8 @@ export interface FamilyDto {
   photoUrl: string | null;
   thumbUrl: string | null;
   fullUrl: string | null;
+  /** See FamilySummaryDto.cardUrl. */
+  cardUrl: string | null;
   /**
    * The intrinsic size of the family photo. A family crop is free-form, so the
    * SPA needs these to reserve the box before the image paints. Null for photos
@@ -1264,12 +1272,22 @@ const renditionSizeSchema = z.object({
 export const photoUploadSchema = z
   .object({
     contentType: z.enum(PHOTO_UPLOAD_TYPES),
-    renditions: z.object({ thumb: renditionSizeSchema, full: renditionSizeSchema }),
+    renditions: z.object({
+      thumb: renditionSizeSchema,
+      full: renditionSizeSchema,
+      // The families-page card. Family-only -- a person framing their own
+      // photo has nothing shaped like a directory card to presign.
+      card: renditionSizeSchema.optional(),
+    }),
     personId: uuidSchema.optional(),
     familyId: uuidSchema.optional(),
   })
   .refine((v) => Boolean(v.personId) !== Boolean(v.familyId), {
     message: "Provide exactly one of personId or familyId",
+  })
+  .refine((v) => !v.renditions.card || Boolean(v.familyId), {
+    message: "Only a family photo can have a card rendition",
+    path: ["renditions", "card"],
   });
 export type PhotoUpload = z.infer<typeof photoUploadSchema>;
 
@@ -1293,20 +1311,22 @@ export interface PhotoUploadDto {
    * stored in `photo_key` and handed back to the attach endpoint.
    */
   photoKey: string;
-  uploadUrls: Record<PhotoRendition, string>;
+  uploadUrls: Record<PhotoRendition, string> & { card?: string };
 }
 
 /**
  * Attaching an already-uploaded photo, or clearing one with a null key.
  *
  * Dimensions are only meaningful for a family, whose crop is free-form; the
- * person endpoint ignores them.
+ * person endpoint ignores them. `hasCard` is family-only too, and only
+ * meaningful alongside a key -- clearing a photo always clears it.
  */
 export const photoAttachSchema = z
   .object({
     photoKey: z.string().min(1).max(500).nullable(),
     photoWidth: z.number().int().positive().max(20000).nullable().optional(),
     photoHeight: z.number().int().positive().max(20000).nullable().optional(),
+    hasCard: z.boolean().optional(),
   })
   .refine((v) => v.photoKey === null || v.photoKey.endsWith("/"), {
     message: "A photo key must be the rendition prefix, ending in /",
@@ -1315,6 +1335,10 @@ export const photoAttachSchema = z
   .refine((v) => Boolean(v.photoWidth) === Boolean(v.photoHeight), {
     message: "Provide both photoWidth and photoHeight, or neither",
     path: ["photoWidth"],
+  })
+  .refine((v) => v.photoKey !== null || !v.hasCard, {
+    message: "A photo with no key cannot have a card rendition",
+    path: ["hasCard"],
   });
 export type PhotoAttach = z.infer<typeof photoAttachSchema>;
 

@@ -204,10 +204,20 @@ export function Families() {
           </p>
         </EmptyState>
       ) : (
-        /* `grid-cols-1` is load-bearing: see PersonGrid in Directory.tsx. */
-        <ul className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        /*
+          A multi-column flow, not a grid: a family with no photo makes a
+          shorter card, and a grid would still size every row to its tallest
+          cell, stretching the short ones to match and wasting the space a
+          photo-less card gave back. Columns lay each card out at its own
+          height and let the next one start right where it ended, so several
+          short cards pack into the vertical span one tall neighbor takes.
+          `break-inside-avoid` on the `<li>` stops a card being split across
+          two columns; `gap` only sets the width *between* columns here, so
+          the space *within* one is the `<li>`'s own margin, not the parent's.
+        */
+        <ul className="columns-1 gap-4 sm:columns-2 lg:columns-3">
           {shown.map((family) => (
-            <li key={family.id}>
+            <li key={family.id} className="mb-4 break-inside-avoid">
               <FamilyCard family={family} terms={terms} action={rowAction(family)} />
             </li>
           ))}
@@ -260,6 +270,11 @@ export function Families() {
  * name is a tab stop: three links to one place per card would triple every
  * keyboard user's journey. The member names stay readable to a screen reader;
  * the photo, which says nothing the name does not, is hidden from one.
+ *
+ * A family with no photo gets no banner at all, not a placeholder -- the
+ * column layout in the parent is what makes that cheap: a shorter card packs
+ * against the next one instead of leaving a gap the height of its tallest
+ * neighbor.
  */
 function FamilyCard({
   family,
@@ -273,17 +288,21 @@ function FamilyCard({
   // Which URL failed rather than whether one did, as in FamilyPhoto: a
   // replacement photo changes the prop without remounting.
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  const photo = family.thumbUrl && failedUrl !== family.thumbUrl ? family.thumbUrl : null;
+  // The card rendition is framed for this exact box; a family photographed
+  // before it existed falls back to the free-form thumbnail, which is cropped
+  // for the detail page and simply gets centre-cropped here same as today.
+  const preferred = family.cardUrl ?? family.thumbUrl;
+  const photo = preferred && failedUrl !== preferred ? preferred : null;
   const to = `/families/${family.id}`;
 
   return (
-    <article className="group flex h-full flex-col overflow-hidden rounded-xl border border-line bg-surface shadow-sm transition hover:border-accent hover:shadow-md">
+    <article className="group flex flex-col overflow-hidden rounded-card-photo border border-line bg-surface shadow-sm transition hover:border-accent hover:shadow-md">
       {photo && (
         <Link
           to={to}
           tabIndex={-1}
           aria-hidden="true"
-          className="block aspect-[3/2] overflow-hidden border-b border-line bg-surface-muted"
+          className="block aspect-card-photo overflow-hidden border-b border-line bg-surface-muted"
         >
           <img
             src={photo}

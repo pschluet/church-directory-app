@@ -1,4 +1,4 @@
-import { MAX_RENDITION_BYTES, PHOTO_RENDITIONS, type PhotoRendition } from "@shared";
+import { MAX_RENDITION_BYTES, type PhotoRendition } from "@shared";
 
 /**
  * Cropping and downscaling in the browser, before anything is uploaded.
@@ -67,6 +67,16 @@ export const RENDITION_QUALITY: Record<PhotoRendition, number> = {
   full: 0.85,
 };
 
+/** The families-page card's aspect ratio. Must match --aspect-card-photo. */
+export const FAMILY_CARD_ASPECT = 3 / 2;
+
+/**
+ * The long edge of the families-page card rendition: 800 gives 800x533 at 3:2,
+ * which covers the widest card (a ~400px column at lg) on a 2x screen. Same
+ * number as the family `thumb` for the same reason.
+ */
+export const CARD_RENDITION_LIMIT = 800;
+
 /**
  * Scales a size down to fit a square of `max`, preserving aspect ratio. Never
  * upscales: a small source stays small rather than being interpolated up to a
@@ -117,6 +127,29 @@ export function clampCrop(crop: CropRect, source: Size): CropRect {
     width,
     height,
   };
+}
+
+/**
+ * The smallest rectangle of `aspect` that contains `crop`, centred on it and
+ * pulled inside `bounds`.
+ *
+ * This is where the families-page card crop opens. Growing the short side
+ * rather than shrinking the long one means nothing the uploader framed in the
+ * first crop is lost, so confirming straight through shows the subject they
+ * already chose. A cover rectangle can be larger than the image -- a tall crop
+ * of a portrait photo, say -- so it is scaled back on the ratio before being
+ * clamped; `clampCrop` caps the axes independently and would otherwise
+ * flatten it off-ratio.
+ */
+export function cropAtAspect(crop: CropRect, aspect: number, bounds: Size): CropRect {
+  let width = Math.max(crop.width, crop.height * aspect);
+  let height = width / aspect;
+  const scale = Math.min(1, bounds.width / width, bounds.height / height);
+  width *= scale;
+  height *= scale;
+  const cx = crop.x + crop.width / 2;
+  const cy = crop.y + crop.height / 2;
+  return clampCrop({ x: cx - width / 2, y: cy - height / 2, width, height }, bounds);
 }
 
 /** The output size for one rendition of a crop. */
@@ -235,15 +268,47 @@ function toBlob(canvas: HTMLCanvasElement, type: string, quality: number): Promi
   });
 }
 
+/** The two crops a render can draw from. */
+export interface RenderCrops {
+  /** Framed for the subject's own page; what `thumb` and `full` are drawn from. */
+  main: CropRect;
+  /**
+   * Framed for the families-page card. Families only, and taken from the
+   * whole image rather than from `main`.
+   */
+  card?: CropRect;
+}
+
 export interface Renditions {
   contentType: "image/webp" | "image/jpeg";
-  blobs: Record<PhotoRendition, Blob>;
-  /** The `full` rendition's size, stored so the UI can reserve its box. */
+  blobs: { thumb: Blob; full: Blob; card?: Blob };
+  /**
+   * The `full` rendition's size -- the *main* crop's -- so the UI can reserve
+   * its box. The card's ratio is fixed, so it needs no dimensions of its own.
+   */
   size: Size;
 }
 
+async function renderOne(
+  source: WorkingImage,
+  rawCrop: CropRect,
+  out: Size,
+  contentType: "image/webp" | "image/jpeg",
+  quality: number
+): Promise<Blob> {
+  const crop = clampCrop(rawCrop, { width: source.width, height: source.height });
+  const blob = await toBlob(drawTo(source.canvas, crop, out), contentType, quality);
+  if (blob.size > MAX_RENDITION_BYTES) {
+    // The server caps this too; failing here gives a message that names the
+    // photo rather than a 400 from a presign call.
+    throw new Error("That photo is too detailed to process. Try a smaller crop.");
+  }
+  return blob;
+}
+
 /**
- * Renders a crop into both renditions.
+ * Renders a crop into both renditions, and a second crop into a third if the
+ * caller is framing a families-page card.
  *
  * Downscaling in one step from the source rather than chaining thumb-from-full:
  * the crop is at most a few thousand pixels either way, so the extra quality
@@ -251,32 +316,45 @@ export interface Renditions {
  */
 export async function renderRenditions(
   source: WorkingImage,
-  rawCrop: CropRect,
+  crops: RenderCrops,
   owner: RenditionOwner
 ): Promise<Renditions> {
-  const crop = clampCrop(rawCrop, { width: source.width, height: source.height });
+  const bounds = { width: source.width, height: source.height };
+  const main = clampCrop(crops.main, bounds);
   const contentType = encodeType();
 
-  const entries = await Promise.all(
-    PHOTO_RENDITIONS.map(async (rendition) => {
-      const out = renditionSize(crop, owner, rendition);
-      const blob = await toBlob(
-        drawTo(source.canvas, crop, out),
-        contentType,
-        RENDITION_QUALITY[rendition]
-      );
-      if (blob.size > MAX_RENDITION_BYTES) {
-        // The server caps this too; failing here gives a message that names the
-        // photo rather than a 400 from a presign call.
-        throw new Error("That photo is too detailed to process. Try a smaller crop.");
-      }
-      return [rendition, blob] as const;
-    })
-  );
+  const [thumb, full] = await Promise.all([
+    renderOne(
+      source,
+      main,
+      renditionSize(main, owner, "thumb"),
+      contentType,
+      RENDITION_QUALITY.thumb
+    ),
+    renderOne(
+      source,
+      main,
+      renditionSize(main, owner, "full"),
+      contentType,
+      RENDITION_QUALITY.full
+    ),
+  ]);
+
+  let card: Blob | undefined;
+  if (crops.card) {
+    const rect = clampCrop(crops.card, bounds);
+    card = await renderOne(
+      source,
+      rect,
+      fitWithin(rect, CARD_RENDITION_LIMIT),
+      contentType,
+      RENDITION_QUALITY.thumb
+    );
+  }
 
   return {
     contentType,
-    blobs: Object.fromEntries(entries) as Record<PhotoRendition, Blob>,
-    size: renditionSize(crop, owner, "full"),
+    blobs: { thumb, full, ...(card ? { card } : {}) },
+    size: renditionSize(main, owner, "full"),
   };
 }

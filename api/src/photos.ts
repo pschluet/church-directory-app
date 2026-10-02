@@ -103,6 +103,16 @@ export function photoVariantKeys(key: string): Record<PhotoRendition, string> {
   return { thumb: `${key}thumb`, full: `${key}full` };
 }
 
+/**
+ * The families-page card rendition's key. Family-only -- a person or
+ * attachment key has no `card`, same as a legacy key that predates cropping
+ * and is not a prefix at all.
+ */
+export function familyCardKey(key: string): string | null {
+  if (!key.endsWith("/")) return null;
+  return `${key}card`;
+}
+
 export interface PhotoUrls {
   thumbUrl: string | null;
   fullUrl: string | null;
@@ -118,6 +128,17 @@ export function photoUrls(key: string | null): PhotoUrls {
   if (!key) return { thumbUrl: null, fullUrl: null };
   const keys = photoVariantKeys(key);
   return { thumbUrl: `/${keys.thumb}`, fullUrl: `/${keys.full}` };
+}
+
+/**
+ * The families-page card URL, or null when this photo has no card rendition --
+ * either because `hasCard` is false (nothing has framed one yet) or the key
+ * predates cropping.
+ */
+export function familyCardUrl(key: string | null, hasCard: boolean): string | null {
+  if (!key || !hasCard) return null;
+  const cardKey = familyCardKey(key);
+  return cardKey ? `/${cardKey}` : null;
 }
 
 export async function presignUpload(
@@ -149,31 +170,51 @@ export async function presignUpload(
   );
 }
 
-/** One presigned PUT per rendition, under the one prefix. */
+/**
+ * One presigned PUT per rendition, under the one prefix. `card` is only
+ * presigned when a length for it was given -- a person or attachment upload
+ * never asks for one.
+ */
 export async function presignUploads(
   photoKey: string,
   contentType: PhotoUploadType,
-  lengths: Record<PhotoRendition, number>
-): Promise<Record<PhotoRendition, string>> {
+  lengths: Record<PhotoRendition, number> & { card?: number }
+): Promise<Record<PhotoRendition, string> & { card?: string }> {
   const keys = photoVariantKeys(photoKey);
   const urls = await Promise.all(
     PHOTO_RENDITIONS.map((rendition) =>
       presignUpload(keys[rendition], contentType, lengths[rendition])
     )
   );
-  return Object.fromEntries(PHOTO_RENDITIONS.map((r, i) => [r, urls[i]])) as Record<
+  const result = Object.fromEntries(PHOTO_RENDITIONS.map((r, i) => [r, urls[i]])) as Record<
     PhotoRendition,
     string
-  >;
+  > & { card?: string };
+
+  if (lengths.card !== undefined) {
+    const cardKey = familyCardKey(photoKey);
+    if (cardKey) result.card = await presignUpload(cardKey, contentType, lengths.card);
+  }
+
+  return result;
 }
 
-/** Best-effort: a failed cleanup should not fail the user's save. */
+/**
+ * Best-effort: a failed cleanup should not fail the user's save.
+ *
+ * The card key is only attempted for a family key, so a person or attachment
+ * cleanup sends exactly the request it sent before the card rendition
+ * existed -- there is never a card object at those prefixes to ask for.
+ */
 export async function deletePhoto(key: string | null): Promise<void> {
   if (!key || STORAGE === "local") return;
   const keys = photoVariantKeys(key);
+  const all = { ...keys, ...(key.includes("/family/") ? { card: familyCardKey(key) } : {}) };
   // A legacy key resolves both renditions to the same object; dedupe so the
   // request is not asking S3 to delete it twice.
-  const objects = [...new Set(Object.values(keys))].map((Key) => ({ Key }));
+  const objects = [...new Set(Object.values(all).filter((v): v is string => Boolean(v)))].map(
+    (Key) => ({ Key })
+  );
   try {
     await s3().send(
       new DeleteObjectsCommand({ Bucket: BUCKET, Delete: { Objects: objects, Quiet: true } })

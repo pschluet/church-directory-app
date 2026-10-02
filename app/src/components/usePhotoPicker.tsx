@@ -20,6 +20,8 @@ export interface UploadedPhoto {
   /** The full rendition's size; only a family stores it, since its crop is free-form. */
   width: number;
   height: number;
+  /** Whether a families-page card rendition was framed too. Family-only. */
+  hasCard: boolean;
 }
 
 /**
@@ -81,6 +83,7 @@ export function usePhotoPicker({
         photoKey,
         width: renditions.size.width,
         height: renditions.size.height,
+        hasCard: Boolean(renditions.blobs.card),
       });
       setCropping(null);
     } catch (err) {

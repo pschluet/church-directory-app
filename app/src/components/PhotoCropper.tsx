@@ -1,10 +1,21 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import ReactCrop, { centerCrop, makeAspectCrop, type Crop, type PixelCrop } from "react-image-crop";
+import ReactCrop, {
+  centerCrop,
+  convertToPercentCrop,
+  convertToPixelCrop,
+  makeAspectCrop,
+  type Crop,
+  type PixelCrop,
+} from "react-image-crop";
 import "react-image-crop/dist/ReactCrop.css";
+import "./PhotoCropper.css";
 import {
+  FAMILY_CARD_ASPECT,
+  cropAtAspect,
   loadWorkingImage,
   renderRenditions,
   workingPreviewBlob,
+  type CropRect,
   type Renditions,
   type WorkingImage,
 } from "../lib/images";
@@ -14,17 +25,22 @@ import { Button, Modal, Spinner } from "./ui";
  * Frames a photo before it is uploaded.
  *
  * A person crops to a locked square, shown as a circle because that is how the
- * avatar renders -- framing against the shape it will actually take. A family
- * crop is free-form: the family photo is displayed whole, not as a circle, so
- * whatever rectangle suits the group is the right one.
+ * avatar renders -- one step, framing against the shape it will actually take.
+ * A family crop is two steps: free-form first, for the family's own page, same
+ * as it always was; then a second crop shaped like the families-page card --
+ * 3:2, rounded top corners -- taken from the *whole* original rather than from
+ * the first crop, because the card has never been what anyone framed. It opens
+ * on the smallest card-shaped rectangle that contains the first crop
+ * (`cropAtAspect`), so confirming straight through still shows the subject
+ * already chosen.
  *
- * The file is decoded once into a bounded working copy -- oriented, and capped at
- * MAX_WORKING_PIXELS -- and that copy is what both this preview and the final
- * render use. Two reasons it is not the raw file: handing that to an <img> and
- * then drawing the same element to a canvas does not agree on orientation, so a
- * phone photo would save rotated away from what was framed; and a canvas the size
- * of a modern phone photo is over the limit iOS Safari silently returns blank
- * above, which would save the photo black.
+ * The file is decoded once into a bounded working copy -- oriented, and capped
+ * at MAX_WORKING_PIXELS -- and that copy is what every step's preview and the
+ * final render use. Two reasons it is not the raw file: handing that to an
+ * <img> and then drawing the same element to a canvas does not agree on
+ * orientation, so a phone photo would save rotated away from what was framed;
+ * and a canvas the size of a modern phone photo is over the limit iOS Safari
+ * silently returns blank above, which would save the photo black.
  */
 export function PhotoCropper({
   file,
@@ -45,8 +61,13 @@ export function PhotoCropper({
   const [error, setError] = useState<string | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
 
+  /** Which step a family is on. A person has only ever the one. */
+  const [step, setStep] = useState<"main" | "card">("main");
+  /** The first crop, in working-copy pixels, kept so Back can restore it. */
+  const [mainCrop, setMainCrop] = useState<CropRect>();
+
   const circular = owner === "person";
-  const aspect = circular ? 1 : undefined;
+  const aspect = circular ? 1 : step === "card" ? FAMILY_CARD_ASPECT : undefined;
 
   useEffect(() => {
     let url: string | null = null;
@@ -88,27 +109,68 @@ export function PhotoCropper({
     [aspect]
   );
 
+  /**
+   * The current selection, converted from the rendered <img>'s pixels into
+   * working-copy pixels -- the space `renderRenditions` and `cropAtAspect`
+   * both want, and the one space a window resize between steps cannot make
+   * stale.
+   */
+  function toWorkingRect(px: PixelCrop): CropRect | null {
+    if (!working || !imgRef.current) return null;
+    const scaleX = working.width / imgRef.current.width;
+    const scaleY = working.height / imgRef.current.height;
+    return {
+      x: px.x * scaleX,
+      y: px.y * scaleY,
+      width: px.width * scaleX,
+      height: px.height * scaleY,
+    };
+  }
+
+  /**
+   * Sets both `crop` and `pixelCrop` from a rect in working-copy pixels.
+   *
+   * Needed for every *programmatic* step change. ReactCrop only calls
+   * `onComplete` on the one transition from no crop to a crop -- which is
+   * what populates `pixelCrop` on first mount with no drag -- so a step
+   * change, which goes from one defined crop to another, never fires it
+   * again. Left alone, `pixelCrop` would still describe the step just left.
+   */
+  function applyWorkingRect(rect: CropRect) {
+    if (!working || !imgRef.current) return;
+    const percent = convertToPercentCrop({ unit: "px", ...rect }, working.width, working.height);
+    setCrop(percent);
+    setPixelCrop(convertToPixelCrop(percent, imgRef.current.width, imgRef.current.height));
+  }
+
+  /** Family only: freezes the first crop and opens the card-shaped second one. */
+  function goToCard() {
+    if (!working || !pixelCrop) return;
+    const rect = toWorkingRect(pixelCrop);
+    if (!rect) return;
+    setMainCrop(rect);
+    applyWorkingRect(
+      cropAtAspect(rect, FAMILY_CARD_ASPECT, { width: working.width, height: working.height })
+    );
+    setStep("card");
+  }
+
+  /** Restores the first crop exactly as it was left. */
+  function goToMain() {
+    if (mainCrop) applyWorkingRect(mainCrop);
+    setStep("main");
+  }
+
   async function confirm(): Promise<void> {
-    if (!working || !pixelCrop || !imgRef.current) return;
+    if (!working || !pixelCrop) return;
+    const current = toWorkingRect(pixelCrop);
+    if (!current) return;
     setBusy(true);
     setError(null);
     try {
-      // react-image-crop reports against the rendered <img>, which is scaled to
-      // fit the dialog. The preview was encoded from the working copy, so this
-      // converts into the working copy's pixels -- the same space the crop is
-      // drawn from.
-      const scaleX = working.width / imgRef.current.width;
-      const scaleY = working.height / imgRef.current.height;
-      const renditions = await renderRenditions(
-        working,
-        {
-          x: pixelCrop.x * scaleX,
-          y: pixelCrop.y * scaleY,
-          width: pixelCrop.width * scaleX,
-          height: pixelCrop.height * scaleY,
-        },
-        owner
-      );
+      const crops =
+        owner === "family" && mainCrop ? { main: mainCrop, card: current } : { main: current };
+      const renditions = await renderRenditions(working, crops, owner);
       await onCropped(renditions);
     } catch (err) {
       setError(err instanceof Error ? err.message : "That photo could not be processed.");
@@ -116,14 +178,24 @@ export function PhotoCropper({
     }
   }
 
+  const title =
+    owner === "person"
+      ? "Position the photo"
+      : step === "main"
+        ? "Choose what to show"
+        : "Frame the directory card";
+
+  const body =
+    owner === "person"
+      ? "Drag and resize the circle to frame the face."
+      : step === "main"
+        ? "Drag a box around what the photo should show. Any shape is fine."
+        : "This is the shape the photo takes in the families list. Pick any part of the original — it does not have to match the last step.";
+
   return (
-    <Modal wide title={circular ? "Position the photo" : "Choose what to show"} onClose={onCancel}>
+    <Modal wide title={title} onClose={onCancel}>
       <div className="space-y-4">
-        <p className="text-ink-muted">
-          {circular
-            ? "Drag and resize the circle to frame the face."
-            : "Drag a box around what the photo should show. Any shape is fine."}
-        </p>
+        <p className="text-ink-muted">{body}</p>
 
         {previewUrl ? (
           <div className="flex justify-center bg-surface-muted p-2">
@@ -140,7 +212,7 @@ export function PhotoCropper({
               // stylesheet sets `max-height: inherit` on the child image, which
               // beats anything set on the image itself. Put it on the image and
               // a tall photo renders full size and pushes Save off the screen.
-              className="max-h-[55vh]"
+              className={step === "card" ? "max-h-[55vh] PhotoCropper--card" : "max-h-[55vh]"}
             >
               {/* Sized to the dialog; confirm() scales back to source pixels. */}
               <img ref={imgRef} src={previewUrl} alt="" onLoad={onImageLoad} />
@@ -157,13 +229,24 @@ export function PhotoCropper({
         )}
 
         <div className="flex flex-col gap-2 sm:flex-row">
-          <Button
-            type="button"
-            onClick={() => void confirm()}
-            disabled={busy || !pixelCrop || !working}
-          >
-            {busy ? "Saving…" : "Save photo"}
-          </Button>
+          {owner === "family" && step === "main" ? (
+            <Button type="button" onClick={goToCard} disabled={busy || !pixelCrop || !working}>
+              Next
+            </Button>
+          ) : (
+            <Button
+              type="button"
+              onClick={() => void confirm()}
+              disabled={busy || !pixelCrop || !working}
+            >
+              {busy ? "Saving…" : "Save photo"}
+            </Button>
+          )}
+          {owner === "family" && step === "card" && (
+            <Button type="button" variant="secondary" onClick={goToMain} disabled={busy}>
+              Back
+            </Button>
+          )}
           <Button variant="ghost" onClick={onCancel} disabled={busy}>
             Cancel
           </Button>

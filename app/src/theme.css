@@ -35,6 +35,16 @@
   --color-line: #e5e0d8;
 
   --font-sans: "Karla", ui-sans-serif, system-ui, -apple-system, sans-serif;
+
+  /*
+   * The families-page card photo's geometry. Three things have to agree on it:
+   * the card itself, the crop box that frames the photo for the card, and the
+   * `card` rendition's own pixels. Declared here so the first two read the
+   * same values; FAMILY_CARD_ASPECT in app/src/lib/images.ts is the third,
+   * pinned to this by a test.
+   */
+  --aspect-card-photo: 3 / 2;
+  --radius-card-photo: 0.75rem; /* Tailwind's rounded-xl, which this replaces */
 }
 
 @layer base {

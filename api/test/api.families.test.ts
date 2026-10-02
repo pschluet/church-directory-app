@@ -403,6 +403,52 @@ describe.skipIf(!hasDb)("families and the gated join flow", () => {
       expect(await thumbOf()).toBe(`/${key}thumb`);
     });
 
+    it("carries the card crop once one is framed, in the list and on attach", async () => {
+      const key = `photos/${orgId}/family/${schlueters}/01ABCDEFGH/`;
+      const { body: attached } = await as(member).call("PUT", `/api/families/${schlueters}/photo`, {
+        photoKey: key,
+        hasCard: true,
+      });
+      expect(attached.cardUrl).toBe(`/${key}card`);
+
+      const row = (await as(joiner).call("GET", "/api/families")).body.families.find(
+        (f: any) => f.id === schlueters
+      );
+      expect(row.cardUrl).toBe(`/${key}card`);
+    });
+
+    it("clears the card flag when a photo is replaced without one, so it cannot outlive the image", async () => {
+      const key = `photos/${orgId}/family/${schlueters}/01ABCDEFGH/`;
+      await as(member).call("PUT", `/api/families/${schlueters}/photo`, {
+        photoKey: key,
+        hasCard: true,
+      });
+
+      const key2 = `photos/${orgId}/family/${schlueters}/01SECONDKEY/`;
+      const { body: replaced } = await as(member).call("PUT", `/api/families/${schlueters}/photo`, {
+        photoKey: key2,
+      });
+      expect(replaced.cardUrl).toBeNull();
+
+      const row = (await as(joiner).call("GET", "/api/families")).body.families.find(
+        (f: any) => f.id === schlueters
+      );
+      expect(row.cardUrl).toBeNull();
+    });
+
+    it("clears the card flag along with the photo itself", async () => {
+      const key = `photos/${orgId}/family/${schlueters}/01ABCDEFGH/`;
+      await as(member).call("PUT", `/api/families/${schlueters}/photo`, {
+        photoKey: key,
+        hasCard: true,
+      });
+
+      const { body: cleared } = await as(member).call("PUT", `/api/families/${schlueters}/photo`, {
+        photoKey: null,
+      });
+      expect(cleared.cardUrl).toBeNull();
+    });
+
     // Both of these compare the preview against the family page rather than
     // against a literal alone: the bug was not that either order was wrong on
     // its own terms, but that the two disagreed.

@@ -1,9 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
+  CARD_RENDITION_LIMIT,
+  FAMILY_CARD_ASPECT,
   MAX_CANVAS_PIXELS,
   MAX_WORKING_PIXELS,
   RENDITION_LIMITS,
   clampCrop,
+  cropAtAspect,
   fitWithin,
   fitWithinPixels,
   renditionSize,
@@ -76,6 +79,66 @@ describe("clampCrop", () => {
   });
 });
 
+describe("cropAtAspect", () => {
+  // Where the families-page card crop opens: the smallest rectangle of
+  // `aspect` that contains the first crop, centred on it.
+  const bounds = { width: 1000, height: 1000 };
+
+  it("leaves a crop already at the target ratio unchanged", () => {
+    expect(cropAtAspect({ x: 100, y: 100, width: 300, height: 200 }, 1.5, bounds)).toEqual({
+      x: 100,
+      y: 100,
+      width: 300,
+      height: 200,
+    });
+  });
+
+  it("widens a tall crop rather than shortening it, so nothing framed is lost", () => {
+    const out = cropAtAspect({ x: 200, y: 50, width: 100, height: 300 }, 1.5, bounds);
+    expect(out.height).toBe(300);
+    expect(out.width).toBe(450);
+    expect(out.width / out.height).toBeCloseTo(1.5, 5);
+  });
+
+  it("shifts a crop against the edge inside at full size, rather than shrinking it", () => {
+    const out = cropAtAspect({ x: 0, y: 0, width: 100, height: 100 }, 1.5, {
+      width: 200,
+      height: 150,
+    });
+    expect(out.width).toBe(150);
+    expect(out.height).toBe(100);
+    expect(out.x).toBeGreaterThanOrEqual(0);
+    expect(out.y).toBeGreaterThanOrEqual(0);
+  });
+
+  it("scales a cover rectangle larger than the image down on its own ratio", () => {
+    // Flattening each axis to the bounds independently (what clampCrop alone
+    // would do) would give 120/60 = 2, not 1.5.
+    const out = cropAtAspect({ x: 0, y: 0, width: 100, height: 100 }, 1.5, {
+      width: 120,
+      height: 60,
+    });
+    expect(out.width / out.height).toBeCloseTo(1.5, 5);
+    expect(out.width).toBeLessThanOrEqual(120);
+    expect(out.height).toBeLessThanOrEqual(60);
+  });
+
+  it("fills the available width when the bounds are too narrow for the cover rectangle", () => {
+    const out = cropAtAspect({ x: 0, y: 0, width: 50, height: 50 }, 1.5, {
+      width: 60,
+      height: 1000,
+    });
+    expect(out.width).toBe(60);
+    expect(out.width / out.height).toBeCloseTo(1.5, 5);
+  });
+
+  it("keeps a sub-pixel crop at least one pixel on each axis", () => {
+    const out = cropAtAspect({ x: 0, y: 0, width: 0.2, height: 0.2 }, 1.5, bounds);
+    expect(out.width).toBeGreaterThanOrEqual(1);
+    expect(out.height).toBeGreaterThanOrEqual(1);
+  });
+});
+
 describe("renditionSize", () => {
   it("gives a person a thumbnail sharp at the largest avatar on a 2x screen", () => {
     // Avatar's `lg` is 144 CSS px, so 320 covers it with headroom.
@@ -107,6 +170,17 @@ describe("renditionSize", () => {
     // download the untouched file.
     const out = renditionSize({ width: 4032, height: 3024 }, "person", "thumb");
     expect(Math.max(out.width, out.height)).toBe(320);
+  });
+});
+
+describe("the families-page card rendition", () => {
+  it("is sharp at the widest card column on a 2x screen", () => {
+    // The lg grid column is roughly 400px wide; 800 covers that at 2x.
+    expect(CARD_RENDITION_LIMIT).toBeGreaterThanOrEqual(400 * 2);
+  });
+
+  it("is landscape, matching the card it fills", () => {
+    expect(FAMILY_CARD_ASPECT).toBeCloseTo(1.5, 5);
   });
 });
 

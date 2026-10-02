@@ -75,6 +75,7 @@ function buildFamily(overrides: Partial<FamilyDto> = {}): FamilyDto {
     photoUrl: null,
     thumbUrl: null,
     fullUrl: null,
+    cardUrl: null,
     photoWidth: null,
     photoHeight: null,
     members: [SELF, CHILD],

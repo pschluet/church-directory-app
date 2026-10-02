@@ -14,7 +14,7 @@ import {
   type PersonRow,
 } from "../services/persons";
 import { completedYearsOn, parseIsoDate, toIsoDate } from "../services/upcoming-dates";
-import { deletePhoto, photoUrls } from "../photos";
+import { deletePhoto, familyCardUrl, photoUrls } from "../photos";
 import {
   familyCreateSchema,
   familyMemberOrderSchema,
@@ -49,6 +49,8 @@ interface FamilyRow {
   /** Null for photos that predate cropping; see V4__family_photo_dimensions.sql. */
   photo_width: number | null;
   photo_height: number | null;
+  /** See V15__family_card_photo.sql. */
+  photo_has_card: boolean;
 }
 
 async function loadFamilyRow(
@@ -58,7 +60,7 @@ async function loadFamilyRow(
 ): Promise<FamilyRow> {
   const row = await one<FamilyRow>(
     q,
-    `select id, organization_id, name, photo_key, photo_width, photo_height
+    `select id, organization_id, name, photo_key, photo_width, photo_height, photo_has_card
        from families where id = $1 and organization_id = $2`,
     [familyId, organizationId]
   );
@@ -70,10 +72,13 @@ async function loadFamilyRow(
  * The photo half of a family payload. `photoUrl` is deprecated and mirrors the
  * thumbnail so a still-cached older SPA bundle keeps working.
  */
-function familyPhotoFields(row: Pick<FamilyRow, "photo_key" | "photo_width" | "photo_height">): {
+function familyPhotoFields(
+  row: Pick<FamilyRow, "photo_key" | "photo_width" | "photo_height" | "photo_has_card">
+): {
   photoUrl: string | null;
   thumbUrl: string | null;
   fullUrl: string | null;
+  cardUrl: string | null;
   photoWidth: number | null;
   photoHeight: number | null;
 } {
@@ -82,6 +87,7 @@ function familyPhotoFields(row: Pick<FamilyRow, "photo_key" | "photo_width" | "p
     photoUrl: thumbUrl,
     thumbUrl,
     fullUrl,
+    cardUrl: familyCardUrl(row.photo_key, row.photo_has_card),
     photoWidth: row.photo_width,
     photoHeight: row.photo_height,
   };
@@ -242,12 +248,14 @@ routes.get("/", async (c) => {
     name: string;
     member_count: string;
     photo_key: string | null;
+    photo_has_card: boolean;
     member_names: string[] | null;
     pending_join_request_id: string | null;
   }>(
     `select f.id,
             f.name,
             f.photo_key,
+            f.photo_has_card,
             count(r.id) filter (where r.deleted_at is null) as member_count,
             array_remove(
               array_agg(r.first_name order by ${FAMILY_MEMBER_SORT})
@@ -262,7 +270,7 @@ routes.get("/", async (c) => {
        from families f
        left join persons_resolved r on r.family_id = f.id
       where f.organization_id = $1
-      group by f.id, f.name, f.photo_key
+      group by f.id, f.name, f.photo_key, f.photo_has_card
       order by f.name`,
     [organizationId, caller.personId]
   );
@@ -273,6 +281,7 @@ routes.get("/", async (c) => {
     memberCount: Number(r.member_count),
     memberNames: r.member_names ?? [],
     thumbUrl: photoUrls(r.photo_key).thumbUrl,
+    cardUrl: familyCardUrl(r.photo_key, r.photo_has_card),
     pendingJoinRequestId: r.pending_join_request_id,
   }));
   return c.json({ families });
@@ -432,7 +441,9 @@ routes.put("/:id/photo", async (c) => {
   const db = c.get("db");
   const organizationId = requireOrganizationId(c);
   const id = uuidSchema.parse(c.req.param("id"));
-  const { photoKey, photoWidth, photoHeight } = photoAttachSchema.parse(await c.req.json());
+  const { photoKey, photoWidth, photoHeight, hasCard } = photoAttachSchema.parse(
+    await c.req.json()
+  );
 
   const family = await loadFamilyRow(db, id, organizationId);
   assertCanEditFamily(caller, { id: family.id, organizationId: family.organization_id });
@@ -441,20 +452,26 @@ routes.put("/:id/photo", async (c) => {
     throw new HTTPException(400, { message: "That photo does not belong to this family" });
   }
 
-  // Clearing the photo clears the dimensions with it, so a stale ratio cannot
-  // outlive the image it described.
+  // Clearing the photo clears the dimensions and the card flag with it, so
+  // neither can outlive the image it described.
   const width = photoKey ? (photoWidth ?? null) : null;
   const height = photoKey ? (photoHeight ?? null) : null;
+  const card = photoKey ? (hasCard ?? false) : false;
 
   await db.query(
-    "update families set photo_key = $2, photo_width = $3, photo_height = $4 where id = $1",
-    [id, photoKey, width, height]
+    "update families set photo_key = $2, photo_width = $3, photo_height = $4, photo_has_card = $5 where id = $1",
+    [id, photoKey, width, height, card]
   );
   if (family.photo_key && family.photo_key !== photoKey) await deletePhoto(family.photo_key);
 
   return c.json({
     id,
-    ...familyPhotoFields({ photo_key: photoKey, photo_width: width, photo_height: height }),
+    ...familyPhotoFields({
+      photo_key: photoKey,
+      photo_width: width,
+      photo_height: height,
+      photo_has_card: card,
+    }),
   });
 });
 

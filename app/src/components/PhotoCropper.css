@@ -1,0 +1,15 @@
+/*
+ * The second family step frames the photo for the families-page card, so its
+ * selection is shaped like that card: 3:2 (set by ReactCrop's `aspect`) with
+ * the top two corners rounded and the bottom two square, because the card
+ * clips the photo against its own top corners and ends in a border.
+ *
+ * border-radius is the mechanism react-image-crop itself uses for
+ * `circularCrop`, and the marching-ants edge is a background image, so it is
+ * clipped to the curve and follows it.
+ */
+.PhotoCropper--card .ReactCrop__crop-selection {
+  border-top-left-radius: var(--radius-card-photo);
+  border-top-right-radius: var(--radius-card-photo);
+  border-bottom: 1px solid var(--color-line);
+}
