@@ -1,4 +1,4 @@
-import { describe, expect, it, vi, beforeEach } from "vitest";
+import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./utils";
@@ -103,19 +103,21 @@ describe("Families", () => {
     });
     const { container } = renderPage();
 
-    const photo = await screen.findByAltText("The Haddad family");
+    await screen.findByRole("link", { name: /Haddad/ });
+    // `alt=""`: the card's own text already names the family, and the whole
+    // card -- not just the photo -- is the link now.
+    const photo = container.querySelector("img")!;
     expect(photo).toHaveAttribute("src", "/photos/org-1/family/fam-1/thumb");
+    expect(photo).toHaveAttribute("alt", "");
     expect(photo.closest("a")).toHaveAttribute("href", "/families/fam-1");
-    expect(screen.getByRole("link", { name: "Haddad" })).toHaveAttribute("href", "/families/fam-1");
 
     // Nassif has no photo, so it has no banner at all -- not a placeholder.
     // The column layout (see the "packs" test below) is what makes that cheap.
-    expect(container.querySelector('a[href="/families/fam-2"][aria-hidden="true"]')).toBeNull();
     expect(container.querySelectorAll("img")).toHaveLength(1);
 
     // The geometry the card crop is framed against -- if this drifts from
     // app/src/theme.css's --aspect-card-photo, the two have gone out of sync.
-    expect(photo.closest("a")).toHaveClass("aspect-card-photo");
+    expect(photo.closest("div")).toHaveClass("aspect-card-photo");
   });
 
   it("packs cards in columns rather than a row-stretching grid", async () => {
@@ -124,7 +126,7 @@ describe("Families", () => {
     });
     const { container } = renderPage();
 
-    await screen.findByRole("link", { name: "Haddad" });
+    await screen.findByRole("link", { name: /Haddad/ });
     // A grid would stretch Nassif's photo-less, shorter card to match Haddad's
     // row height; columns let it end where its own content does, so the next
     // card packs against it instead of a placeholder-sized gap.
@@ -147,10 +149,13 @@ describe("Families", () => {
         }),
       ],
     });
-    renderPage();
+    const { container } = renderPage();
 
-    const photo = await screen.findByAltText("The Haddad family");
-    expect(photo).toHaveAttribute("src", "/photos/org-1/family/fam-1/card");
+    await screen.findByRole("link", { name: /Haddad/ });
+    expect(container.querySelector("img")).toHaveAttribute(
+      "src",
+      "/photos/org-1/family/fam-1/card"
+    );
   });
 
   it("falls back to the thumbnail for a family photographed before the card crop existed", async () => {
@@ -159,21 +164,24 @@ describe("Families", () => {
         family({ ...HADDAD, thumbUrl: "/photos/org-1/family/fam-1/thumb", cardUrl: null }),
       ],
     });
-    renderPage();
+    const { container } = renderPage();
 
-    const photo = await screen.findByAltText("The Haddad family");
-    expect(photo).toHaveAttribute("src", "/photos/org-1/family/fam-1/thumb");
+    await screen.findByRole("link", { name: /Haddad/ });
+    expect(container.querySelector("img")).toHaveAttribute(
+      "src",
+      "/photos/org-1/family/fam-1/thumb"
+    );
   });
 
   it("filters by family name and marks the match", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByRole("link", { name: "Haddad" });
+    await screen.findByRole("link", { name: /Haddad/ });
 
     await user.type(screen.getByRole("searchbox", { name: "Search families" }), "dad");
 
-    expect(screen.queryByRole("link", { name: "Nassif" })).not.toBeInTheDocument();
-    const name = screen.getByRole("link", { name: "Haddad" });
+    expect(screen.queryByRole("link", { name: /Nassif/ })).not.toBeInTheDocument();
+    const name = screen.getByRole("link", { name: /Haddad/ });
     expect(name.querySelector("mark")).toHaveTextContent("dad");
     expect(screen.getByText("1 of 2 families")).toBeInTheDocument();
   });
@@ -184,35 +192,40 @@ describe("Families", () => {
       families: [HADDAD, family({ id: "fam-3", name: "Haddad Nassif" }), NASSIF],
     });
     renderPage();
-    await screen.findByRole("link", { name: "Nassif" });
+    // Anchored: "Haddad Nassif"'s own link also matches a bare /Nassif/.
+    await screen.findByRole("link", { name: /^Nassif\b/ });
 
     await user.type(screen.getByRole("searchbox", { name: "Search families" }), "nas had");
 
-    expect(screen.getByRole("link", { name: "Haddad Nassif" })).toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Haddad" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: "Nassif" })).not.toBeInTheDocument();
+    // Both standalone cards are filtered out entirely -- "Haddad Nassif" is
+    // the only one left.
+    const links = screen.getAllByRole("link");
+    expect(links).toHaveLength(1);
+    expect(links[0]).toHaveTextContent("Haddad Nassif");
   });
 
   it("says when nothing matches, and clears back to the full list", async () => {
     const user = userEvent.setup();
     renderPage();
-    await screen.findByRole("link", { name: "Haddad" });
+    await screen.findByRole("link", { name: /Haddad/ });
 
     await user.type(screen.getByRole("searchbox", { name: "Search families" }), "zzz");
     expect(screen.getByText("Nothing matches “zzz”")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Show all families" }));
-    expect(screen.getByRole("link", { name: "Haddad" })).toBeInTheDocument();
-    expect(screen.getByRole("link", { name: "Nassif" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Haddad/ })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Nassif/ })).toBeInTheDocument();
   });
 
-  it("marks the caller's own family instead of offering to join it", async () => {
+  it("marks the caller's own family and gives no card its own button", async () => {
     meState.familyId = "fam-1";
     renderPage();
 
     expect(await screen.findByText("Your family")).toBeInTheDocument();
-    // The other one is still joinable.
-    expect(screen.getAllByRole("button", { name: /ask to join/i })).toHaveLength(1);
+    // "Join a family" at the top is the only way in now, for every family --
+    // including the other, still-joinable one.
+    expect(screen.queryByRole("button", { name: /ask to join/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^join$/i })).not.toBeInTheDocument();
   });
 
   it("remembers a request that is already outstanding, and says what it waits on", async () => {
@@ -222,8 +235,6 @@ describe("Families", () => {
     renderPage();
 
     expect(await screen.findByText("Waiting for approval")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: /ask to join/i })).toHaveLength(1);
-    // The badge alone is a silent swap in the space the button occupied.
     expect(screen.getByText(/You have asked to join the Haddad family/)).toBeInTheDocument();
   });
 
@@ -246,35 +257,8 @@ describe("Families", () => {
   it("says nothing about waiting when nothing is outstanding", async () => {
     renderPage();
 
-    await screen.findAllByRole("button", { name: /ask to join/i });
+    await screen.findByRole("link", { name: /Haddad/ });
     expect(screen.queryByText(/You have asked to join/)).not.toBeInTheDocument();
-  });
-
-  it("asks to join and refreshes who the caller is", async () => {
-    renderPage();
-    const buttons = await screen.findAllByRole("button", { name: /ask to join/i });
-    await userEvent.click(buttons[0]!);
-
-    await waitFor(() =>
-      expect(api).toHaveBeenCalledWith("/families/fam-1/join-requests", { method: "POST" })
-    );
-    expect(reload).toHaveBeenCalled();
-  });
-
-  it("warns before moving out of a family the caller already belongs to", async () => {
-    meState.familyId = "fam-2";
-    renderPage();
-
-    await userEvent.click(await screen.findByRole("button", { name: /ask to join/i }));
-
-    // Nothing is sent until the warning is accepted.
-    expect(api).toHaveBeenCalledTimes(1);
-    expect(screen.getByRole("dialog")).toHaveTextContent(/you will move to Haddad/i);
-
-    await userEvent.click(screen.getByRole("button", { name: "Send request" }));
-    await waitFor(() =>
-      expect(api).toHaveBeenCalledWith("/families/fam-1/join-requests", { method: "POST" })
-    );
   });
 
   it("explains itself rather than offering to join when the caller has no record", async () => {
@@ -282,8 +266,80 @@ describe("Families", () => {
     renderPage();
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/directory record is missing/i);
-    expect(screen.queryByRole("button", { name: /ask to join/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /join a family/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /create a family/i })).not.toBeInTheDocument();
+  });
+
+  /*
+   * The LookupPicker underneath FamilyPicker debounces its search, same as
+   * PersonPicker -- fake timers, advanced past the 250ms pause, are what let
+   * a typed term actually reach the list. `shouldAdvanceTime` is what still
+   * lets `findBy*`'s own polling resolve meanwhile.
+   */
+  describe("joining through the picker", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ shouldAdvanceTime: true });
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    const user = () => userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    async function openPickerAndType(term: string): Promise<void> {
+      await user().click(await screen.findByRole("button", { name: /^join a family$/i }));
+      await user().type(screen.getByRole("combobox", { name: /search for a family/i }), term);
+      vi.advanceTimersByTime(250);
+    }
+
+    it("asks to join and refreshes who the caller is", async () => {
+      renderPage();
+      await screen.findByRole("link", { name: /Haddad/ });
+
+      await openPickerAndType("had");
+      await user().click(await screen.findByRole("option", { name: /Haddad/ }));
+      await user().click(screen.getByRole("button", { name: /^ask to join$/i }));
+
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith("/families/fam-1/join-requests", { method: "POST" })
+      );
+      expect(reload).toHaveBeenCalled();
+    });
+
+    it("warns before moving out of a family the caller already belongs to", async () => {
+      meState.familyId = "fam-2";
+      renderPage();
+      await screen.findByRole("link", { name: /Haddad/ });
+
+      await openPickerAndType("had");
+      await user().click(await screen.findByRole("option", { name: /Haddad/ }));
+
+      // Nothing is sent until the warning is accepted.
+      expect(api).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("dialog")).toHaveTextContent(/you are in the nassif family/i);
+      expect(screen.getByRole("dialog")).toHaveTextContent(/moves you to haddad/i);
+
+      await user().click(screen.getByRole("button", { name: /^ask to join$/i }));
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith("/families/fam-1/join-requests", { method: "POST" })
+      );
+    });
+
+    it("never offers the caller's own family or one already pending", async () => {
+      api.mockResolvedValue({
+        families: [HADDAD, { ...NASSIF, pendingJoinRequestId: "req-1" }],
+      });
+      meState.familyId = "fam-1";
+      renderPage();
+      await screen.findByRole("link", { name: /Haddad/ });
+
+      await user().click(await screen.findByRole("button", { name: /^join a family$/i }));
+      await user().click(screen.getByRole("combobox", { name: /search for a family/i }));
+      vi.advanceTimersByTime(250);
+
+      expect(await screen.findByText(/no families to choose from/i)).toBeInTheDocument();
+    });
   });
 
   describe("creating one", () => {

@@ -49,6 +49,8 @@ export function LookupPicker<T extends PickedOption = PickedOption>({
    * been chosen is shown by the caller instead.
    */
   clearAfterPick = false,
+  /** What is being searched is the caller's business, and so is this. */
+  noMatchLabel = (term: string) => `No one matches “${term}”`,
 }: {
   label: string;
   hint?: string;
@@ -61,6 +63,7 @@ export function LookupPicker<T extends PickedOption = PickedOption>({
   placeholder?: string;
   emptyLabel?: string;
   clearAfterPick?: boolean;
+  noMatchLabel?: (term: string) => string;
 }) {
   const [query, setQuery] = useState(value?.name ?? "");
   const [open, setOpen] = useState(false);
@@ -256,7 +259,7 @@ export function LookupPicker<T extends PickedOption = PickedOption>({
                 ? "Searching…"
                 : query.trim() === ""
                   ? emptyLabel
-                  : `No one matches “${query.trim()}”`}
+                  : noMatchLabel(query.trim())}
             </p>
           )}
         </div>

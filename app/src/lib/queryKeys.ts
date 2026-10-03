@@ -89,6 +89,16 @@ export const qk = {
     [...qk.family(orgId, id), "upcoming", { start }] as const,
   pendingJoinRequests: (orgId: string | null) =>
     [...qk.families(orgId), "join-requests", "pending"] as const,
+  /**
+   * The "Join a family" picker, searched over the families page's own
+   * already-loaded list rather than the server -- see FamilyPicker.tsx.
+   * `candidateIds` is part of the key, not just a filter applied after:
+   * the underlying list can change (a family created, a request resolved)
+   * while the typed term does not, and a cache keyed on the term alone would
+   * not know to recompute within this app's 30-second staleTime.
+   */
+  familyLookup: (orgId: string | null, term: string, candidateIds: string[]) =>
+    [...qk.families(orgId), "lookup", { term, candidateIds }] as const,
 
   persons: (orgId: string | null) => [...qk.org(orgId), "persons"] as const,
   person: (orgId: string | null, id: string) => [...qk.persons(orgId), id] as const,

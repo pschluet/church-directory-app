@@ -7,13 +7,13 @@ import { api } from "../lib/api";
 import { highlightRanges, matchesTerm } from "../lib/highlight";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
+import { FamilyPicker, type PickedFamily } from "../components/FamilyPicker";
 import { Highlight } from "../components/Highlight";
 import { Link } from "../components/nav";
 import { SearchField } from "../components/SearchField";
 import {
   Badge,
   Button,
-  ConfirmDialog,
   EmptyState,
   ErrorNotice,
   Field,
@@ -28,8 +28,13 @@ import {
  * finding a member and going through their record.
  *
  * Joining is a request an existing member approves -- except for admins, whose
- * request the API approves on the spot, which is why their button says "Join"
- * rather than "Ask to join".
+ * request the API approves on the spot, which is why the submit button inside
+ * the join picker says "Join" rather than "Ask to join".
+ *
+ * One "Join a family" button at the top rather than one per card: a parish's
+ * worth of cards each carrying their own button meant scrolling to find the
+ * one you wanted, when picking a family by name is exactly what a type-ahead
+ * is for.
  */
 export function Families() {
   const { me, isAdmin, organizationId, reload: reloadMe } = useMe();
@@ -38,11 +43,7 @@ export function Families() {
   const [params, setParams] = useSearchParams();
   const query = params.get("q") ?? "";
   const [creating, setCreating] = useState(false);
-  const [busyId, setBusyId] = useState<string | null>(null);
-  const [confirmMove, setConfirmMove] = useState<FamilySummaryDto | null>(null);
-  // Kept apart from the query's own error: a request that fails must not
-  // replace the list with a notice.
-  const [actionError, setActionError] = useState<string | null>(null);
+  const [joining, setJoining] = useState(false);
 
   // The organization is in the key, so a super admin switching parish is
   // looking at a different set of families without anything having to say so.
@@ -53,7 +54,7 @@ export function Families() {
 
   const families = familiesQuery.data?.families ?? [];
   const loading = familiesQuery.isPending;
-  const error = actionError ?? familiesQuery.error?.message ?? null;
+  const error = familiesQuery.error?.message ?? null;
 
   /*
    * Searched on the client: the whole list is already here, so there is no
@@ -92,21 +93,15 @@ export function Families() {
   // A list, not one: the pending index is unique per (family, person), so
   // somebody with no family can have asked several at once.
   const outstanding = families.filter((f) => f.pendingJoinRequestId !== null);
+  // Neither is pickable in the join dialog: one already has its own "Your
+  // family" badge, the others their own "Waiting for approval" ones.
+  const excludeFromPicker = [...(myFamilyId ? [myFamilyId] : []), ...outstanding.map((f) => f.id)];
 
-  async function requestToJoin(family: FamilySummaryDto): Promise<void> {
-    setBusyId(family.id);
-    setActionError(null);
-    try {
-      await api(`/families/${family.id}/join-requests`, { method: "POST" });
-      setConfirmMove(null);
-      await queryClient.invalidateQueries({ queryKey: qk.families(organizationId) });
-      // An admin's request is approved immediately, so their own family changed.
-      await reloadMe();
-    } catch (err) {
-      setActionError(err instanceof Error ? err.message : "Could not send that request");
-    } finally {
-      setBusyId(null);
-    }
+  async function requestToJoin(familyId: string): Promise<void> {
+    await api(`/families/${familyId}/join-requests`, { method: "POST" });
+    await queryClient.invalidateQueries({ queryKey: qk.families(organizationId) });
+    // An admin's request is approved immediately, so their own family changed.
+    await reloadMe();
   }
 
   function rowAction(family: FamilySummaryDto) {
@@ -116,18 +111,9 @@ export function Families() {
     // is what that page uses for the request it turned down, and this is not
     // that. "Requested" was a past-tense fact; this says who it is on.
     if (family.pendingJoinRequestId) return <Badge tone="accent">Waiting for approval</Badge>;
-
-    // Leaving a family behind is worth a warning; joining from nowhere is not.
-    const needsWarning = myFamilyId !== null;
-    return (
-      <Button
-        variant="secondary"
-        disabled={busyId === family.id}
-        onClick={() => (needsWarning ? setConfirmMove(family) : void requestToJoin(family))}
-      >
-        {isAdmin ? "Join" : "Ask to join"}
-      </Button>
-    );
+    // Joinable families carry no action of their own any more -- "Join a
+    // family" at the top of the page is the one way in.
+    return null;
   }
 
   return (
@@ -149,8 +135,13 @@ export function Families() {
               label="Search families"
               placeholder="Search by family name…"
             />
-            {/* Creating means joining unless you are an admin, and joining
-                needs a directory record. */}
+            {/* Both need a directory record of the caller's own -- there is
+                nothing to move into a family. */}
+            {myPersonId && (
+              <Button variant="secondary" onClick={() => setJoining(true)}>
+                Join a family
+              </Button>
+            )}
             {(isAdmin || myPersonId) && (
               <Button onClick={() => setCreating(true)}>Create a family</Button>
             )}
@@ -224,17 +215,18 @@ export function Families() {
         </ul>
       )}
 
-      {confirmMove && (
-        <ConfirmDialog
-          title="Ask to join this family?"
-          confirmLabel={isAdmin ? "Join" : "Send request"}
-          busy={busyId === confirmMove.id}
-          onConfirm={() => void requestToJoin(confirmMove)}
-          onClose={() => setConfirmMove(null)}
-        >
-          You are in the {myFamilyName ?? "current"} family. If this is approved you will move to{" "}
-          {confirmMove.name}, and any details you share with your current family will be cleared.
-        </ConfirmDialog>
+      {joining && (
+        <JoinFamilyModal
+          families={families}
+          excludeFamilyIds={excludeFromPicker}
+          isAdmin={isAdmin}
+          myFamilyName={myFamilyName}
+          onJoin={async (familyId) => {
+            await requestToJoin(familyId);
+            setJoining(false);
+          }}
+          onClose={() => setJoining(false)}
+        />
       )}
 
       {creating && (
@@ -264,12 +256,15 @@ export function Families() {
 
 /**
  * One family in the grid: its photo across the top where there is one, then
- * the name -- with the join action beside it -- and everyone in it.
+ * the name and everyone in it. The whole card is one link to the family page
+ * -- there used to be a separate link on the photo, the name and the member
+ * names, which kept the tab order down to one stop per card but also meant
+ * tapping the gap between them did nothing. One link now covers the whole
+ * area and is still exactly one tab stop.
  *
- * The photo, the name and the member names all open the family page. Only the
- * name is a tab stop: three links to one place per card would triple every
- * keyboard user's journey. The member names stay readable to a screen reader;
- * the photo, which says nothing the name does not, is hidden from one.
+ * The photo's `alt` is empty: the card's own text already names the family,
+ * and with everything inside one link a second description would be read
+ * twice by anything that reads a link's content aloud.
  *
  * A family with no photo gets no banner at all, not a placeholder -- the
  * column layout in the parent is what makes that cheap: a shorter card packs
@@ -293,55 +288,124 @@ function FamilyCard({
   // for the detail page and simply gets centre-cropped here same as today.
   const preferred = family.cardUrl ?? family.thumbUrl;
   const photo = preferred && failedUrl !== preferred ? preferred : null;
-  const to = `/families/${family.id}`;
 
   return (
-    <article className="group flex flex-col overflow-hidden rounded-card-photo border border-line bg-surface shadow-sm transition hover:border-accent hover:shadow-md">
+    <Link
+      to={`/families/${family.id}`}
+      className="group flex flex-col overflow-hidden rounded-card-photo border border-line bg-surface shadow-sm transition hover:border-accent hover:shadow-md"
+    >
       {photo && (
-        <Link
-          to={to}
-          tabIndex={-1}
-          aria-hidden="true"
-          className="block aspect-card-photo overflow-hidden border-b border-line bg-surface-muted"
-        >
+        <div className="aspect-card-photo overflow-hidden border-b border-line bg-surface-muted">
           <img
             src={photo}
-            alt={`The ${family.name} family`}
+            alt=""
             loading="lazy"
             decoding="async"
             onError={() => setFailedUrl(photo)}
             className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
           />
-        </Link>
+        </div>
       )}
 
-      {/* The names share the title's column rather than sitting under the
-          whole row, so a Join button -- a full tap target, taller than the
-          title -- cannot push them away from the name they belong to. */}
       <div className="flex flex-1 items-start justify-between gap-3 p-4">
         {/* `min-w-0` lets a long name wrap instead of pushing the action out
             of the card; `break-words` handles one with no spaces. */}
         <div className="min-w-0 flex-1">
-          <h3 className="break-words text-lg font-bold leading-snug text-ink">
-            <Link to={to} className="transition hover:text-accent">
-              <Highlight text={family.name} ranges={highlightRanges(family.name, terms)} />
-            </Link>
+          <h3 className="break-words text-lg font-bold leading-snug text-ink transition group-hover:text-accent">
+            <Highlight text={family.name} ranges={highlightRanges(family.name, terms)} />
           </h3>
-          <Link
-            to={to}
-            tabIndex={-1}
-            className="block break-words text-sm text-ink-muted transition hover:text-ink"
-          >
+          <p className="break-words text-sm text-ink-muted">
             {family.memberNames.length > 0 ? (
               family.memberNames.join(", ")
             ) : (
               <span className="italic">No members yet</span>
             )}
-          </Link>
+          </p>
         </div>
         {action && <div className="shrink-0">{action}</div>}
       </div>
-    </article>
+    </Link>
+  );
+}
+
+/**
+ * Picking a family to join, and -- when the caller is already in one --
+ * confirming that this moves them out of it. One modal for both, rather than
+ * a picker that hands off to a second stacked dialog: a failure here has
+ * somewhere to show itself other than a notice the dialog above it would hide.
+ */
+function JoinFamilyModal({
+  families,
+  excludeFamilyIds,
+  isAdmin,
+  myFamilyName,
+  onJoin,
+  onClose,
+}: {
+  families: FamilySummaryDto[];
+  excludeFamilyIds: string[];
+  isAdmin: boolean;
+  myFamilyName: string | null;
+  onJoin: (familyId: string) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [picked, setPicked] = useState<PickedFamily | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function submit(): Promise<void> {
+    if (!picked) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await onJoin(picked.id);
+      // On success `onJoin` closes this modal, which is about to unmount --
+      // nothing left for `busy` to do, and setting it from a `finally` here
+      // would be a state update on a component that is already gone.
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not send that request");
+      setBusy(false);
+    }
+  }
+
+  return (
+    <Modal title="Join a family" onClose={onClose}>
+      {/* min-h so the picker's dropdown has room to open in -- without it, a
+          short modal clips the list against its own scroll box, the same fix
+          FamilyDetail's own member picker needed for the same reason. */}
+      <div className="min-h-96 space-y-4">
+        <FamilyPicker
+          label="Search for a family"
+          families={families}
+          excludeFamilyIds={excludeFamilyIds}
+          value={picked}
+          onChange={setPicked}
+        />
+
+        {picked && myFamilyName && (
+          <p className="text-sm font-bold text-primary">
+            You are in the {myFamilyName} family.{" "}
+            {isAdmin ? "This moves" : "If this is approved, it moves"} you to {picked.name}, and any
+            details you share with your current family will be cleared.
+          </p>
+        )}
+
+        {error && (
+          <p role="alert" className="font-bold text-primary">
+            {error}
+          </p>
+        )}
+
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button disabled={!picked || busy} onClick={() => void submit()}>
+            {busy ? "Sending…" : isAdmin ? "Join" : "Ask to join"}
+          </Button>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

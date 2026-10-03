@@ -89,7 +89,7 @@ export function PageHeading({
   return (
     <header className="mb-6 md:mb-8">
       <div
-        className={`grid gap-3 md:flex md:items-end ${
+        className={`grid gap-3 md:flex md:flex-wrap md:items-end ${
           besideTitle ? "grid-cols-[minmax(0,1fr)_auto] items-start" : "grid-cols-1"
         }`}
       >
