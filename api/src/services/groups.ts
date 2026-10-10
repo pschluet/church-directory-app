@@ -69,7 +69,8 @@ export async function loadGroupRow(
 
 export interface MembershipRow {
   role: GroupMemberRole;
-  notification_pref: GroupNotificationPref;
+  /** Null when the member follows their account-wide default. */
+  notification_pref: GroupNotificationPref | null;
   last_read_at: Date | string | null;
 }
 
@@ -324,6 +325,7 @@ export function toGroupMemberDto(row: GroupMemberNameRow) {
 
 export interface GroupEventRsvpRow {
   app_user_id: string;
+  person_id: string;
   first_name: string;
   last_name: string | null;
   photo_key: string | null;
@@ -343,7 +345,7 @@ export async function loadGroupEventRsvps(
   postId: string
 ): Promise<GroupEventRsvpRow[]> {
   const { rows } = await q.query<GroupEventRsvpRow>(
-    `select r.app_user_id, p.first_name, p.last_name, p.photo_key, r.response, r.guest_count
+    `select r.app_user_id, p.id as person_id, p.first_name, p.last_name, p.photo_key, r.response, r.guest_count
        from group_event_rsvps r
        join persons_resolved p on p.app_user_id = r.app_user_id
       where r.post_id = $1
@@ -356,6 +358,7 @@ export async function loadGroupEventRsvps(
 export function toGroupRsvpDto(row: GroupEventRsvpRow) {
   return {
     appUserId: row.app_user_id,
+    personId: row.person_id,
     name: fullName({ firstName: row.first_name, lastName: row.last_name }),
     thumbUrl: photoUrls(row.photo_key).thumbUrl,
     response: row.response,

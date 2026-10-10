@@ -86,6 +86,39 @@ export function formatPostedAt(iso: string, now: Date = new Date()): string {
   return then.toLocaleDateString(undefined, { month: "long", day: "numeric" });
 }
 
+/** The local yyyy-mm-dd of an instant, for deciding which day a message belongs to. */
+export function localDayIso(instant: string | Date): string {
+  const date = typeof instant === "string" ? new Date(instant) : instant;
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+/**
+ * The label on a chat's day divider: "Today", "Yesterday", the weekday for the
+ * rest of the past week, and a full date after that.
+ *
+ * Calendar days in the reader's own timezone rather than 24-hour spans -- a
+ * message from 11pm last night is "Yesterday" at 1am, not "Today".
+ */
+export function formatChatDay(instant: string, now: Date = new Date()): string {
+  const day = localDayIso(instant);
+  const days = Math.round(
+    (parseIsoDate(localDayIso(now)).getTime() - parseIsoDate(day).getTime()) / 86_400_000
+  );
+  if (days <= 0) return "Today";
+  if (days === 1) return "Yesterday";
+  if (days < 7) return parseIsoDate(day).toLocaleDateString(undefined, { weekday: "long" });
+  return formatDayLabel(day);
+}
+
+/** The time of day on a chat row, e.g. "2:05 PM". */
+export function formatChatTime(instant: string): string {
+  return new Date(instant).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+}
+
 /** "4 May" or "4 May 1985". */
 export function formatMonthDay(month: number, day: number, year?: number | null): string {
   const name = MONTHS[month - 1] ?? "";

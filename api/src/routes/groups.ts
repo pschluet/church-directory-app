@@ -42,6 +42,8 @@ import {
   type GroupPostRow,
 } from "../services/group-posts";
 import {
+  loadGroupNotificationDefault,
+  setGroupNotificationPref,
   fanOutGroupEventChange,
   fanOutGroupJoinRequest,
   fanOutGroupMention,
@@ -200,7 +202,7 @@ routes.get("/", async (c) => {
     const access: GroupAccess = groupAccess(
       caller,
       row,
-      row.my_role ? { role: row.my_role, notification_pref: "ALL", last_read_at: null } : null
+      row.my_role ? { role: row.my_role, notification_pref: null, last_read_at: null } : null
     );
     return toGroupSummary(row, access);
   });
@@ -362,7 +364,8 @@ routes.get("/:id", async (c) => {
     createdAt: new Date(group.created_at).toISOString(),
     members: members.map(toGroupMemberDto),
     pendingJoinRequests,
-    notificationPref: access.membership?.notification_pref ?? "ALL",
+    notificationPref: access.membership?.notification_pref ?? null,
+    notificationPrefDefault: await loadGroupNotificationDefault(db, caller.appUserId),
     canPost: access.canPost,
     canInvite: access.canInvite,
     canReply: access.canReply,
@@ -559,10 +562,7 @@ routes.put("/:id/notification-preference", async (c) => {
   const membership = await loadMembership(db, id, caller.appUserId);
   if (!membership) throw new HTTPException(403, { message: "You are not a member of this group" });
 
-  await db.query(
-    "update group_members set notification_pref = $3 where group_id = $1 and app_user_id = $2",
-    [id, caller.appUserId, notificationPref]
-  );
+  await setGroupNotificationPref(db, caller.appUserId, id, notificationPref);
   return c.json({ notificationPref });
 });
 
@@ -976,6 +976,7 @@ routes.get("/:id/files", async (c) => {
   const { rows } = await db.query<{
     post_id: string;
     post_created_at: Date | string;
+    author_person_id: string;
     author_first_name: string;
     author_last_name: string | null;
     id: string;
@@ -987,7 +988,7 @@ routes.get("/:id/files", async (c) => {
     width: number | null;
     height: number | null;
   }>(
-    `select p.id as post_id, p.created_at as post_created_at,
+    `select p.id as post_id, p.created_at as post_created_at, p.author_person_id,
             a.first_name as author_first_name, a.last_name as author_last_name,
             att.id, att.kind, att.filename, att.content_type, att.byte_size, att.photo_key, att.width, att.height
        from group_post_attachments att
@@ -1007,6 +1008,7 @@ routes.get("/:id/files", async (c) => {
     return {
       postId: row.post_id,
       postCreatedAt: new Date(row.post_created_at).toISOString(),
+      authorPersonId: row.author_person_id,
       authorName: fullName({ firstName: row.author_first_name, lastName: row.author_last_name }),
       attachment: {
         id: row.id,
@@ -1182,6 +1184,12 @@ routes.patch("/:id/posts/:postId", async (c) => {
     throw new HTTPException(403, { message: "You can only edit your own posts" });
   }
 
+  if (payload.mentionedAppUserIds) {
+    await assertMentionsAreMembers(db, id, payload.mentionedAppUserIds);
+  }
+
+  let notifiedMention: string[] = [];
+
   await db.transaction(async (tx) => {
     if (payload.body !== undefined) {
       await tx.query("update group_posts set body = $2, edited_at = now() where id = $1", [
@@ -1206,7 +1214,57 @@ routes.patch("/:id/posts/:postId", async (c) => {
       );
       await tx.query("update group_posts set edited_at = now() where id = $1", [postId]);
     }
+
+    /*
+     * Mentions are reconciled against what the edited text now says. Only the
+     * *newly* mentioned are notified -- someone already mentioned has had their
+     * notification, and an edit that merely fixes a typo must not ring them
+     * again. `edited_at` is not touched here: the client always sends the body
+     * alongside, and that is what marks the post edited.
+     */
+    if (payload.mentionedAppUserIds !== undefined) {
+      const wanted = payload.mentionedAppUserIds;
+      const { rows: before } = await tx.query<{ app_user_id: string }>(
+        "select app_user_id from group_post_mentions where post_id = $1",
+        [postId]
+      );
+      const had = new Set(before.map((r) => r.app_user_id));
+      const added = wanted.filter((u) => !had.has(u));
+
+      // `<> all('{}')` is true, so an empty list correctly removes every mention.
+      await tx.query(
+        "delete from group_post_mentions where post_id = $1 and app_user_id <> all($2::uuid[])",
+        [postId, wanted]
+      );
+
+      if (added.length > 0) {
+        await tx.query(
+          `insert into group_post_mentions (post_id, app_user_id)
+           select $1, u from unnest($2::uuid[]) as u
+           on conflict do nothing`,
+          [postId, added]
+        );
+        // The more specific notification wins (see group-notifications.ts): an
+        // unread "new post" for someone this edit now mentions is retracted so
+        // they get one notification about the post, not two.
+        await tx.query(
+          `delete from notifications
+            where group_post_id = $1 and type = 'GROUP_POST'
+              and app_user_id = any($2::uuid[]) and read_at is null`,
+          [postId, added]
+        );
+        notifiedMention = await fanOutGroupMention(tx, {
+          groupId: id,
+          groupPostId: postId,
+          organizationId,
+          actingAppUserId: caller.appUserId,
+          mentionedAppUserIds: added,
+        });
+      }
+    }
   });
+
+  await pushGroupActivity(db, notifiedMention, group.title, id, "post");
 
   if (payload.event && row.kind === "EVENT") {
     const notified = await fanOutGroupEventChange(db, {

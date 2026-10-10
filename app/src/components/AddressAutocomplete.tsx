@@ -41,26 +41,62 @@ interface Suggestion {
   placeId: string;
   /** The whole address on one line, as Google formats it for a dropdown. */
   text: string;
+  /** The name part ("St. Mary's Parish Hall"), when Google splits it out. */
+  mainText?: string | undefined;
+  /** What follows it ("123 Main St, Chicago, IL"). */
+  secondaryText?: string | undefined;
 }
 
 /** Minimum characters before asking Google anything. */
 const MIN_QUERY = 3;
 const DEBOUNCE_MS = 250;
 
-function AutocompleteField({
+/**
+ * The combobox both fields share: Google's suggestions under a text input, with
+ * the session-token discipline that keeps the typing free.
+ *
+ * What differs between an address and an event's location is only what is asked
+ * for and what happens on a pick, so those are the parameters. Everything the
+ * header comment above is about -- one token across the keystrokes, closed by one
+ * `fetchFields`, discarded after -- lives here once, so the two cannot drift
+ * apart into one that bills per request.
+ */
+function PlaceCombobox({
   value,
   onChange,
-  onPick,
+  onSelect,
   id,
   autoComplete = "address-line1",
+  includedPrimaryTypes,
+  fields,
+  commitBeforeFetch = false,
+  maxLength,
+  listLabel = "Address suggestions",
 }: {
   value: string;
   /** A keystroke. The caller clears its stored `placeId` on one of these. */
   onChange: (value: string) => void;
-  /** A suggestion was chosen, and every address field is now known. */
-  onPick: (address: PickedAddress) => void;
+  /**
+   * A suggestion was chosen. `place` carries `fields` once the details call has
+   * returned, or is null when it failed (or, with `commitBeforeFetch`, has not
+   * been made yet). Returns the text now in the box, so the list does not
+   * reopen over it.
+   */
+  onSelect: (place: google.maps.places.Place | null, suggestion: Suggestion) => string;
   id?: string;
   autoComplete?: string;
+  /** Google place types to suggest; unset suggests everything, venues included. */
+  includedPrimaryTypes?: string[];
+  /** Essentials-tier Place Details fields only -- see the header comment. */
+  fields: string[];
+  /**
+   * Fill the box straight away and make the details call afterwards. For a field
+   * that only wants the text Google already showed: the call exists to close the
+   * billing session, and nobody should wait on it.
+   */
+  commitBeforeFetch?: boolean;
+  maxLength?: number;
+  listLabel?: string;
 }) {
   /*
    * The library's loader, not one of ours. Two separate races came out of a
@@ -125,17 +161,20 @@ function AutocompleteField({
           await places.AutocompleteSuggestion.fetchAutocompleteSuggestions({
             input: query,
             sessionToken: sessionToken.current,
-            // Addresses, not businesses: nobody lives at a dry cleaner, and a
-            // list of shops is noise in a field asking where somebody lives.
-            includedPrimaryTypes: ["street_address", "premise", "subpremise"],
+            ...(includedPrimaryTypes ? { includedPrimaryTypes } : {}),
           });
         if (cancelled) return;
         setSuggestions(
           found
-            .map((suggestion) => {
+            .map((suggestion): Suggestion | null => {
               const prediction = suggestion.placePrediction;
               if (!prediction?.placeId) return null;
-              return { placeId: prediction.placeId, text: prediction.text?.toString() ?? "" };
+              return {
+                placeId: prediction.placeId,
+                text: prediction.text?.toString() ?? "",
+                mainText: prediction.mainText?.toString(),
+                secondaryText: prediction.secondaryText?.toString(),
+              };
             })
             .filter((s): s is Suggestion => s !== null)
         );
@@ -151,7 +190,7 @@ function AutocompleteField({
       cancelled = true;
       clearTimeout(timer);
     };
-  }, [places, query]);
+  }, [places, query, includedPrimaryTypes]);
 
   // Clicking away closes the list. A document listener rather than a backdrop,
   // the way AppShell's nav drawer does it -- a backdrop over a form field would
@@ -169,31 +208,28 @@ function AutocompleteField({
     async (suggestion: Suggestion) => {
       setOpen(false);
       if (!places) return;
+      if (commitBeforeFetch) {
+        pickedValue.current = onSelect(null, suggestion);
+      }
       try {
         const place = new places.Place({ id: suggestion.placeId });
-        await place.fetchFields({
-          // Essentials-tier fields only. `addressComponents` is what fills the
-          // other five inputs; asking for anything from a higher tier would
-          // move this call to a dearer SKU for data nobody displays.
-          fields: ["addressComponents", "formattedAddress", "location", "id"],
-        });
-        const picked = toPickedAddress(place, suggestion);
-        // Recorded before handing it over, because `onPick` changes `value` and
-        // the effect that watches it runs before anything here would.
-        pickedValue.current = picked.addressLine1.trim();
-        onPick(picked);
+        await place.fetchFields({ fields });
+        if (!commitBeforeFetch) {
+          // Recorded before handing it over, because the caller changes `value`
+          // and the effect that watches it runs before anything here would.
+          pickedValue.current = onSelect(place, suggestion);
+        }
       } catch {
         // The session is spent either way, so fall back to the text Google
         // already showed rather than leaving the field half-filled -- and
         // record it, or the list reopens over the top of it.
-        pickedValue.current = suggestion.text.trim();
-        onChange(suggestion.text);
+        if (!commitBeforeFetch) pickedValue.current = onSelect(null, suggestion);
       } finally {
         // Spent. A reused token bills the next session per request.
         sessionToken.current = null;
       }
     },
-    [places, onPick, onChange]
+    [places, onSelect, fields, commitBeforeFetch]
   );
 
   function onKeyDown(event: React.KeyboardEvent<HTMLInputElement>): void {
@@ -227,6 +263,7 @@ function AutocompleteField({
         type="text"
         className={inputClass}
         value={value}
+        maxLength={maxLength}
         autoComplete={autoComplete}
         onChange={(event) => onChange(event.target.value)}
       />
@@ -246,6 +283,7 @@ function AutocompleteField({
         autoComplete="off"
         className={inputClass}
         value={value}
+        maxLength={maxLength}
         aria-expanded={showList}
         aria-controls={listId}
         aria-autocomplete="list"
@@ -265,7 +303,7 @@ function AutocompleteField({
         <div
           id={listId}
           role="listbox"
-          aria-label="Address suggestions"
+          aria-label={listLabel}
           className="absolute inset-x-0 z-20 mt-1 max-h-60 overflow-y-auto rounded-md border border-line bg-surface shadow-lg"
         >
           {suggestions.map((suggestion, index) => (
@@ -289,7 +327,14 @@ function AutocompleteField({
               }}
               onMouseEnter={() => setActiveIndex(index)}
             >
-              {suggestion.text}
+              {suggestion.mainText && suggestion.secondaryText ? (
+                <span className="min-w-0">
+                  <span className="font-bold">{suggestion.mainText}</span>{" "}
+                  <span className="text-ink-muted">{suggestion.secondaryText}</span>
+                </span>
+              ) : (
+                suggestion.text
+              )}
             </div>
           ))}
         </div>
@@ -297,6 +342,53 @@ function AutocompleteField({
     </div>
   );
 }
+
+/** The address field: street addresses only, and every address column filled on a pick. */
+function AutocompleteField({
+  value,
+  onChange,
+  onPick,
+  id,
+  autoComplete = "address-line1",
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onPick: (address: PickedAddress) => void;
+  id?: string;
+  autoComplete?: string;
+}) {
+  const onSelect = useCallback(
+    (place: google.maps.places.Place | null, suggestion: Suggestion): string => {
+      if (!place) {
+        onChange(suggestion.text);
+        return suggestion.text.trim();
+      }
+      const picked = toPickedAddress(place, suggestion);
+      onPick(picked);
+      return picked.addressLine1.trim();
+    },
+    [onChange, onPick]
+  );
+  return (
+    <PlaceCombobox
+      value={value}
+      onChange={onChange}
+      onSelect={onSelect}
+      id={id}
+      autoComplete={autoComplete}
+      // Addresses, not businesses: nobody lives at a dry cleaner, and a list of
+      // shops is noise in a field asking where somebody lives.
+      includedPrimaryTypes={ADDRESS_TYPES}
+      fields={ADDRESS_FIELDS}
+    />
+  );
+}
+
+// Essentials-tier fields only. `addressComponents` is what fills the other five
+// inputs; asking for anything from a higher tier would move this call to a
+// dearer SKU for data nobody displays.
+const ADDRESS_TYPES = ["street_address", "premise", "subpremise"];
+const ADDRESS_FIELDS = ["addressComponents", "formattedAddress", "location", "id"];
 
 /**
  * Google's address components, flattened into the six columns this app stores.
@@ -380,6 +472,88 @@ export function AddressAutocomplete(props: {
   return (
     <APIProvider apiKey={maps.browserKey}>
       <AutocompleteField {...props} />
+    </APIProvider>
+  );
+}
+
+/*
+ * The same two cheap fields, for the field that keeps only a string. No
+ * `displayName` -- that is a Place Details Pro field, and the venue name is
+ * already in the prediction text, which is free.
+ */
+const LOCATION_FIELDS = ["formattedAddress", "location", "id"];
+
+function LocationField({
+  value,
+  onChange,
+  maxLength,
+  id,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  maxLength?: number;
+  id?: string;
+}) {
+  const onSelect = useCallback(
+    (_place: google.maps.places.Place | null, suggestion: Suggestion): string => {
+      const text = suggestion.text.slice(0, maxLength);
+      onChange(text);
+      return text.trim();
+    },
+    [onChange, maxLength]
+  );
+  return (
+    <PlaceCombobox
+      value={value}
+      onChange={onChange}
+      onSelect={onSelect}
+      id={id}
+      autoComplete="off"
+      // No type filter: an event is as likely to be at a hall or a park as at a
+      // street address, and a venue's name is the point.
+      fields={LOCATION_FIELDS}
+      commitBeforeFetch
+      maxLength={maxLength}
+      listLabel="Location suggestions"
+    />
+  );
+}
+
+/**
+ * Where an event is, with Google's suggestions when this parish has a key.
+ *
+ * Stores one string -- the text Google showed for the suggestion, which leads
+ * with the place's name -- rather than a structured address: an event's location
+ * is read by people, not geocoded. Costs the same as the address field and for
+ * the same reason (see the header): the keystrokes ride a session token, and one
+ * Essentials-tier details call closes it. Degrades to a plain input exactly as
+ * the address field does.
+ */
+export function LocationAutocomplete(props: {
+  value: string;
+  onChange: (value: string) => void;
+  maxLength?: number;
+  id?: string;
+}) {
+  const { maps } = useMe();
+
+  if (!maps) {
+    return (
+      <input
+        id={props.id}
+        type="text"
+        className={inputClass}
+        value={props.value}
+        maxLength={props.maxLength}
+        autoComplete="off"
+        onChange={(event) => props.onChange(event.target.value)}
+      />
+    );
+  }
+
+  return (
+    <APIProvider apiKey={maps.browserKey}>
+      <LocationField {...props} />
     </APIProvider>
   );
 }

@@ -308,11 +308,25 @@ export function MenuButton({
   label,
   children,
   className = "",
+  portal = false,
+  trigger,
+  align = "right",
 }: {
   /** What the button opens, for screen readers -- e.g. "Actions for Paul". */
   label: string;
   children: ReactNode;
   className?: string;
+  /**
+   * Render the panel on `document.body`, fixed to the button, instead of inside
+   * it. For a button that lives in a scrolling pane: an absolutely positioned
+   * panel there is clipped by the pane's own overflow, and the flip below would
+   * be measuring the window rather than the room the pane actually leaves.
+   */
+  portal?: boolean;
+  /** Replaces the three dots, e.g. a "+" for an add menu. */
+  trigger?: ReactNode;
+  /** Which edge of the button the panel lines up with. */
+  align?: "left" | "right";
 }) {
   const [open, setOpen] = useState(false);
   /**
@@ -321,6 +335,13 @@ export function MenuButton({
    * place.
    */
   const [placement, setPlacement] = useState<"below" | "above">("below");
+  /** Where a portalled panel sits, in viewport pixels. Null until measured. */
+  const [fixedAt, setFixedAt] = useState<{
+    top?: number;
+    bottom?: number;
+    left?: number;
+    right?: number;
+  } | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const buttonRef = useRef<HTMLButtonElement>(null);
@@ -329,7 +350,10 @@ export function MenuButton({
   useEffect(() => {
     if (!open) return;
     const onPointerDown = (event: PointerEvent) => {
-      if (!containerRef.current?.contains(event.target as Node)) setOpen(false);
+      const target = event.target as Node;
+      // A portalled panel is not inside the container in the DOM.
+      if (containerRef.current?.contains(target) || panelRef.current?.contains(target)) return;
+      setOpen(false);
     };
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key !== "Escape") return;
@@ -338,13 +362,19 @@ export function MenuButton({
       // starts from the top of the page.
       buttonRef.current?.focus();
     };
+    // A fixed panel does not follow its button when the pane underneath scrolls.
+    const onScroll = () => {
+      if (portal) setOpen(false);
+    };
     document.addEventListener("pointerdown", onPointerDown);
     document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("scroll", onScroll, true);
     return () => {
       document.removeEventListener("pointerdown", onPointerDown);
       document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("scroll", onScroll, true);
     };
-  }, [open]);
+  }, [open, portal]);
 
   /*
    * Opening moves focus into the menu, which is what makes the arrow keys below
@@ -370,9 +400,22 @@ export function MenuButton({
     // taller than the whole viewport does not end up pinned to the top.
     const flip = roomBelow < panelHeight + GAP && buttonBox.top > roomBelow;
     setPlacement(flip ? "above" : "below");
+    if (portal) {
+      const horizontal =
+        align === "right"
+          ? { right: Math.max(8, window.innerWidth - buttonBox.right) }
+          : { left: Math.max(8, buttonBox.left) };
+      setFixedAt(
+        flip
+          ? { bottom: window.innerHeight - buttonBox.top + 4, ...horizontal }
+          : { top: buttonBox.bottom + 4, ...horizontal }
+      );
+    }
 
     items(panel)[0]?.focus({ preventScroll: true });
-  }, [open]);
+  }, [open, portal, align]);
+
+  const wrapPanel = (panel: ReactNode) => (portal ? createPortal(panel, document.body) : panel);
 
   function onPanelKeyDown(event: React.KeyboardEvent): void {
     const focusable = items(panelRef.current);
@@ -411,31 +454,41 @@ export function MenuButton({
         }
         className="tap-target inline-flex items-center justify-center rounded-md text-ink-muted transition hover:bg-surface-muted hover:text-primary"
       >
-        <svg aria-hidden="true" viewBox="0 0 20 20" className="h-5 w-5 fill-current">
-          <circle cx="10" cy="4" r="1.75" />
-          <circle cx="10" cy="10" r="1.75" />
-          <circle cx="10" cy="16" r="1.75" />
-        </svg>
+        {trigger ?? (
+          <svg aria-hidden="true" viewBox="0 0 20 20" className="h-5 w-5 fill-current">
+            <circle cx="10" cy="4" r="1.75" />
+            <circle cx="10" cy="10" r="1.75" />
+            <circle cx="10" cy="16" r="1.75" />
+          </svg>
+        )}
       </button>
 
-      {open && (
-        <div
-          ref={panelRef}
-          id={panelId}
-          role="menu"
-          aria-label={label}
-          onKeyDown={onPanelKeyDown}
-          // Closes after any activation, so every item does not have to
-          // remember to. Capturing on click covers pointer and Enter/Space
-          // alike, since a button fires click for all three.
-          onClick={() => setOpen(false)}
-          className={`absolute right-0 z-30 w-56 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-line bg-surface py-1 text-left shadow-lg ${
-            placement === "above" ? "bottom-full mb-1" : "top-full mt-1"
-          }`}
-        >
-          {children}
-        </div>
-      )}
+      {open &&
+        wrapPanel(
+          <div
+            ref={panelRef}
+            id={panelId}
+            role="menu"
+            aria-label={label}
+            onKeyDown={onPanelKeyDown}
+            // Closes after any activation, so every item does not have to
+            // remember to. Capturing on click covers pointer and Enter/Space
+            // alike, since a button fires click for all three.
+            onClick={() => setOpen(false)}
+            style={
+              portal ? { position: "fixed", ...(fixedAt ?? { top: -9999, left: 0 }) } : undefined
+            }
+            className={
+              portal
+                ? "z-50 w-56 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-line bg-surface py-1 text-left shadow-lg"
+                : `absolute ${align === "left" ? "left-0" : "right-0"} z-30 w-56 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-line bg-surface py-1 text-left shadow-lg ${
+                    placement === "above" ? "bottom-full mb-1" : "top-full mt-1"
+                  }`
+            }
+          >
+            {children}
+          </div>
+        )}
     </div>
   );
 }

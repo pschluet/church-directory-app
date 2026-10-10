@@ -66,7 +66,12 @@ describe("Settings", () => {
     apiMock.mockReset();
     apiMock.mockImplementation((path: string) => {
       if (path === "/notifications/preferences") {
-        return Promise.resolve({ prayerRequests: true, prayerRequestReviews: true });
+        return Promise.resolve({
+          prayerRequests: true,
+          prayerRequestReviews: true,
+          groupNotificationPref: "ALL",
+          groupExceptions: [],
+        });
       }
       return Promise.resolve({});
     });
@@ -154,7 +159,12 @@ describe("Settings", () => {
   it("says the two switches compose, rather than leaving push on with nothing to send", async () => {
     apiMock.mockImplementation((path: string) => {
       if (path === "/notifications/preferences") {
-        return Promise.resolve({ prayerRequests: false, prayerRequestReviews: false });
+        return Promise.resolve({
+          prayerRequests: false,
+          prayerRequestReviews: false,
+          groupNotificationPref: "NONE",
+          groupExceptions: [],
+        });
       }
       return Promise.resolve({});
     });
@@ -282,6 +292,105 @@ describe("Settings", () => {
         withOrg: false,
       })
     );
+  });
+
+  describe("group message notifications", () => {
+    const EXCEPTIONS = [
+      {
+        groupId: "g1",
+        groupTitle: "Youth Group",
+        organizationId: "org-1",
+        notificationPref: "NONE",
+      },
+      { groupId: "g2", groupTitle: "Choir", organizationId: "org-2", notificationPref: "MENTIONS" },
+    ];
+
+    function withExceptions(): void {
+      apiMock.mockImplementation((path: string, options?: { method?: string }) => {
+        if (path === "/notifications/preferences") {
+          return Promise.resolve({
+            prayerRequests: true,
+            prayerRequestReviews: true,
+            groupNotificationPref: "ALL",
+            groupExceptions: EXCEPTIONS,
+          });
+        }
+        if (path === "/notifications/group-preferences/g1" && options?.method === "DELETE") {
+          return Promise.resolve({
+            prayerRequests: true,
+            prayerRequestReviews: true,
+            groupNotificationPref: "ALL",
+            groupExceptions: [EXCEPTIONS[1]],
+          });
+        }
+        return Promise.resolve({});
+      });
+    }
+
+    it("saves the default on its own, leaving the other switches out of the payload", async () => {
+      renderWithProviders(<Settings />);
+      await userEvent.selectOptions(
+        await screen.findByRole("combobox", { name: /By default, tell me about/ }),
+        "MENTIONS"
+      );
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/notifications/preferences", {
+          method: "PUT",
+          body: { groupNotificationPref: "MENTIONS" },
+          withOrg: false,
+        })
+      );
+    });
+
+    it("shows no exceptions list when there are none", async () => {
+      renderWithProviders(<Settings />);
+      await screen.findByRole("combobox", { name: /By default, tell me about/ });
+      expect(screen.queryByText("Except in these groups")).not.toBeInTheDocument();
+    });
+
+    it("lists exceptions, linking only groups in the active parish", async () => {
+      withExceptions();
+      renderWithProviders(<Settings />);
+      expect(await screen.findByRole("link", { name: "Youth Group" })).toHaveAttribute(
+        "href",
+        "/groups/g1"
+      );
+      // Another parish's group: shown, but a link would open it under the wrong church.
+      expect(screen.getByText("Choir")).toBeInTheDocument();
+      expect(screen.queryByRole("link", { name: "Choir" })).not.toBeInTheDocument();
+    });
+
+    it("changes an exception right from the settings page", async () => {
+      withExceptions();
+      renderWithProviders(<Settings />);
+      await userEvent.selectOptions(
+        await screen.findByRole("combobox", { name: "Notifications for Youth Group" }),
+        "ALL"
+      );
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/notifications/group-preferences/g1", {
+          method: "PUT",
+          body: { notificationPref: "ALL" },
+          withOrg: false,
+        })
+      );
+    });
+
+    it("deletes an exception, and the row goes", async () => {
+      withExceptions();
+      renderWithProviders(<Settings />);
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Use your default for Youth Group" })
+      );
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/notifications/group-preferences/g1", {
+          method: "DELETE",
+          withOrg: false,
+        })
+      );
+      await waitFor(() => expect(screen.queryByText("Youth Group")).not.toBeInTheDocument());
+      expect(screen.getByText("Choir")).toBeInTheDocument();
+    });
   });
 
   describe("when push cannot work here", () => {

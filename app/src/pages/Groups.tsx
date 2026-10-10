@@ -13,7 +13,8 @@ import {
   type GroupVisibility,
 } from "@shared";
 import { api } from "../lib/api";
-import { matchesTerm } from "../lib/highlight";
+import { highlightRanges, matchesTerm } from "../lib/highlight";
+import { Highlight } from "../components/Highlight";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
 import { Link } from "../components/nav";
@@ -181,14 +182,14 @@ export function Groups() {
         <>
           {pinned.length > 0 && (
             <section className="mb-8">
-              <h2 className="mb-3 font-bold text-ink">Pinned</h2>
-              <GroupGrid groups={pinned} onTogglePin={pinMutation.mutate} />
+              <h2 className="mb-3 font-bold text-ink">Starred</h2>
+              <GroupGrid groups={pinned} terms={terms} onTogglePin={pinMutation.mutate} />
             </section>
           )}
           {mine.length > 0 && (
             <section className="mb-8">
               <h2 className="mb-3 font-bold text-ink">Yours</h2>
-              <GroupGrid groups={mine} onTogglePin={pinMutation.mutate} />
+              <GroupGrid groups={mine} terms={terms} onTogglePin={pinMutation.mutate} />
             </section>
           )}
           {others.length > 0 && (
@@ -196,7 +197,7 @@ export function Groups() {
               {(pinned.length > 0 || mine.length > 0) && (
                 <h2 className="mb-3 font-bold text-ink">More groups</h2>
               )}
-              <GroupGrid groups={others} onTogglePin={pinMutation.mutate} />
+              <GroupGrid groups={others} terms={terms} onTogglePin={pinMutation.mutate} />
             </section>
           )}
         </>
@@ -228,16 +229,18 @@ export function Groups() {
  */
 function GroupGrid({
   groups,
+  terms,
   onTogglePin,
 }: {
   groups: GroupSummaryDto[];
+  terms: readonly string[];
   onTogglePin: (args: { groupId: string; pinned: boolean }) => void;
 }) {
   return (
     <ul className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {groups.map((group) => (
         <li key={group.id}>
-          <GroupCard group={group} onTogglePin={onTogglePin} />
+          <GroupCard group={group} terms={terms} onTogglePin={onTogglePin} />
         </li>
       ))}
     </ul>
@@ -252,9 +255,11 @@ const VISIBILITY_TONE: Record<GroupVisibility, "neutral" | "accent" | "primary">
 
 function GroupCard({
   group,
+  terms,
   onTogglePin,
 }: {
   group: GroupSummaryDto;
+  terms: readonly string[];
   onTogglePin: (args: { groupId: string; pinned: boolean }) => void;
 }) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
@@ -268,7 +273,7 @@ function GroupCard({
     >
       <button
         type="button"
-        aria-label={group.pinned ? `Unpin ${group.title}` : `Pin ${group.title}`}
+        aria-label={group.pinned ? `Unstar ${group.title}` : `Star ${group.title}`}
         aria-pressed={group.pinned}
         onClick={(event) => {
           // The card underneath is one big link -- without these this would
@@ -284,7 +289,7 @@ function GroupCard({
         }`}
       >
         <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
-          <path d="M10 2a1 1 0 0 1 1 1v5.382l3.447 1.724A1 1 0 0 1 15 12H11v5a1 1 0 1 1-2 0v-5H5a1 1 0 0 1-.447-1.894L8 8.382V3a1 1 0 0 1 1-1h1Z" />
+          <path d="M10 1.8l2.4 5.1 5.6.7-4.1 3.9 1 5.5L10 14.2 5.1 17l1-5.5L2 7.6l5.6-.7L10 1.8Z" />
         </svg>
       </button>
 
@@ -304,7 +309,7 @@ function GroupCard({
       <div className="flex flex-1 flex-col gap-2 p-4">
         <div className="flex items-start justify-between gap-2">
           <h3 className="min-w-0 break-words text-lg font-bold leading-snug text-ink transition group-hover:text-accent">
-            {group.title}
+            <Highlight text={group.title} ranges={highlightRanges(group.title, terms)} />
           </h3>
           {group.unreadCount > 0 && <Badge tone="primary">{group.unreadCount} new</Badge>}
         </div>

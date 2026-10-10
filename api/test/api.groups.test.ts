@@ -578,6 +578,7 @@ describe.skipIf(!hasDb)("groups", () => {
         expect.arrayContaining([
           {
             appUserId: creator.appUserId,
+            personId: creator.personId,
             name: "Cara Creator",
             thumbUrl: null,
             response: "YES",
@@ -585,6 +586,7 @@ describe.skipIf(!hasDb)("groups", () => {
           },
           {
             appUserId: member.appUserId,
+            personId: member.personId,
             name: "Mo Member",
             thumbUrl: null,
             response: "MAYBE",
@@ -689,6 +691,253 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(
         inbox.body.notifications.some((n: { type: string }) => n.type === "GROUP_POST_REPORT")
       ).toBe(true);
+    });
+  });
+
+  describe("notification defaults and exceptions", () => {
+    async function joined(): Promise<string> {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      return groupId;
+    }
+    const notificationsFor = async (u: CreatedUser, type: string) =>
+      (await as(u).call("GET", "/api/notifications")).body.notifications.filter(
+        (n: { type: string }) => n.type === type
+      ).length;
+
+    it("starts a new membership as 'follow my default'", async () => {
+      const groupId = await joined();
+      const detail = await as(member).call("GET", `/api/groups/${groupId}`);
+      expect(detail.body.notificationPref).toBeNull();
+      expect(detail.body.notificationPrefDefault).toBe("ALL");
+    });
+
+    it("notifies a member with no exception and no preferences row (the sparse default)", async () => {
+      const groupId = await joined();
+      await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Hi" });
+      expect(await notificationsFor(member, "GROUP_POST")).toBe(1);
+    });
+
+    it("follows an account default of MENTIONS: no post notification, but a mention gets through", async () => {
+      const groupId = await joined();
+      await as(member).call("PUT", "/api/notifications/preferences", {
+        groupNotificationPref: "MENTIONS",
+      });
+      await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Plain" });
+      expect(await notificationsFor(member, "GROUP_POST")).toBe(0);
+
+      await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hi @Mo Member",
+        mentionedAppUserIds: [member.appUserId],
+      });
+      expect(await notificationsFor(member, "GROUP_MENTION")).toBe(1);
+    });
+
+    it("follows an account default of NONE, even for mentions", async () => {
+      const groupId = await joined();
+      await as(member).call("PUT", "/api/notifications/preferences", {
+        groupNotificationPref: "NONE",
+      });
+      await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hi @Mo Member",
+        mentionedAppUserIds: [member.appUserId],
+      });
+      expect(await notificationsFor(member, "GROUP_POST")).toBe(0);
+      expect(await notificationsFor(member, "GROUP_MENTION")).toBe(0);
+    });
+
+    it("lets an ALL exception override a NONE default, and a NONE exception override ALL", async () => {
+      const groupId = await joined();
+      await as(member).call("PUT", "/api/notifications/preferences", {
+        groupNotificationPref: "NONE",
+      });
+      await as(member).call("PUT", `/api/groups/${groupId}/notification-preference`, {
+        notificationPref: "ALL",
+      });
+      await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "One" });
+      expect(await notificationsFor(member, "GROUP_POST")).toBe(1);
+
+      await as(member).call("PUT", "/api/notifications/preferences", {
+        groupNotificationPref: "ALL",
+      });
+      await as(member).call("PUT", `/api/groups/${groupId}/notification-preference`, {
+        notificationPref: "NONE",
+      });
+      await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Two @Mo Member",
+        mentionedAppUserIds: [member.appUserId],
+      });
+      expect(await notificationsFor(member, "GROUP_POST")).toBe(1);
+      expect(await notificationsFor(member, "GROUP_MENTION")).toBe(0);
+    });
+
+    it("does not tell a NONE-default RSVPer that an event changed", async () => {
+      const groupId = await joined();
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Potluck", eventDate: "2030-01-01" },
+      });
+      await as(member).call("PUT", `/api/groups/${groupId}/posts/${event.body.id}/rsvp`, {
+        response: "YES",
+        guestCount: 0,
+      });
+      await as(member).call("PUT", "/api/notifications/preferences", {
+        groupNotificationPref: "NONE",
+      });
+      await as(creator).call("PATCH", `/api/groups/${groupId}/posts/${event.body.id}`, {
+        event: { eventTitle: "Potluck", eventDate: "2030-01-02" },
+      });
+      expect(await notificationsFor(member, "GROUP_EVENT")).toBe(0);
+    });
+
+    it("lists exceptions with the preferences, and clears one with null or DELETE", async () => {
+      const groupId = await joined();
+      await as(member).call("PUT", `/api/groups/${groupId}/notification-preference`, {
+        notificationPref: "MENTIONS",
+      });
+      const prefs = await as(member).call("GET", "/api/notifications/preferences");
+      expect(prefs.body.groupNotificationPref).toBe("ALL");
+      expect(prefs.body.groupExceptions).toEqual([
+        { groupId, groupTitle: "Youth Group", organizationId: orgId, notificationPref: "MENTIONS" },
+      ]);
+
+      const changed = await as(member).call(
+        "PUT",
+        `/api/notifications/group-preferences/${groupId}`,
+        {
+          notificationPref: "NONE",
+        }
+      );
+      expect(changed.body.groupExceptions[0].notificationPref).toBe("NONE");
+
+      const cleared = await as(member).call(
+        "DELETE",
+        `/api/notifications/group-preferences/${groupId}`
+      );
+      expect(cleared.status).toBe(200);
+      expect(cleared.body.groupExceptions).toEqual([]);
+
+      await as(member).call("PUT", `/api/groups/${groupId}/notification-preference`, {
+        notificationPref: "NONE",
+      });
+      await as(member).call("PUT", `/api/groups/${groupId}/notification-preference`, {
+        notificationPref: null,
+      });
+      const after = await as(member).call("GET", "/api/notifications/preferences");
+      expect(after.body.groupExceptions).toEqual([]);
+    });
+
+    it("refuses an exception for a group the caller is not in", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const put = await as(outsider).call(
+        "PUT",
+        `/api/notifications/group-preferences/${groupId}`,
+        {
+          notificationPref: "NONE",
+        }
+      );
+      expect(put.status).toBe(403);
+      const del = await as(outsider).call(
+        "DELETE",
+        `/api/notifications/group-preferences/${groupId}`
+      );
+      expect(del.status).toBe(403);
+    });
+
+    it("changing the default leaves the prayer switches alone and keeps exceptions out of the audit log", async () => {
+      const groupId = await joined();
+      await as(member).call("PUT", `/api/groups/${groupId}/notification-preference`, {
+        notificationPref: "NONE",
+      });
+      await as(member).call("PUT", "/api/notifications/preferences", { prayerRequests: false });
+      const res = await as(member).call("PUT", "/api/notifications/preferences", {
+        groupNotificationPref: "MENTIONS",
+      });
+      expect(res.body.prayerRequests).toBe(false);
+      expect(res.body.groupNotificationPref).toBe("MENTIONS");
+
+      const { rows } = await db().query<{ changes: Record<string, unknown> }>(
+        "select changes from audit_log where action = 'user.changeNotifications'"
+      );
+      expect(rows.length).toBeGreaterThan(0);
+      for (const row of rows) expect(row.changes).not.toHaveProperty("groupExceptions");
+    });
+  });
+
+  describe("people ids and editing mentions", () => {
+    async function joined(): Promise<string> {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      return groupId;
+    }
+    const mentionNotifications = async (u: CreatedUser, type: string) =>
+      (await as(u).call("GET", "/api/notifications")).body.notifications.filter(
+        (n: { type: string }) => n.type === type
+      ).length;
+
+    it("carries the person id on mentions and the files author", async () => {
+      const groupId = await joined();
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hi @Mo Member",
+        mentionedAppUserIds: [member.appUserId],
+      });
+      expect(post.body.mentions).toEqual([
+        { appUserId: member.appUserId, personId: member.personId, name: "Mo Member" },
+      ]);
+    });
+
+    it("notifies only newly added mentions, and removes dropped ones", async () => {
+      const groupId = await joined();
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hi",
+      });
+      const url = `/api/groups/${groupId}/posts/${post.body.id}`;
+
+      const add = await as(creator).call("PATCH", url, {
+        body: "Hi @Mo Member",
+        mentionedAppUserIds: [member.appUserId],
+      });
+      expect(add.status).toBe(200);
+      expect(add.body.mentions).toHaveLength(1);
+      expect(await mentionNotifications(member, "GROUP_MENTION")).toBe(1);
+      // The unread "new post" was retracted in favour of the mention.
+      expect(await mentionNotifications(member, "GROUP_POST")).toBe(0);
+
+      // Same mention again: nothing new.
+      await as(creator).call("PATCH", url, {
+        body: "Hi again @Mo Member",
+        mentionedAppUserIds: [member.appUserId],
+      });
+      expect(await mentionNotifications(member, "GROUP_MENTION")).toBe(1);
+
+      const clear = await as(creator).call("PATCH", url, { body: "Hi", mentionedAppUserIds: [] });
+      expect(clear.body.mentions).toEqual([]);
+    });
+
+    it("leaves mentions alone when the field is omitted", async () => {
+      const groupId = await joined();
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hi @Mo Member",
+        mentionedAppUserIds: [member.appUserId],
+      });
+      const res = await as(creator).call("PATCH", `/api/groups/${groupId}/posts/${post.body.id}`, {
+        body: "Hi @Mo Member!",
+      });
+      expect(res.body.mentions).toHaveLength(1);
+    });
+
+    it("rejects mentioning a non-member in an edit", async () => {
+      const groupId = await joined();
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Hi" });
+      const res = await as(creator).call("PATCH", `/api/groups/${groupId}/posts/${post.body.id}`, {
+        body: "Hi",
+        mentionedAppUserIds: [outsider.appUserId],
+      });
+      expect(res.status).toBe(400);
     });
   });
 });

@@ -1,5 +1,19 @@
 import { rolesAtLeast } from "../types";
 import type { Queryable } from "../db";
+import { one } from "../db";
+import type { GroupNotificationExceptionDto, GroupNotificationPref } from "../types";
+
+/**
+ * A member's effective preference: their own exception if they have one, else
+ * the account default, else 'ALL'. `notification_preferences` is sparse -- a
+ * missing row means every default is on -- so it is a LEFT JOIN, and the
+ * trailing 'ALL' is what an account with no row gets. Both fragments assume the
+ * membership alias is `gm`.
+ */
+export const GROUP_PREF_JOIN =
+  "left join notification_preferences np on np.app_user_id = gm.app_user_id";
+export const EFFECTIVE_GROUP_PREF =
+  "coalesce(gm.notification_pref, np.group_notification_pref, 'ALL')";
 
 /**
  * Fan-out for group activity, following the same shape prayer requests use in
@@ -37,8 +51,9 @@ export async function fanOutGroupPost(
      select gm.app_user_id, $2, 'GROUP_POST', $1, $3
        from group_members gm
        join app_users u on u.id = gm.app_user_id
+       ${GROUP_PREF_JOIN}
       where gm.group_id = $1
-        and gm.notification_pref = 'ALL'
+        and ${EFFECTIVE_GROUP_PREF} = 'ALL'
         and u.status = 'ACTIVE'
         and gm.app_user_id <> $4
         and gm.app_user_id <> all($5::uuid[])
@@ -77,9 +92,10 @@ export async function fanOutGroupMention(
      select gm.app_user_id, $2, 'GROUP_MENTION', $1, $3
        from group_members gm
        join app_users u on u.id = gm.app_user_id
+       ${GROUP_PREF_JOIN}
       where gm.group_id = $1
         and gm.app_user_id = any($5::uuid[])
-        and gm.notification_pref <> 'NONE'
+        and ${EFFECTIVE_GROUP_PREF} <> 'NONE'
         and u.status = 'ACTIVE'
         and gm.app_user_id <> $4
      on conflict do nothing
@@ -150,8 +166,9 @@ export async function fanOutGroupEventChange(
        from group_event_rsvps r
        join group_members gm on gm.group_id = $1 and gm.app_user_id = r.app_user_id
        join app_users u on u.id = r.app_user_id
+       ${GROUP_PREF_JOIN}
       where r.post_id = $3
-        and gm.notification_pref <> 'NONE'
+        and ${EFFECTIVE_GROUP_PREF} <> 'NONE'
         and u.status = 'ACTIVE'
         and r.app_user_id <> $4
      on conflict do nothing
@@ -204,4 +221,67 @@ export async function fanOutGroupPostReport(
     ]
   );
   return rows.map((row) => row.app_user_id);
+}
+
+/**
+ * Set (or, with null, clear) one account's exception for one group. Returns
+ * false when they are not a member, which the caller turns into a 403.
+ */
+export async function setGroupNotificationPref(
+  q: Queryable,
+  appUserId: string,
+  groupId: string,
+  pref: GroupNotificationPref | null
+): Promise<boolean> {
+  const { rows } = await q.query<{ one: number }>(
+    `update group_members set notification_pref = $3
+      where group_id = $1 and app_user_id = $2
+      returning 1 as one`,
+    [groupId, appUserId, pref]
+  );
+  return rows.length > 0;
+}
+
+/**
+ * Every group this account has an exception for.
+ *
+ * Deliberately not filtered by organization, like the rest of the account-scoped
+ * notification endpoints (see routes/notifications.ts): a super admin can belong
+ * to groups in more than one parish.
+ */
+export async function loadGroupExceptions(
+  q: Queryable,
+  appUserId: string
+): Promise<GroupNotificationExceptionDto[]> {
+  const { rows } = await q.query<{
+    group_id: string;
+    title: string;
+    organization_id: string;
+    notification_pref: GroupNotificationPref;
+  }>(
+    `select gm.group_id, g.title, g.organization_id, gm.notification_pref
+       from group_members gm
+       join groups g on g.id = gm.group_id
+      where gm.app_user_id = $1 and gm.notification_pref is not null
+      order by g.title`,
+    [appUserId]
+  );
+  return rows.map((row) => ({
+    groupId: row.group_id,
+    groupTitle: row.title,
+    organizationId: row.organization_id,
+    notificationPref: row.notification_pref,
+  }));
+}
+
+export async function loadGroupNotificationDefault(
+  q: Queryable,
+  appUserId: string
+): Promise<GroupNotificationPref> {
+  const row = await one<{ group_notification_pref: GroupNotificationPref }>(
+    q,
+    "select group_notification_pref from notification_preferences where app_user_id = $1",
+    [appUserId]
+  );
+  return row?.group_notification_pref ?? "ALL";
 }

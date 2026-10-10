@@ -360,7 +360,12 @@ describe.skipIf(!hasDb)("notifications", () => {
     it("defaults to on, with no row stored", async () => {
       const { status, body } = await as(member).call("GET", "/api/notifications/preferences");
       expect(status).toBe(200);
-      expect(body).toEqual({ prayerRequests: true, prayerRequestReviews: true });
+      expect(body).toEqual({
+        prayerRequests: true,
+        prayerRequestReviews: true,
+        groupNotificationPref: "ALL",
+        groupExceptions: [],
+      });
 
       const { rows } = await db().query<{ count: string }>(
         "select count(*)::text as count from notification_preferences"
@@ -372,7 +377,12 @@ describe.skipIf(!hasDb)("notifications", () => {
       const off = await as(member).call("PUT", "/api/notifications/preferences", {
         prayerRequests: false,
       });
-      expect(off.body).toEqual({ prayerRequests: false, prayerRequestReviews: true });
+      expect(off.body).toEqual({
+        prayerRequests: false,
+        prayerRequestReviews: true,
+        groupNotificationPref: "ALL",
+        groupExceptions: [],
+      });
 
       await post();
 
@@ -405,7 +415,12 @@ describe.skipIf(!hasDb)("notifications", () => {
     it("leaves an unmentioned preference alone", async () => {
       await as(member).call("PUT", "/api/notifications/preferences", { prayerRequests: false });
       const { body } = await as(member).call("PUT", "/api/notifications/preferences", {});
-      expect(body).toEqual({ prayerRequests: false, prayerRequestReviews: true });
+      expect(body).toEqual({
+        prayerRequests: false,
+        prayerRequestReviews: true,
+        groupNotificationPref: "ALL",
+        groupExceptions: [],
+      });
     });
 
     it("saves one switch without disturbing the other", async () => {
@@ -417,13 +432,23 @@ describe.skipIf(!hasDb)("notifications", () => {
       const { body } = await as(reviewer).call("PUT", "/api/notifications/preferences", {
         prayerRequestReviews: false,
       });
-      expect(body).toEqual({ prayerRequests: false, prayerRequestReviews: false });
+      expect(body).toEqual({
+        prayerRequests: false,
+        prayerRequestReviews: false,
+        groupNotificationPref: "ALL",
+        groupExceptions: [],
+      });
     });
 
     it("is per account, not per parish", async () => {
       await as(member).call("PUT", "/api/notifications/preferences", { prayerRequests: false });
       const { body } = await as(other).call("GET", "/api/notifications/preferences");
-      expect(body).toEqual({ prayerRequests: true, prayerRequestReviews: true });
+      expect(body).toEqual({
+        prayerRequests: true,
+        prayerRequestReviews: true,
+        groupNotificationPref: "ALL",
+        groupExceptions: [],
+      });
     });
 
     /*
@@ -440,7 +465,11 @@ describe.skipIf(!hasDb)("notifications", () => {
         [member.appUserId]
       );
       expect(rows).toHaveLength(1);
-      expect(rows[0]!.changes).toEqual({ prayerRequests: false, prayerRequestReviews: true });
+      expect(rows[0]!.changes).toEqual({
+        prayerRequests: false,
+        prayerRequestReviews: true,
+        groupNotificationPref: "ALL",
+      });
     });
   });
 

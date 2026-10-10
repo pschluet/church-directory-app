@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { render, screen, waitFor } from "@testing-library/react";
 import { useState } from "react";
 import userEvent from "@testing-library/user-event";
-import { AddressAutocomplete } from "../src/components/AddressAutocomplete";
+import { AddressAutocomplete, LocationAutocomplete } from "../src/components/AddressAutocomplete";
 
 /**
  * Address suggestions, and the session token that makes them free.
@@ -321,5 +321,44 @@ describe("AddressAutocomplete after a pick", () => {
 
     await userEvent.type(screen.getByRole("combobox"), "nue");
     expect(await screen.findByRole("option", { name: /4129 W Newport Ave/ })).toBeInTheDocument();
+  });
+});
+
+describe("LocationAutocomplete", () => {
+  beforeEach(() => {
+    tokens = [];
+    placeConstructions = [];
+    maps.mockReturnValue({ maps: { browserKey: "browser-key", mapId: "map-id" } });
+    stubPlaces();
+  });
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("is a plain input when this parish has no key", () => {
+    maps.mockReturnValue({ maps: null });
+    render(<LocationAutocomplete value="Hall" onChange={() => {}} maxLength={200} />);
+    expect(screen.getByRole("textbox")).toHaveAttribute("maxlength", "200");
+    expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
+  });
+
+  it("suggests venues, not just street addresses", async () => {
+    render(<LocationAutocomplete value="St. Mary" onChange={() => {}} />);
+    await waitFor(() => expect(fetchSuggestions).toHaveBeenCalled());
+    expect(fetchSuggestions.mock.calls[0]![0]).not.toHaveProperty("includedPrimaryTypes");
+  });
+
+  it("keeps the text Google showed, and closes the session with Essentials fields only", async () => {
+    const onChange = vi.fn();
+    render(<LocationAutocomplete value="4129 W New" onChange={onChange} />);
+    await userEvent.click(await screen.findByRole("option", { name: /4129 W Newport Ave/ }));
+
+    expect(onChange).toHaveBeenCalledWith("4129 W Newport Ave, Chicago, IL 60641, USA");
+    await waitFor(() => expect(fetchFields).toHaveBeenCalledTimes(1));
+    const { fields } = fetchFields.mock.calls[0]![0];
+    // displayName is a Place Details Pro field: never asked for.
+    expect(fields).not.toContain("displayName");
+    expect(fields).toEqual(["formattedAddress", "location", "id"]);
   });
 });

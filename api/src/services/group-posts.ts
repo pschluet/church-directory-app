@@ -69,6 +69,7 @@ export const GROUP_POST_SELECT = `
                     json_agg(
                       json_build_object(
                         'appUserId', m.app_user_id,
+                        'personId', mp.id,
                         'firstName', mp.first_name,
                         'lastName', mp.last_name
                       )
@@ -107,6 +108,7 @@ interface AttachmentRow {
 
 interface MentionRow {
   appUserId: string;
+  personId: string;
   firstName: string;
   lastName: string | null;
 }
@@ -197,6 +199,7 @@ export function toGroupPostDto(
       ? []
       : row.mentions.map((m) => ({
           appUserId: m.appUserId,
+          personId: m.personId,
           name: fullName({ firstName: m.firstName, lastName: m.lastName }),
         })),
     event:

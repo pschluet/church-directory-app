@@ -789,6 +789,10 @@ export interface InboxDto {
   notifications: NotificationDto[];
 }
 
+export const GROUP_NOTIFICATION_PREFS = ["ALL", "MENTIONS", "NONE"] as const;
+export const groupNotificationPrefSchema = z.enum(GROUP_NOTIFICATION_PREFS);
+export type GroupNotificationPref = z.infer<typeof groupNotificationPrefSchema>;
+
 /**
  * What somebody wants to be told about.
  *
@@ -807,12 +811,26 @@ export interface InboxDto {
 export const notificationPreferencesSchema = z.object({
   prayerRequests: z.boolean().optional(),
   prayerRequestReviews: z.boolean().optional(),
+  /** The default for every group; a group's own setting is an exception to it. */
+  groupNotificationPref: groupNotificationPrefSchema.optional(),
 });
 export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>;
 
 export interface NotificationPreferencesDto {
   prayerRequests: boolean;
   prayerRequestReviews: boolean;
+  groupNotificationPref: GroupNotificationPref;
+  groupExceptions: GroupNotificationExceptionDto[];
+}
+
+/** A group whose notification setting differs from the account default. */
+export interface GroupNotificationExceptionDto {
+  groupId: string;
+  groupTitle: string;
+  /** May differ from the active parish for a super admin; the SPA only links when it matches. */
+  organizationId: string;
+  /** Never null: an exception is, by definition, a stated preference. */
+  notificationPref: GroupNotificationPref;
 }
 
 /**
@@ -885,9 +903,15 @@ export const GROUP_MEMBER_ROLES = ["ADMIN", "MEMBER"] as const;
 export const groupMemberRoleSchema = z.enum(GROUP_MEMBER_ROLES);
 export type GroupMemberRole = z.infer<typeof groupMemberRoleSchema>;
 
-export const GROUP_NOTIFICATION_PREFS = ["ALL", "MENTIONS", "NONE"] as const;
-export const groupNotificationPrefSchema = z.enum(GROUP_NOTIFICATION_PREFS);
-export type GroupNotificationPref = z.infer<typeof groupNotificationPrefSchema>;
+/**
+ * One set of words for the three preferences, shared by the Settings page and
+ * the group's own panel so the two cannot drift apart.
+ */
+export const GROUP_NOTIFICATION_PREF_LABELS: Record<GroupNotificationPref, string> = {
+  ALL: "All messages",
+  MENTIONS: "Only when I'm mentioned",
+  NONE: "Nothing",
+};
 
 /**
  * A separate lifecycle from `JOIN_REQUEST_STATUSES`, even though the values
@@ -968,7 +992,8 @@ export const groupSettingsSchema = z.object({
 export type GroupSettings = z.infer<typeof groupSettingsSchema>;
 
 export const groupNotificationPrefUpdateSchema = z.object({
-  notificationPref: groupNotificationPrefSchema,
+  /** Null means "follow my default" -- the exception is removed. */
+  notificationPref: groupNotificationPrefSchema.nullable(),
 });
 export type GroupNotificationPrefUpdate = z.infer<typeof groupNotificationPrefUpdateSchema>;
 
@@ -1047,6 +1072,8 @@ export type GroupPostCreate = z.infer<typeof groupPostCreateSchema>;
 
 export const groupPostUpdateSchema = z.object({
   body: z.string().trim().min(1, "Say something").max(GROUP_POST_BODY_MAX).optional(),
+  /** Absent leaves mentions alone, so an event-only edit cannot wipe them. */
+  mentionedAppUserIds: z.array(uuidSchema).max(50).optional(),
   event: groupEventFieldsSchema.optional(),
 });
 export type GroupPostUpdate = z.infer<typeof groupPostUpdateSchema>;
@@ -1123,7 +1150,10 @@ export interface GroupDto extends GroupSummaryDto {
   members: GroupMemberDto[];
   /** Requests waiting on the caller to decide. Empty unless the caller is an admin. */
   pendingJoinRequests: GroupJoinRequestDto[];
-  notificationPref: GroupNotificationPref;
+  /** The caller's exception for this group, or null when they follow their default. */
+  notificationPref: GroupNotificationPref | null;
+  /** The caller's account-wide default, so the panel can name what "default" means. */
+  notificationPrefDefault: GroupNotificationPref;
   /**
    * Per-row capability flags, as on PersonDto.canEdit -- the SPA renders off
    * these rather than re-deriving the membership/role/restriction rules in two
@@ -1166,6 +1196,7 @@ export interface GroupEventDto {
  */
 export interface GroupEventRsvpDto {
   appUserId: string;
+  personId: string;
   name: string;
   thumbUrl: string | null;
   response: GroupRsvpResponse;
@@ -1189,6 +1220,7 @@ export interface GroupPostAttachmentDto {
 
 export interface GroupPostMentionDto {
   appUserId: string;
+  personId: string;
   name: string;
 }
 
@@ -1233,6 +1265,7 @@ export interface GroupPostReportDto {
 export interface GroupFileDto {
   postId: string;
   postCreatedAt: string;
+  authorPersonId: string;
   authorName: string;
   attachment: GroupPostAttachmentDto;
 }

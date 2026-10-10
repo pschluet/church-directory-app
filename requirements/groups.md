@@ -109,3 +109,7 @@ TODO
 - The group search should have higlighting like the other searches in the app.
 - Make the pin icon (for pinning groups) look more like a pin. The top part (above the horizontal crossbar) should be wider.
 - Don't show the group photo on the individual group's page. Only on the page that shows all the groups.
+
+- The group description should be editable.
+- On the group settings page, when you click the 3 dots button next to a group member's name, the modal is hidden. Fix this.
+- The group messages/posts must be realtime. One one user posts a message, it should be immediately visible to everyone (like Slack).
