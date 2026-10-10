@@ -269,6 +269,9 @@ export async function assertValidReplyParent(
   if (parent.parent_post_id !== null) {
     throw new HTTPException(400, { message: "You can only reply to a top-level post" });
   }
+  if (parent.deleted_at !== null) {
+    throw new HTTPException(409, { message: "That post has been deleted" });
+  }
 }
 
 /** The group photo's URLs -- free-form crop, thumb/full, no card rendition. */

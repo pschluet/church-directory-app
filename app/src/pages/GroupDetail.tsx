@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -24,6 +24,7 @@ import { qk } from "../lib/queryKeys";
 import { formatPostedAt } from "../lib/format";
 import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
+import { PhotoLightbox } from "../components/PhotoLightbox";
 import { PersonPicker, type PickedPerson } from "../components/PersonPicker";
 import { usePhotoPicker } from "../components/usePhotoPicker";
 import { useGroupAttachmentPicker } from "../components/useGroupAttachmentPicker";
@@ -66,6 +67,7 @@ export function GroupDetail() {
   const [tab, setTab] = useState<Tab>("messages");
   const [showMembers, setShowMembers] = useState(false);
   const [reporting, setReporting] = useState<GroupPostDto | null>(null);
+  const [confirmLeave, setConfirmLeave] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
 
   const groupQuery = useQuery({
@@ -100,19 +102,60 @@ export function GroupDetail() {
         method: "POST",
         body: { personId: me!.appUser.personId },
       }),
-    onSuccess: () => void refresh(),
+    onSuccess: () => {
+      setActionError(null);
+      void refresh();
+    },
     onError: (err) => handleActionError(err, "Could not join that group"),
   });
 
   const requestToJoinMutation = useMutation({
     mutationFn: () => api(`/groups/${groupId}/join-requests`, { method: "POST" }),
-    onSuccess: () => void refresh(),
+    onSuccess: () => {
+      setActionError(null);
+      void refresh();
+    },
     onError: (err) => handleActionError(err, "Could not send that request"),
+  });
+
+  const leaveMutation = useMutation({
+    mutationFn: () => api(`/groups/${groupId}/leave`, { method: "POST" }),
+    onSuccess: () => {
+      setActionError(null);
+      setConfirmLeave(false);
+      void refresh();
+    },
+    // Not `handleActionError`: a 409 here is the sole-admin guard with its own
+    // specific message ("promote another admin first"), not a stale-page race
+    // -- the generic handler's "somebody else got there first" would be wrong
+    // about what actually happened and offer nothing useful to do about it.
+    onError: (err) => {
+      setConfirmLeave(false);
+      setActionError(err instanceof Error ? err.message : "Could not leave that group");
+    },
   });
 
   const markReadMutation = useMutation({
     mutationFn: () => api(`/groups/${groupId}/read`, { method: "POST" }),
+    // Settled rather than left to the default: a push could land mid-flight
+    // and refetch pre-commit state, the same reasoning NotificationBell's own
+    // mark-read gives for not trusting an optimistic update alone.
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: qk.group(organizationId, groupId) });
+      void queryClient.invalidateQueries({ queryKey: qk.groups(organizationId) });
+    },
   });
+
+  /*
+   * Viewing the group is what clears its badge -- the same convention
+   * NotificationBell uses ("opening it marks everything read"), rather than a
+   * button a member has to remember to press. Gated on being a member (no
+   * reading position otherwise) and on there being something to clear, so this
+   * fires once per group per unread batch rather than on every render.
+   */
+  useEffect(() => {
+    if (group?.myRole && group.unreadCount > 0) markReadMutation.mutate();
+  }, [groupId, group?.myRole, group?.unreadCount]);
 
   if (groupQuery.isPending) return <Spinner label="Loading the group" />;
   if (groupQuery.error) {
@@ -143,17 +186,6 @@ export function GroupDetail() {
         }
         actions={
           <div className="flex flex-wrap items-center gap-2">
-            {group.myRole && group.unreadCount === 0 ? null : group.myRole ? (
-              <Button
-                variant="ghost"
-                onClick={() => {
-                  markReadMutation.mutate();
-                  void refresh();
-                }}
-              >
-                Mark as read
-              </Button>
-            ) : null}
             {!group.myRole && group.visibility === "PUBLIC" && (
               <Button disabled={joinMutation.isPending} onClick={() => joinMutation.mutate()}>
                 {joinMutation.isPending ? "Joining…" : "Join"}
@@ -169,6 +201,11 @@ export function GroupDetail() {
             )}
             {!group.myRole && group.pendingJoinRequestId && (
               <Badge tone="accent">Waiting for approval</Badge>
+            )}
+            {group.myRole && (
+              <Button variant="ghost" onClick={() => setConfirmLeave(true)}>
+                Leave
+              </Button>
             )}
           </div>
         }
@@ -191,6 +228,16 @@ export function GroupDetail() {
           You are viewing this group as a parish administrator. You are not a member, and this visit
           has been recorded.
         </div>
+      )}
+
+      {group.thumbUrl && (
+        <GroupPhoto
+          thumbUrl={group.thumbUrl}
+          fullUrl={group.fullUrl}
+          width={group.photoWidth}
+          height={group.photoHeight}
+          title={group.title}
+        />
       )}
 
       {group.description && <p className="mb-4 text-ink-muted">{group.description}</p>}
@@ -261,6 +308,21 @@ export function GroupDetail() {
           }}
         />
       )}
+
+      {confirmLeave && (
+        <ConfirmDialog
+          title="Leave this group?"
+          confirmLabel="Leave it"
+          busy={leaveMutation.isPending}
+          onConfirm={() => leaveMutation.mutate()}
+          onClose={() => setConfirmLeave(false)}
+        >
+          <p>
+            Your past posts stay in the group, still attributed to you. You can rejoin later if
+            the group is still open to it.
+          </p>
+        </ConfirmDialog>
+      )}
     </>
   );
 }
@@ -306,6 +368,61 @@ function RefreshButton({
         </svg>
       </button>
     </span>
+  );
+}
+
+/**
+ * The group's own cover photo, shown whole -- the same reasoning FamilyPhoto
+ * gives for not using `Avatar`: a group photo is a group, and a circle crops
+ * most of one out. `object-contain` inside a box built from the stored crop
+ * dimensions means nothing is cut off and nothing shifts as it loads.
+ */
+function GroupPhoto({
+  thumbUrl,
+  fullUrl,
+  width,
+  height,
+  title,
+}: {
+  thumbUrl: string;
+  fullUrl: string | null;
+  width: number | null;
+  height: number | null;
+  title: string;
+}) {
+  const [zoomed, setZoomed] = useState(false);
+  const [failedUrl, setFailedUrl] = useState<string | null>(null);
+  if (failedUrl === thumbUrl) return null;
+
+  const image = (
+    <img
+      src={thumbUrl}
+      alt={title}
+      width={width ?? 4}
+      height={height ?? 3}
+      loading="lazy"
+      decoding="async"
+      onError={() => setFailedUrl(thumbUrl)}
+      className="h-auto w-full rounded-lg border border-line bg-surface-muted object-contain"
+    />
+  );
+
+  return (
+    <div className="mb-4 max-w-sm">
+      {fullUrl ? (
+        <button
+          type="button"
+          onClick={() => setZoomed(true)}
+          aria-label={`Show the ${title} photo full screen`}
+          className="block w-full rounded-lg transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+        >
+          {image}
+        </button>
+      ) : (
+        image
+      )}
+      {zoomed && fullUrl && <PhotoLightbox src={fullUrl} alt={title} onClose={() => setZoomed(false)} />}
+    </div>
   );
 }
 
@@ -553,26 +670,33 @@ function PostCard({
             </>
           )}
 
-          {!isReply && !isDeleted && (
+          {/*
+            A deleted post keeps its reply thread reachable -- "a placeholder
+            stays in its place so any replies keep their context"
+            (requirements/groups.md) means the thread, not just the tombstone
+            text. Only starting a *new* reply is cut off once there is nothing
+            left to reply to.
+          */}
+          {!isReply && (!isDeleted || post.replyCount > 0) && (
             <div className="mt-3 flex items-center gap-4 text-sm">
-              <button
-                type="button"
-                className="font-bold text-ink-muted hover:text-primary"
-                onClick={() => setShowReplies((v) => !v)}
-              >
-                {post.replyCount === 0
-                  ? "Reply"
-                  : showReplies
+              {post.replyCount > 0 && (
+                <button
+                  type="button"
+                  className="font-bold text-ink-muted hover:text-primary"
+                  onClick={() => setShowReplies((v) => !v)}
+                >
+                  {showReplies
                     ? "Hide replies"
                     : `${post.replyCount} ${post.replyCount === 1 ? "reply" : "replies"}`}
-              </button>
-              {post.replyCount > 0 && !showReplies ? null : (
+                </button>
+              )}
+              {!isDeleted && (post.replyCount === 0 || showReplies) && (
                 <button
                   type="button"
                   className="font-bold text-ink-muted hover:text-primary"
                   onClick={() => setReplying((v) => !v)}
                 >
-                  Write a reply
+                  {post.replyCount === 0 ? "Reply" : "Write a reply"}
                 </button>
               )}
             </div>
@@ -1214,6 +1338,10 @@ function MembersModal({
           </ul>
         </div>
 
+        {group.myRole && (
+          <NotificationPrefPanel group={group} groupId={groupId} onChanged={onChanged} />
+        )}
+
         {group.canModerate && (
           <AdminSettingsPanel
             group={group}
@@ -1251,46 +1379,58 @@ function MemberRow({
 }) {
   const { me } = useMe();
   const isSelf = member.appUserId === me?.appUser.id;
+  const [error, setError] = useState<string | null>(null);
 
   const setRole = useMutation({
     mutationFn: (role: GroupMemberRole) =>
       api(`/groups/${groupId}/members/${member.personId}/role`, { method: "POST", body: { role } }),
-    onSuccess: () => void onChanged(),
+    onSuccess: () => {
+      setError(null);
+      void onChanged();
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Could not change their role"),
   });
   const removeMember = useMutation({
     mutationFn: () => api(`/groups/${groupId}/members/${member.personId}`, { method: "DELETE" }),
-    onSuccess: () => void onChanged(),
+    onSuccess: () => {
+      setError(null);
+      void onChanged();
+    },
+    onError: (err) => setError(err instanceof Error ? err.message : "Could not remove them"),
   });
 
   return (
-    <li className="flex items-center justify-between gap-3 p-2">
-      <div className="flex items-center gap-2">
-        <Avatar
-          thumbUrl={member.thumbUrl}
-          person={{ firstName: member.name, lastName: null }}
-          size="sm"
-        />
-        <span>
-          {member.name}
-          {member.role === "ADMIN" && (
-            <Badge tone="accent">
-              <span className="ml-1">Admin</span>
-            </Badge>
-          )}
-        </span>
+    <li className="flex flex-col gap-1 p-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <Avatar
+            thumbUrl={member.thumbUrl}
+            person={{ firstName: member.name, lastName: null }}
+            size="sm"
+          />
+          <span>
+            {member.name}
+            {member.role === "ADMIN" && (
+              <Badge tone="accent">
+                <span className="ml-1">Admin</span>
+              </Badge>
+            )}
+          </span>
+        </div>
+        {canModerate && !isSelf && (
+          <MenuButton label={`Actions for ${member.name}`}>
+            {member.role === "MEMBER" ? (
+              <MenuItem onSelect={() => setRole.mutate("ADMIN")}>Make admin</MenuItem>
+            ) : (
+              <MenuItem onSelect={() => setRole.mutate("MEMBER")}>Remove as admin</MenuItem>
+            )}
+            <MenuItem danger onSelect={() => removeMember.mutate()}>
+              Remove from group
+            </MenuItem>
+          </MenuButton>
+        )}
       </div>
-      {canModerate && !isSelf && (
-        <MenuButton label={`Actions for ${member.name}`}>
-          {member.role === "MEMBER" ? (
-            <MenuItem onSelect={() => setRole.mutate("ADMIN")}>Make admin</MenuItem>
-          ) : (
-            <MenuItem onSelect={() => setRole.mutate("MEMBER")}>Remove as admin</MenuItem>
-          )}
-          <MenuItem danger onSelect={() => removeMember.mutate()}>
-            Remove from group
-          </MenuItem>
-        </MenuButton>
-      )}
+      {error && <p className="text-sm font-bold text-primary">{error}</p>}
     </li>
   );
 }
@@ -1344,6 +1484,55 @@ function AddMemberModal({
   );
 }
 
+/**
+ * A member's own notification preference for this group -- personal to every
+ * member, not an admin power, so this is shown for anyone with a membership
+ * row rather than folded into `AdminSettingsPanel` below.
+ */
+function NotificationPrefPanel({
+  group,
+  groupId,
+  onChanged,
+}: {
+  group: GroupDto;
+  groupId: string;
+  onChanged: () => Promise<unknown>;
+}) {
+  const [notificationPref, setNotificationPref] = useState<GroupNotificationPref>(
+    group.notificationPref
+  );
+
+  const savePref = useMutation({
+    mutationFn: (pref: GroupNotificationPref) =>
+      api(`/groups/${groupId}/notification-preference`, {
+        method: "PUT",
+        body: { notificationPref: pref },
+      }),
+    onSuccess: () => void onChanged(),
+  });
+
+  return (
+    <div className="border-t border-line pt-4">
+      <p className="mb-1 font-bold text-ink">Your notifications for this group</p>
+      <select
+        className={inputClass}
+        value={notificationPref}
+        onChange={(event) => {
+          const pref = event.target.value as GroupNotificationPref;
+          setNotificationPref(pref);
+          savePref.mutate(pref);
+        }}
+      >
+        {GROUP_NOTIFICATION_PREFS.map((pref) => (
+          <option key={pref} value={pref}>
+            {pref === "ALL" ? "All posts" : pref === "MENTIONS" ? "Only when mentioned" : "None"}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 function AdminSettingsPanel({
   group,
   groupId,
@@ -1360,9 +1549,6 @@ function AdminSettingsPanel({
   const [repliesRestricted, setRepliesRestricted] = useState(group.repliesRestricted);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [notificationPref, setNotificationPref] = useState<GroupNotificationPref>(
-    group.notificationPref
-  );
   const navigate = useNavigate();
 
   const saveSettings = useMutation({
@@ -1388,14 +1574,6 @@ function AdminSettingsPanel({
   const remove = useMutation({
     mutationFn: () => api(`/groups/${groupId}`, { method: "DELETE" }),
     onSuccess: () => void navigate("/groups", { viewTransition: true }),
-  });
-
-  const savePref = useMutation({
-    mutationFn: (pref: GroupNotificationPref) =>
-      api(`/groups/${groupId}/notification-preference`, {
-        method: "PUT",
-        body: { notificationPref: pref },
-      }),
   });
 
   const photoPicker = usePhotoPicker({
@@ -1472,25 +1650,6 @@ function AdminSettingsPanel({
           </div>
         </div>
       )}
-
-      <div>
-        <p className="mb-1 font-bold text-ink">Your notifications for this group</p>
-        <select
-          className={inputClass}
-          value={notificationPref}
-          onChange={(event) => {
-            const pref = event.target.value as GroupNotificationPref;
-            setNotificationPref(pref);
-            savePref.mutate(pref);
-          }}
-        >
-          {GROUP_NOTIFICATION_PREFS.map((pref) => (
-            <option key={pref} value={pref}>
-              {pref === "ALL" ? "All posts" : pref === "MENTIONS" ? "Only when mentioned" : "None"}
-            </option>
-          ))}
-        </select>
-      </div>
 
       <div className="flex flex-wrap gap-2 border-t border-line pt-4">
         {!group.archivedAt && (

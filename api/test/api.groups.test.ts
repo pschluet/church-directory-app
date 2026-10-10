@@ -79,6 +79,34 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(posts.status).toBe(403);
     });
 
+    it("never shows an unread count to someone who is not a member", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Hello" });
+
+      const list = await as(outsider).call("GET", "/api/groups");
+      const row = list.body.groups.find((g: { id: string }) => g.id === groupId);
+      expect(row.unreadCount).toBe(0);
+
+      const detail = await as(outsider).call("GET", `/api/groups/${groupId}`);
+      expect(detail.body.unreadCount).toBe(0);
+
+      // A member, by contrast, does see it -- and it clears once they visit.
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const memberList = await as(member).call("GET", "/api/groups");
+      expect(memberList.body.groups.find((g: { id: string }) => g.id === groupId).unreadCount).toBe(
+        1
+      );
+
+      const memberDetail = await as(member).call("GET", `/api/groups/${groupId}`);
+      expect(memberDetail.body.unreadCount).toBe(1);
+
+      await as(member).call("POST", `/api/groups/${groupId}/read`);
+      const afterRead = await as(member).call("GET", `/api/groups/${groupId}`);
+      expect(afterRead.body.unreadCount).toBe(0);
+    });
+
     it("hides a secret group entirely from a non-member", async () => {
       const groupId = await createGroup(creator, "SECRET");
       const list = await as(outsider).call("GET", "/api/groups");
@@ -239,6 +267,23 @@ describe.skipIf(!hasDb)("groups", () => {
     });
   });
 
+  describe("photo", () => {
+    it("returns the stored dimensions once a photo is attached", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const attach = await as(creator).call("PUT", `/api/groups/${groupId}/photo`, {
+        photoKey: `photos/${orgId}/group/${groupId}/01TESTULID0000000000000000/`,
+        photoWidth: 640,
+        photoHeight: 480,
+      });
+      expect(attach.status).toBe(200);
+
+      const detail = await as(creator).call("GET", `/api/groups/${groupId}`);
+      expect(detail.body.photoWidth).toBe(640);
+      expect(detail.body.photoHeight).toBe(480);
+      expect(detail.body.thumbUrl).not.toBeNull();
+    });
+  });
+
   describe("posts", () => {
     async function withMember(groupId: string): Promise<void> {
       await as(creator).call("POST", `/api/groups/${groupId}/members`, {
@@ -286,6 +331,33 @@ describe.skipIf(!hasDb)("groups", () => {
       const found = feed.body.posts.find((p: { id: string }) => p.id === post.body.id);
       expect(found.body).toBeNull();
       expect(found.deletedAt).not.toBeNull();
+    });
+
+    it("keeps an existing reply thread reachable after the root is deleted, but refuses a new reply", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const root = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Root",
+      });
+      await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Existing reply",
+        parentPostId: root.body.id,
+      });
+
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${root.body.id}`);
+
+      const replies = await as(creator).call(
+        "GET",
+        `/api/groups/${groupId}/posts/${root.body.id}/replies`
+      );
+      expect(replies.status).toBe(200);
+      expect(replies.body.replies).toHaveLength(1);
+      expect(replies.body.replies[0].body).toBe("Existing reply");
+
+      const newReply = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Too late",
+        parentPostId: root.body.id,
+      });
+      expect(newReply.status).toBe(409);
     });
 
     it("lets a group admin delete someone else's post and records it in the audit log", async () => {

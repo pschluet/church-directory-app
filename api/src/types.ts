@@ -1102,6 +1102,14 @@ export interface GroupSummaryDto {
 
 export interface GroupDto extends GroupSummaryDto {
   organizationId: string;
+  /**
+   * The intrinsic size of the group photo, from its free-form crop -- same
+   * reasoning as FamilyDto.photoWidth/Height: the page needs this to reserve
+   * the box before the image paints. Null when there is no photo, or it
+   * predates this field.
+   */
+  photoWidth: number | null;
+  photoHeight: number | null;
   postingRestricted: boolean;
   invitesRestricted: boolean;
   repliesRestricted: boolean;

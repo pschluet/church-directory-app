@@ -163,12 +163,16 @@ routes.get("/", async (c) => {
     `select ${GROUP_COLUMNS},
             (select count(*) from group_members gm2 where gm2.group_id = g.id) as member_count,
             my.role as my_role,
-            (select count(*) from group_posts gp
-              where gp.group_id = g.id
-                and gp.parent_post_id is null
-                and (my.last_read_at is null or gp.created_at > my.last_read_at)
-                and gp.author_person_id is distinct from $3::uuid
-            ) as unread_count,
+            -- Only a member has a reading position to be behind on -- a
+            -- non-member of a Private group can see that it exists but has no
+            -- "unread" of something they were never shown in the first place.
+            (case when my.app_user_id is null then 0 else (
+              select count(*) from group_posts gp
+                where gp.group_id = g.id
+                  and gp.parent_post_id is null
+                  and (my.last_read_at is null or gp.created_at > my.last_read_at)
+                  and gp.author_person_id is distinct from $3::uuid
+            ) end) as unread_count,
             (select jr.id from group_join_requests jr
               where jr.group_id = g.id and jr.person_id = $3 and jr.status = 'PENDING') as pending_join_request_id
        from groups g
@@ -296,6 +300,21 @@ routes.get("/:id", async (c) => {
     [id, caller.personId]
   );
 
+  // Only a member has a reading position to be behind on -- see the matching
+  // comment on GET / for why a non-member's count is not computed at all.
+  const unread = access.isMember
+    ? await one<{ count: string }>(
+        db,
+        `select count(*) as count
+           from group_posts gp
+          where gp.group_id = $1
+            and gp.parent_post_id is null
+            and ($2::timestamptz is null or gp.created_at > $2::timestamptz)
+            and gp.author_person_id is distinct from $3::uuid`,
+        [id, access.membership?.last_read_at ?? null, caller.personId]
+      )
+    : null;
+
   await logAdminViewIfNeeded(db, caller, group, access);
 
   const { thumbUrl, fullUrl } = photoUrls(group.photo_key);
@@ -309,9 +328,11 @@ routes.get("/:id", async (c) => {
     memberCount: Number(memberCount?.count ?? 0),
     archivedAt: group.archived_at ? new Date(group.archived_at).toISOString() : null,
     myRole: access.membership?.role ?? null,
-    unreadCount: 0,
+    unreadCount: Number(unread?.count ?? 0),
     pendingJoinRequestId: pendingJoinRequestId?.id ?? null,
     organizationId: group.organization_id,
+    photoWidth: group.photo_width,
+    photoHeight: group.photo_height,
     postingRestricted: group.posting_restricted,
     invitesRestricted: group.invites_restricted,
     repliesRestricted: group.replies_restricted,
