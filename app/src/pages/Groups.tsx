@@ -1,19 +1,23 @@
-import { useState } from "react";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { useSearchParams } from "react-router";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   GROUP_DESCRIPTION_MAX,
   GROUP_TITLE_MAX,
   GROUP_VISIBILITIES,
   groupCreateSchema,
   groupVisibilityLabel,
+  searchTerms,
   type GroupPostReportDto,
   type GroupSummaryDto,
   type GroupVisibility,
 } from "@shared";
 import { api } from "../lib/api";
+import { matchesTerm } from "../lib/highlight";
 import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
 import { Link } from "../components/nav";
+import { SearchField } from "../components/SearchField";
 import {
   Badge,
   Button,
@@ -36,6 +40,8 @@ export function Groups() {
   const { me, isAdmin, organizationId } = useMe();
   const queryClient = useQueryClient();
   const [creating, setCreating] = useState(false);
+  const [params, setParams] = useSearchParams();
+  const query = params.get("q") ?? "";
 
   const groupsQuery = useQuery({
     queryKey: qk.groups(organizationId),
@@ -55,16 +61,74 @@ export function Groups() {
   const reports = reportsQuery.data?.reports ?? [];
   const canCreate = Boolean(me?.appUser.personId);
 
-  const mine = groups.filter((g) => g.myRole !== null);
-  const others = groups.filter((g) => g.myRole === null);
+  /*
+   * Searched on the client, same reasoning as Families: the whole list is
+   * already here, so there is nothing to debounce, and the box can write
+   * straight to the URL so coming Back from a group finds the search still in
+   * place. `replace`, as on the Directory, so Back is not an undo of single
+   * letters.
+   */
+  function setQuery(next: string): void {
+    setParams(
+      (prev) => {
+        const updated = new URLSearchParams(prev);
+        if (next.trim() === "") updated.delete("q");
+        else updated.set("q", next);
+        return updated;
+      },
+      { replace: true }
+    );
+  }
+  const terms = useMemo(() => searchTerms(query).map((term) => term.toLowerCase()), [query]);
+  const searching = terms.length > 0;
+  const shown = useMemo(
+    () =>
+      searching ? groups.filter((g) => terms.every((term) => matchesTerm(g.title, term))) : groups,
+    [groups, terms, searching]
+  );
+
+  const pinMutation = useMutation({
+    mutationFn: ({ groupId, pinned }: { groupId: string; pinned: boolean }) =>
+      api(`/groups/${groupId}/pin`, { method: pinned ? "DELETE" : "POST" }),
+    onSuccess: () => void queryClient.invalidateQueries({ queryKey: qk.groups(organizationId) }),
+  });
+
+  const pinned = shown.filter((g) => g.pinned);
+  const mine = shown.filter((g) => !g.pinned && g.myRole !== null);
+  const others = shown.filter((g) => !g.pinned && g.myRole === null);
 
   return (
     <>
       <PageHeading
         title="Groups"
-        subtitle={`${groups.length} ${groups.length === 1 ? "group" : "groups"}`}
-        actions={canCreate && <Button onClick={() => setCreating(true)}>Start a group</Button>}
+        subtitle={
+          groupsQuery.isPending
+            ? undefined
+            : searching
+              ? `${shown.length} of ${groups.length} ${groups.length === 1 ? "group" : "groups"}`
+              : `${groups.length} ${groups.length === 1 ? "group" : "groups"}`
+        }
+        actions={
+          <div className="flex w-full flex-col gap-3 md:w-auto md:flex-row md:items-center">
+            <SearchField
+              value={query}
+              onChange={setQuery}
+              label="Search groups"
+              placeholder="Search by group name…"
+            />
+            {canCreate && <Button onClick={() => setCreating(true)}>Start a group</Button>}
+          </div>
+        }
       />
+
+      {/* The count above is a plain <p> nothing re-reads; this announces it. */}
+      <p role="status" className="sr-only">
+        {searching && !groupsQuery.isPending
+          ? shown.length === 0
+            ? `No group matches ${query.trim()}`
+            : `${shown.length} ${shown.length === 1 ? "group matches" : "groups match"} ${query.trim()}`
+          : ""}
+      </p>
 
       {groupsQuery.error && (
         <ErrorNotice
@@ -104,18 +168,35 @@ export function Groups() {
         <EmptyState title="No groups yet">
           Start one for a ministry, a study, or anything else the parish organizes around.
         </EmptyState>
+      ) : shown.length === 0 ? (
+        <EmptyState title={`Nothing matches “${query.trim()}”`}>
+          <p>Check the spelling, or try a shorter fragment of the group name.</p>
+          <p className="mt-3">
+            <Button variant="ghost" onClick={() => setQuery("")}>
+              Show all groups
+            </Button>
+          </p>
+        </EmptyState>
       ) : (
         <>
+          {pinned.length > 0 && (
+            <section className="mb-8">
+              <h2 className="mb-3 font-bold text-ink">Pinned</h2>
+              <GroupGrid groups={pinned} onTogglePin={pinMutation.mutate} />
+            </section>
+          )}
           {mine.length > 0 && (
             <section className="mb-8">
               <h2 className="mb-3 font-bold text-ink">Yours</h2>
-              <GroupGrid groups={mine} />
+              <GroupGrid groups={mine} onTogglePin={pinMutation.mutate} />
             </section>
           )}
           {others.length > 0 && (
             <section>
-              {mine.length > 0 && <h2 className="mb-3 font-bold text-ink">More groups</h2>}
-              <GroupGrid groups={others} />
+              {(pinned.length > 0 || mine.length > 0) && (
+                <h2 className="mb-3 font-bold text-ink">More groups</h2>
+              )}
+              <GroupGrid groups={others} onTogglePin={pinMutation.mutate} />
             </section>
           )}
         </>
@@ -135,12 +216,28 @@ export function Groups() {
   );
 }
 
-function GroupGrid({ groups }: { groups: GroupSummaryDto[] }) {
+/*
+ * A plain grid, not CSS multi-column: columns-N + break-inside-avoid balances
+ * column height, and at some widths (observed at ~927px with a photo card in
+ * the mix) the balance estimate comes in shorter than one unbreakable card,
+ * which then renders past where its column box ends instead of the container
+ * growing to contain it. Grid's row sizing has no balancing step -- a row is
+ * exactly as tall as its tallest cell, and the container always grows to fit
+ * every row -- which trades the masonry technique's tighter packing of
+ * photo-less cards for not overflowing at all.
+ */
+function GroupGrid({
+  groups,
+  onTogglePin,
+}: {
+  groups: GroupSummaryDto[];
+  onTogglePin: (args: { groupId: string; pinned: boolean }) => void;
+}) {
   return (
-    <ul className="columns-1 gap-4 sm:columns-2 lg:columns-3">
+    <ul className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 lg:grid-cols-3">
       {groups.map((group) => (
-        <li key={group.id} className="mb-4 break-inside-avoid">
-          <GroupCard group={group} />
+        <li key={group.id}>
+          <GroupCard group={group} onTogglePin={onTogglePin} />
         </li>
       ))}
     </ul>
@@ -153,15 +250,44 @@ const VISIBILITY_TONE: Record<GroupVisibility, "neutral" | "accent" | "primary">
   SECRET: "primary",
 };
 
-function GroupCard({ group }: { group: GroupSummaryDto }) {
+function GroupCard({
+  group,
+  onTogglePin,
+}: {
+  group: GroupSummaryDto;
+  onTogglePin: (args: { groupId: string; pinned: boolean }) => void;
+}) {
   const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  const photo = group.thumbUrl && failedUrl !== group.thumbUrl ? group.thumbUrl : null;
+  const image = group.cardUrl ?? group.thumbUrl;
+  const photo = image && failedUrl !== image ? image : null;
 
   return (
     <Link
       to={`/groups/${group.id}`}
-      className="group flex flex-col overflow-hidden rounded-card-photo border border-line bg-surface shadow-sm transition hover:border-accent hover:shadow-md"
+      className="group relative flex flex-col overflow-hidden rounded-card-photo border border-line bg-surface shadow-sm transition hover:border-accent hover:shadow-md"
     >
+      <button
+        type="button"
+        aria-label={group.pinned ? `Unpin ${group.title}` : `Pin ${group.title}`}
+        aria-pressed={group.pinned}
+        onClick={(event) => {
+          // The card underneath is one big link -- without these this would
+          // navigate instead of toggling the pin.
+          event.preventDefault();
+          event.stopPropagation();
+          onTogglePin({ groupId: group.id, pinned: group.pinned });
+        }}
+        className={`tap-target absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full border transition ${
+          group.pinned
+            ? "border-accent bg-accent text-white"
+            : "border-line bg-surface/90 text-ink-muted hover:text-accent"
+        }`}
+      >
+        <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+          <path d="M10 2a1 1 0 0 1 1 1v5.382l3.447 1.724A1 1 0 0 1 15 12H11v5a1 1 0 1 1-2 0v-5H5a1 1 0 0 1-.447-1.894L8 8.382V3a1 1 0 0 1 1-1h1Z" />
+        </svg>
+      </button>
+
       {photo && (
         <div className="aspect-card-photo overflow-hidden border-b border-line bg-surface-muted">
           <img

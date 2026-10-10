@@ -172,25 +172,56 @@ export const inputClass =
   "w-full rounded-md border border-line bg-surface px-3 py-2 text-ink placeholder:text-ink-muted/60 focus:border-accent focus:outline-none";
 
 /**
+ * The page-scroll half of `useDismissable`, factored out and reference-counted
+ * so two dismissables open at once (the group photo lightbox over the members
+ * modal, say) don't fight over `document.body.style.overflow`. Each caller's
+ * own "previous value" only matters for the first lock and the last unlock;
+ * the module-level counter is what makes the ones in between no-ops instead
+ * of each stomping on the other's restore.
+ */
+let bodyScrollLockCount = 0;
+let bodyOverflowBeforeLock = "";
+
+function lockBodyScroll(): () => void {
+  if (bodyScrollLockCount === 0) {
+    bodyOverflowBeforeLock = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+  }
+  bodyScrollLockCount++;
+  return () => {
+    bodyScrollLockCount--;
+    if (bodyScrollLockCount === 0) document.body.style.overflow = bodyOverflowBeforeLock;
+  };
+}
+
+/**
  * Closes on Escape and stops the page behind from scrolling.
  *
  * Shared by Modal and PhotoLightbox: on a phone the scrim covers the viewport,
  * so without the lock a scroll gesture that misses the dialog moves the page
  * underneath it instead.
+ *
+ * Two separate effects, not one keyed on `[onClose]`: every call site passes
+ * an inline arrow, which is a new identity on every render, and the scroll
+ * lock must only run once per mount/unmount regardless -- re-running it on
+ * every render was `lockBodyScroll`'s whole bug, re-capturing "previous
+ * overflow" from whatever another concurrently-open dismissable had already
+ * set it to. The keydown listener still wants the *latest* `onClose`, which a
+ * ref gives it without that effect needing to depend on `onClose` either.
  */
 export function useDismissable(onClose: () => void): void {
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") onCloseRef.current();
     };
     document.addEventListener("keydown", onKeyDown);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.removeEventListener("keydown", onKeyDown);
-      document.body.style.overflow = previousOverflow;
-    };
-  }, [onClose]);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(lockBodyScroll, []);
 }
 
 /**

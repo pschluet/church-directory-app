@@ -1,4 +1,12 @@
-import { useEffect, useState } from "react";
+import {
+  useEffect,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  type SyntheticEvent,
+} from "react";
 import { useNavigate, useParams } from "react-router";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -10,6 +18,7 @@ import {
   GROUP_VISIBILITIES,
   groupVisibilityLabel,
   type GroupDto,
+  type GroupEventRsvpDto,
   type GroupJoinRequestDto,
   type GroupMemberDto,
   type GroupMemberRole,
@@ -184,6 +193,10 @@ export function GroupDetail() {
             {groupVisibilityLabel(group.visibility)}
           </button>
         }
+        // Always exactly one action here (Join, Ask to join, a "waiting"
+        // badge, or Leave) -- keep it beside the title on a phone rather than
+        // giving it a row of its own.
+        compactActions
         actions={
           <div className="flex flex-wrap items-center gap-2">
             {!group.myRole && group.visibility === "PUBLIC" && (
@@ -318,8 +331,8 @@ export function GroupDetail() {
           onClose={() => setConfirmLeave(false)}
         >
           <p>
-            Your past posts stay in the group, still attributed to you. You can rejoin later if
-            the group is still open to it.
+            Your past posts stay in the group, still attributed to you. You can rejoin later if the
+            group is still open to it.
           </p>
         </ConfirmDialog>
       )}
@@ -421,7 +434,9 @@ function GroupPhoto({
       ) : (
         image
       )}
-      {zoomed && fullUrl && <PhotoLightbox src={fullUrl} alt={title} onClose={() => setZoomed(false)} />}
+      {zoomed && fullUrl && (
+        <PhotoLightbox src={fullUrl} alt={title} onClose={() => setZoomed(false)} />
+      )}
     </div>
   );
 }
@@ -655,15 +670,15 @@ function PostCard({
               {post.kind === "EVENT" && post.event && (
                 <EventBlock
                   event={post.event}
+                  mentions={post.mentions}
                   postId={post.id}
                   groupId={groupId}
                   onChanged={onChanged}
                 />
               )}
-              {post.body && <p className="mt-2 whitespace-pre-line text-ink">{post.body}</p>}
-              {post.mentions.length > 0 && (
-                <p className="mt-1 text-sm text-accent">
-                  With {post.mentions.map((m) => m.name).join(", ")}
+              {post.body && (
+                <p className="mt-2 whitespace-pre-line text-ink">
+                  <MentionText text={post.body} mentions={post.mentions} />
                 </p>
               )}
               <AttachmentStrip attachments={post.attachments} />
@@ -796,6 +811,270 @@ function AttachmentStrip({ attachments }: { attachments: GroupPostDto["attachmen
   );
 }
 
+// ---------------------------------------------------------------------------
+// @ mentions -- plain text in, so a post stays "plain text with clickable
+// links" (requirements/groups.md) on the wire; the "@Name" is just literal
+// characters in `body`. Highlighting and extraction both work by matching
+// those literal names against the group's own membership, not by parsing
+// out some separate markup.
+// ---------------------------------------------------------------------------
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+/**
+ * Which members are actually still @ mentioned in `text` -- a member only
+ * counts if "@" + their exact name appears with a word boundary on both
+ * sides, so "@Maria" in "email@Maria.com" or deleting the name after typing
+ * it both behave the way you'd expect without any separate tracked state.
+ */
+function findMentionedAppUserIds(
+  text: string,
+  candidates: { appUserId: string; name: string }[]
+): string[] {
+  const found: string[] = [];
+  for (const candidate of candidates) {
+    const pattern = new RegExp(
+      `(^|\\s)@${escapeRegExp(candidate.name)}(?=$|[^\\p{L}\\p{N}_])`,
+      "u"
+    );
+    if (pattern.test(text)) found.push(candidate.appUserId);
+  }
+  return found;
+}
+
+/** Renders `text` with every @ mention in `mentions` picked out in color. */
+function MentionText({
+  text,
+  mentions,
+}: {
+  text: string;
+  mentions: { appUserId: string; name: string }[];
+}) {
+  if (mentions.length === 0) return <>{text}</>;
+
+  // Longest name first, so one mentioned name that happens to be a prefix of
+  // another (e.g. two people sharing a first name) doesn't steal the match.
+  const names = [...mentions].sort((a, b) => b.name.length - a.name.length);
+  const pattern = new RegExp(
+    `(^|\\s)(@(?:${names.map((m) => escapeRegExp(m.name)).join("|")})(?=$|[^\\p{L}\\p{N}_]))`,
+    "gu"
+  );
+
+  const parts: ReactNode[] = [];
+  let lastIndex = 0;
+  let key = 0;
+  for (let match = pattern.exec(text); match !== null; match = pattern.exec(text)) {
+    const leading = match[1]!;
+    const mention = match[2]!;
+    const start = match.index + leading.length;
+    if (start > lastIndex) parts.push(text.slice(lastIndex, start));
+    parts.push(
+      <span key={key++} className="font-bold text-accent">
+        {mention}
+      </span>
+    );
+    lastIndex = start + mention.length;
+  }
+  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+  return <>{parts}</>;
+}
+
+/**
+ * Where the caret sits inside a `<textarea>`, in pixels relative to the
+ * textarea's own padding box. There is no DOM API for this, so the standard
+ * trick is to mirror the textarea into an identically-styled, invisible div
+ * and measure where a marker span lands inside it.
+ */
+function getCaretCoordinates(
+  textarea: HTMLTextAreaElement,
+  position: number
+): { top: number; left: number; height: number } {
+  const mirror = document.createElement("div");
+  const style = window.getComputedStyle(textarea);
+  const MIRRORED_PROPERTIES = [
+    "box-sizing",
+    "width",
+    "font-family",
+    "font-size",
+    "font-weight",
+    "font-style",
+    "letter-spacing",
+    "line-height",
+    "text-transform",
+    "word-spacing",
+    "text-indent",
+    "padding-top",
+    "padding-right",
+    "padding-bottom",
+    "padding-left",
+    "border-top-width",
+    "border-right-width",
+    "border-bottom-width",
+    "border-left-width",
+  ];
+  for (const prop of MIRRORED_PROPERTIES) {
+    mirror.style.setProperty(prop, style.getPropertyValue(prop));
+  }
+  mirror.style.position = "absolute";
+  mirror.style.visibility = "hidden";
+  mirror.style.whiteSpace = "pre-wrap";
+  mirror.style.wordWrap = "break-word";
+  mirror.style.top = "0";
+  mirror.style.left = "-9999px";
+  document.body.appendChild(mirror);
+
+  mirror.textContent = textarea.value.slice(0, position);
+  const marker = document.createElement("span");
+  marker.textContent = textarea.value.slice(position) || ".";
+  mirror.appendChild(marker);
+
+  const coordinates = {
+    top: marker.offsetTop - textarea.scrollTop,
+    left: marker.offsetLeft - textarea.scrollLeft,
+    height: marker.offsetHeight,
+  };
+  document.body.removeChild(mirror);
+  return coordinates;
+}
+
+/**
+ * A plain `<textarea>` that turns into a Slack-style @ mention picker the
+ * moment you type "@" -- the dropdown tracks the caret, arrow keys/Enter/Tab
+ * pick a highlighted member, and the chosen name is inserted as literal text
+ * (see the module comment above for why it's not markup). There is no
+ * separate "mention mode": an "@" only starts one when it follows the start
+ * of the text or whitespace, so an email address typed into a message is
+ * left alone.
+ */
+function MentionTextarea({
+  value,
+  onChange,
+  members,
+  placeholder,
+  minHeightClass,
+  maxLength,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  members: GroupMemberDto[];
+  placeholder: string;
+  minHeightClass: string;
+  maxLength: number;
+}) {
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const [query, setQuery] = useState<{ atIndex: number; text: string } | null>(null);
+  const [highlighted, setHighlighted] = useState(0);
+  const [caret, setCaret] = useState<{ top: number; left: number; height: number } | null>(null);
+  const [pendingCursor, setPendingCursor] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (pendingCursor === null) return;
+    const el = textareaRef.current;
+    if (el) {
+      el.focus();
+      el.setSelectionRange(pendingCursor, pendingCursor);
+    }
+    setPendingCursor(null);
+  }, [pendingCursor]);
+
+  const matches =
+    query === null
+      ? []
+      : members.filter((m) => m.name.toLowerCase().includes(query.text.toLowerCase())).slice(0, 6);
+
+  function detectMention(text: string, cursor: number): void {
+    let i = cursor - 1;
+    while (i >= 0 && text[i] !== "@" && !/\s/.test(text[i]!)) i--;
+    if (i >= 0 && text[i] === "@" && (i === 0 || /\s/.test(text[i - 1]!))) {
+      setQuery({ atIndex: i, text: text.slice(i + 1, cursor) });
+      setHighlighted(0);
+      const el = textareaRef.current;
+      if (el) setCaret(getCaretCoordinates(el, i));
+    } else {
+      setQuery(null);
+      setCaret(null);
+    }
+  }
+
+  function handleChange(event: ChangeEvent<HTMLTextAreaElement>): void {
+    onChange(event.target.value);
+    detectMention(event.target.value, event.target.selectionStart);
+  }
+
+  function handleSelect(event: SyntheticEvent<HTMLTextAreaElement>): void {
+    detectMention(event.currentTarget.value, event.currentTarget.selectionStart);
+  }
+
+  function pick(member: GroupMemberDto): void {
+    if (!query) return;
+    const before = value.slice(0, query.atIndex);
+    const after = value.slice(query.atIndex + 1 + query.text.length);
+    const inserted = `@${member.name} `;
+    onChange(`${before}${inserted}${after}`.slice(0, maxLength));
+    setQuery(null);
+    setCaret(null);
+    setPendingCursor(before.length + inserted.length);
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
+    if (!query || matches.length === 0) return;
+    if (event.key === "ArrowDown") {
+      event.preventDefault();
+      setHighlighted((h) => (h + 1) % matches.length);
+    } else if (event.key === "ArrowUp") {
+      event.preventDefault();
+      setHighlighted((h) => (h - 1 + matches.length) % matches.length);
+    } else if (event.key === "Enter" || event.key === "Tab") {
+      event.preventDefault();
+      pick(matches[highlighted]!);
+    } else if (event.key === "Escape") {
+      setQuery(null);
+      setCaret(null);
+    }
+  }
+
+  return (
+    <div className="relative">
+      <textarea
+        ref={textareaRef}
+        className={`${inputClass} ${minHeightClass}`}
+        value={value}
+        maxLength={maxLength}
+        placeholder={placeholder}
+        onChange={handleChange}
+        onKeyDown={handleKeyDown}
+        onSelect={handleSelect}
+        onBlur={() => window.setTimeout(() => setQuery(null), 150)}
+      />
+      {query && caret && matches.length > 0 && (
+        <ul
+          className="absolute z-20 max-h-48 w-56 overflow-y-auto rounded-md border border-line bg-surface py-1 shadow-lg"
+          style={{ top: caret.top + caret.height, left: caret.left }}
+        >
+          {matches.map((member, index) => (
+            <li key={member.appUserId}>
+              <button
+                type="button"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                  pick(member);
+                }}
+                className={`block w-full px-3 py-1.5 text-left text-sm ${
+                  index === highlighted ? "bg-surface-muted text-primary" : "text-ink"
+                }`}
+              >
+                {member.name}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function EditForm({
   post,
   groupId,
@@ -808,7 +1087,13 @@ function EditForm({
   onSaved: () => Promise<unknown>;
 }) {
   return post.kind === "EVENT" && post.event ? (
-    <EventEditForm post={post} event={post.event} groupId={groupId} onClose={onClose} onSaved={onSaved} />
+    <EventEditForm
+      post={post}
+      event={post.event}
+      groupId={groupId}
+      onClose={onClose}
+      onSaved={onSaved}
+    />
   ) : (
     <MessageEditForm post={post} groupId={groupId} onClose={onClose} onSaved={onSaved} />
   );
@@ -1006,8 +1291,6 @@ function Composer({
   const [startTime, setStartTime] = useState("");
   const [endTime, setEndTime] = useState("");
   const [location, setLocation] = useState("");
-  const [mentioned, setMentioned] = useState<string[]>([]);
-  const [showMentionPicker, setShowMentionPicker] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const picker = useGroupAttachmentPicker();
@@ -1024,7 +1307,7 @@ function Composer({
           kind: isEvent ? "EVENT" : "MESSAGE",
           body: isEvent ? undefined : body,
           parentPostId,
-          mentionedAppUserIds: mentioned,
+          mentionedAppUserIds: findMentionedAppUserIds(body, mentionable),
           attachments: picker.attachments,
           event: isEvent
             ? {
@@ -1044,7 +1327,6 @@ function Composer({
       setStartTime("");
       setEndTime("");
       setLocation("");
-      setMentioned([]);
       setIsEvent(false);
       picker.reset();
       await onPosted();
@@ -1116,20 +1398,24 @@ function Composer({
             />
           </Field>
           <Field label="Description" hint="Optional">
-            <textarea
-              className={`${inputClass} min-h-20`}
+            <MentionTextarea
               value={body}
-              onChange={(event) => setBody(event.target.value)}
+              onChange={setBody}
+              members={mentionable}
+              placeholder=""
+              minHeightClass="min-h-20"
+              maxLength={GROUP_POST_BODY_MAX}
             />
           </Field>
         </div>
       ) : (
-        <textarea
-          className={`${inputClass} ${compact ? "min-h-16" : "min-h-24"}`}
+        <MentionTextarea
           value={body}
-          maxLength={GROUP_POST_BODY_MAX}
+          onChange={setBody}
+          members={mentionable}
           placeholder={parentPostId ? "Write a reply…" : "Write something…"}
-          onChange={(event) => setBody(event.target.value)}
+          minHeightClass={compact ? "min-h-16" : "min-h-24"}
+          maxLength={GROUP_POST_BODY_MAX}
         />
       )}
 
@@ -1161,31 +1447,6 @@ function Composer({
         </ul>
       )}
 
-      {showMentionPicker && (
-        <div className="mt-2 max-h-40 overflow-y-auto rounded-md border border-line p-2">
-          {mentionable.length === 0 ? (
-            <p className="text-sm text-ink-muted">No other members to mention.</p>
-          ) : (
-            mentionable.map((member) => (
-              <label key={member.appUserId} className="flex items-center gap-2 py-1 text-sm">
-                <input
-                  type="checkbox"
-                  checked={mentioned.includes(member.appUserId)}
-                  onChange={(event) =>
-                    setMentioned((previous) =>
-                      event.target.checked
-                        ? [...previous, member.appUserId]
-                        : previous.filter((id) => id !== member.appUserId)
-                    )
-                  }
-                />
-                {member.name}
-              </label>
-            ))
-          )}
-        </div>
-      )}
-
       {picker.elements}
       {picker.error && <p className="mt-1 text-sm font-bold text-primary">{picker.error}</p>}
 
@@ -1195,9 +1456,6 @@ function Composer({
         </Button>
         <Button variant="secondary" onClick={picker.open} disabled={picker.busy || picker.full}>
           {picker.busy ? "Adding…" : "Attach"}
-        </Button>
-        <Button variant="ghost" onClick={() => setShowMentionPicker((v) => !v)}>
-          {mentioned.length > 0 ? `${mentioned.length} mentioned` : "Mention"}
         </Button>
       </div>
 
@@ -1219,16 +1477,19 @@ const RSVP_LABELS: Record<GroupRsvpResponse, string> = {
 
 function EventBlock({
   event,
+  mentions,
   postId,
   groupId,
   onChanged,
 }: {
   event: NonNullable<GroupPostDto["event"]>;
+  mentions: GroupPostDto["mentions"];
   postId: string;
   groupId: string;
   onChanged: () => Promise<unknown>;
 }) {
   const [guestCount, setGuestCount] = useState(event.myRsvp?.guestCount ?? 0);
+  const [showRsvps, setShowRsvps] = useState(false);
   const rsvp = useMutation({
     mutationFn: (response: GroupRsvpResponse) =>
       api(`/groups/${groupId}/posts/${postId}/rsvp`, {
@@ -1247,7 +1508,9 @@ function EventBlock({
         {event.location && ` · ${event.location}`}
       </p>
       {event.description && (
-        <p className="mt-1 whitespace-pre-line text-ink">{event.description}</p>
+        <p className="mt-1 whitespace-pre-line text-ink">
+          <MentionText text={event.description} mentions={mentions} />
+        </p>
       )}
 
       <div className="mt-2 flex flex-wrap items-center gap-2">
@@ -1277,11 +1540,102 @@ function EventBlock({
         )}
       </div>
 
-      <p className="mt-2 text-sm text-ink-muted">
+      <button
+        type="button"
+        onClick={() => setShowRsvps(true)}
+        className="mt-2 text-sm text-ink-muted hover:underline"
+      >
         {event.rsvpCounts.yes} going · {event.rsvpCounts.maybe} maybe · {event.rsvpCounts.no} not
         going
-      </p>
+      </button>
+
+      {showRsvps && (
+        <RsvpListModal groupId={groupId} postId={postId} onClose={() => setShowRsvps(false)} />
+      )}
     </div>
+  );
+}
+
+const RESPONSE_SECTIONS: { response: GroupRsvpResponse; heading: string }[] = [
+  { response: "YES", heading: "Going" },
+  { response: "MAYBE", heading: "Maybe" },
+  { response: "NO", heading: "Not going" },
+];
+
+/**
+ * The roster behind the aggregate line -- every RSVP by name, and how many
+ * guests each "going" is bringing, since the post's own `rsvpCounts` is only
+ * ever a headcount. Fetched lazily, the same reasoning `MembersModal` gives
+ * for not loading this until someone actually opens it.
+ */
+function RsvpListModal({
+  groupId,
+  postId,
+  onClose,
+}: {
+  groupId: string;
+  postId: string;
+  onClose: () => void;
+}) {
+  const { organizationId } = useMe();
+  const rsvpsQuery = useQuery({
+    queryKey: qk.groupPostRsvps(organizationId, groupId, postId),
+    queryFn: ({ signal }) =>
+      api<{ rsvps: GroupEventRsvpDto[] }>(`/groups/${groupId}/posts/${postId}/rsvps`, { signal }),
+  });
+
+  const rsvps = rsvpsQuery.data?.rsvps ?? [];
+  const going = rsvps.filter((r) => r.response === "YES");
+  const totalGuests = going.reduce((sum, r) => sum + r.guestCount, 0);
+  const totalAttending = going.length + totalGuests;
+
+  return (
+    <Modal title="Who's RSVP'd" onClose={onClose}>
+      {rsvpsQuery.isPending ? (
+        <Spinner label="Loading RSVPs" />
+      ) : rsvps.length === 0 ? (
+        <p className="text-ink-muted">Nobody has RSVP'd yet.</p>
+      ) : (
+        <div className="space-y-4">
+          <p className="font-bold text-ink">
+            {totalAttending} total attending ({going.length}{" "}
+            {going.length === 1 ? "member" : "members"}
+            {totalGuests > 0 && ` + ${totalGuests} ${totalGuests === 1 ? "guest" : "guests"}`})
+          </p>
+          {RESPONSE_SECTIONS.map(({ response, heading }) => {
+            const rows = rsvps.filter((r) => r.response === response);
+            if (rows.length === 0) return null;
+            return (
+              <div key={response}>
+                <p className="mb-1 font-bold text-ink">
+                  {heading} ({rows.length})
+                </p>
+                <ul className="space-y-1">
+                  {rows.map((row) => (
+                    <li key={row.appUserId} className="flex items-center gap-2 text-ink">
+                      <Avatar
+                        thumbUrl={row.thumbUrl}
+                        person={{ firstName: row.name, lastName: null }}
+                        size="sm"
+                      />
+                      <span>
+                        {row.name}
+                        {response === "YES" && row.guestCount > 0 && (
+                          <span className="text-ink-muted">
+                            {" "}
+                            +{row.guestCount} {row.guestCount === 1 ? "guest" : "guests"}
+                          </span>
+                        )}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -1311,21 +1665,23 @@ function FilesTab({ groupId }: { groupId: string }) {
   return (
     <ul className="divide-y divide-line rounded-lg border border-line bg-surface">
       {files.map((file) => (
-        <li key={file.attachment.id} className="flex items-center justify-between gap-3 p-3">
-          <div className="flex min-w-0 items-center gap-3">
+        <li key={file.attachment.id} className="flex items-start justify-between gap-3 p-3">
+          <div className="flex min-w-0 items-start gap-3">
             {file.attachment.kind === "IMAGE" ? (
               <img
                 src={file.attachment.thumbUrl ?? undefined}
                 alt=""
-                className="h-12 w-12 rounded-md border border-line object-cover"
+                className="h-12 w-12 shrink-0 rounded-md border border-line object-cover"
               />
             ) : (
-              <span className="flex h-12 w-12 items-center justify-center rounded-md border border-line bg-surface-muted text-xs text-ink-muted">
+              <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md border border-line bg-surface-muted text-xs text-ink-muted">
                 File
               </span>
             )}
             <div className="min-w-0">
-              <p className="truncate font-bold text-ink">{file.attachment.filename}</p>
+              <p className="break-words font-bold text-ink [overflow-wrap:anywhere]">
+                {file.attachment.filename}
+              </p>
               <p className="text-sm text-ink-muted">
                 {file.authorName} · {new Date(file.postCreatedAt).toLocaleDateString()}
               </p>
@@ -1718,30 +2074,45 @@ function AdminSettingsPanel({
     onSuccess: () => void navigate("/groups", { viewTransition: true }),
   });
 
+  async function attachPhoto(
+    photoKey: string | null,
+    width?: number,
+    height?: number,
+    hasCard?: boolean
+  ): Promise<void> {
+    await api(`/groups/${groupId}/photo`, {
+      method: "PUT",
+      body: photoKey
+        ? { photoKey, photoWidth: width, photoHeight: height, hasCard }
+        : { photoKey: null },
+    });
+    await onChanged();
+  }
+
   const photoPicker = usePhotoPicker({
     owner: { groupId },
-    onUploaded: async (photo) => {
-      await api(`/groups/${groupId}/photo`, {
-        method: "PUT",
-        body: { photoKey: photo.photoKey, photoWidth: photo.width, photoHeight: photo.height },
-      });
-      await onChanged();
-    },
+    onUploaded: ({ photoKey, width, height, hasCard }) =>
+      attachPhoto(photoKey, width, height, hasCard),
   });
 
   return (
     <div className="space-y-4 border-t border-line pt-4">
       <p className="font-bold text-ink">Group settings</p>
 
-      <div>
+      <div className="flex flex-wrap items-center gap-2">
         <Button variant="secondary" onClick={photoPicker.open} disabled={photoPicker.busy}>
           {photoPicker.busy ? "Uploading…" : group.thumbUrl ? "Change photo" : "Add a photo"}
         </Button>
-        {photoPicker.error && (
-          <p className="mt-1 text-sm font-bold text-primary">{photoPicker.error}</p>
+        {group.thumbUrl && (
+          <Button variant="ghost" onClick={() => void attachPhoto(null)}>
+            Remove photo
+          </Button>
         )}
-        {photoPicker.elements}
       </div>
+      {photoPicker.error && (
+        <p className="mt-1 text-sm font-bold text-primary">{photoPicker.error}</p>
+      )}
+      {photoPicker.elements}
 
       <ReportQueue groupId={groupId} onChanged={onChanged} />
 

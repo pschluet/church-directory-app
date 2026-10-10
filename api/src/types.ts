@@ -1089,6 +1089,8 @@ export interface GroupSummaryDto {
   description: string | null;
   thumbUrl: string | null;
   fullUrl: string | null;
+  /** The groups-page card crop, or null until someone frames one. See FamilySummaryDto.cardUrl. */
+  cardUrl: string | null;
   visibility: GroupVisibility;
   memberCount: number;
   archivedAt: string | null;
@@ -1098,6 +1100,8 @@ export interface GroupSummaryDto {
   unreadCount: number;
   /** The caller's own undecided request to join this group, if any. */
   pendingJoinRequestId: string | null;
+  /** Whether the caller has pinned this group to the top of their list. */
+  pinned: boolean;
 }
 
 export interface GroupDto extends GroupSummaryDto {
@@ -1151,6 +1155,21 @@ export interface GroupEventDto {
   rsvpCounts: { yes: number; no: number; maybe: number };
   /** The caller's own RSVP, or null if they have not answered. */
   myRsvp: { response: GroupRsvpResponse; guestCount: number } | null;
+}
+
+/**
+ * One person's RSVP, for the full roster behind `GroupEventDto.rsvpCounts` --
+ * that only ever carries headcounts, never who or how many guests. `guestCount`
+ * is only ever nonzero for a YES, since `groupRsvpSchema` is the only place it
+ * is written and nothing stops the field being set before a YES, but the UI
+ * only surfaces it there.
+ */
+export interface GroupEventRsvpDto {
+  appUserId: string;
+  name: string;
+  thumbUrl: string | null;
+  response: GroupRsvpResponse;
+  guestCount: number;
 }
 
 export interface GroupPostAttachmentDto {
@@ -1761,20 +1780,21 @@ export const photoUploadSchema = z
     renditions: z.object({
       thumb: renditionSizeSchema,
       full: renditionSizeSchema,
-      // The families-page card. Family-only -- a person framing their own
-      // photo has nothing shaped like a directory card to presign.
+      // The families/groups-page card. Family or group only -- a person
+      // framing their own photo has nothing shaped like a directory card to
+      // presign.
       card: renditionSizeSchema.optional(),
     }),
     personId: uuidSchema.optional(),
     familyId: uuidSchema.optional(),
-    /** A group's own cover photo -- free-form crop, thumb/full, no card. */
+    /** A group's own cover photo -- free-form crop, thumb/full, and a card. */
     groupId: uuidSchema.optional(),
   })
   .refine((v) => [v.personId, v.familyId, v.groupId].filter(Boolean).length === 1, {
     message: "Provide exactly one of personId, familyId or groupId",
   })
-  .refine((v) => !v.renditions.card || Boolean(v.familyId), {
-    message: "Only a family photo can have a card rendition",
+  .refine((v) => !v.renditions.card || Boolean(v.familyId) || Boolean(v.groupId), {
+    message: "Only a family or group photo can have a card rendition",
     path: ["renditions", "card"],
   });
 export type PhotoUpload = z.infer<typeof photoUploadSchema>;
@@ -1860,9 +1880,10 @@ export interface PhotoUploadDto {
 /**
  * Attaching an already-uploaded photo, or clearing one with a null key.
  *
- * Dimensions are only meaningful for a family, whose crop is free-form; the
- * person endpoint ignores them. `hasCard` is family-only too, and only
- * meaningful alongside a key -- clearing a photo always clears it.
+ * Dimensions are only meaningful for a family or group, whose crop is
+ * free-form; the person endpoint ignores them. `hasCard` is family/group only
+ * too, and only meaningful alongside a key -- clearing a photo always clears
+ * it.
  */
 export const photoAttachSchema = z
   .object({

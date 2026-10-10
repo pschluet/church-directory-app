@@ -132,9 +132,11 @@ export function photoVariantKeys(key: string): Record<PhotoRendition, string> {
 }
 
 /**
- * The families-page card rendition's key. Family-only -- a person or
- * attachment key has no `card`, same as a legacy key that predates cropping
- * and is not a prefix at all.
+ * The families/groups-page card rendition's key. Only a family or group photo
+ * has one -- a person or attachment key has no `card`, same as a legacy key
+ * that predates cropping and is not a prefix at all. Named after the first
+ * owner to have one rather than renamed when groups got a second, to avoid
+ * rippling the name through routes/families.ts for no behavioral change.
  */
 export function familyCardKey(key: string): string | null {
   if (!key.endsWith("/")) return null;
@@ -164,9 +166,9 @@ export function groupAttachmentFileUrl(key: string): string {
 }
 
 /**
- * The families-page card URL, or null when this photo has no card rendition --
- * either because `hasCard` is false (nothing has framed one yet) or the key
- * predates cropping.
+ * The families/groups-page card URL, or null when this photo has no card
+ * rendition -- either because `hasCard` is false (nothing has framed one yet)
+ * or the key predates cropping.
  */
 export function familyCardUrl(key: string | null, hasCard: boolean): string | null {
   if (!key || !hasCard) return null;
@@ -317,7 +319,8 @@ export async function deleteGroupAttachmentFile(key: string | null): Promise<voi
 export async function deletePhoto(key: string | null): Promise<void> {
   if (!key || STORAGE === "local") return;
   const keys = photoVariantKeys(key);
-  const all = { ...keys, ...(key.includes("/family/") ? { card: familyCardKey(key) } : {}) };
+  const hasCardRendition = key.includes("/family/") || key.includes("/group/");
+  const all = { ...keys, ...(hasCardRendition ? { card: familyCardKey(key) } : {}) };
   // A legacy key resolves both renditions to the same object; dedupe so the
   // request is not asking S3 to delete it twice.
   const objects = [...new Set(Object.values(all).filter((v): v is string => Boolean(v)))].map(

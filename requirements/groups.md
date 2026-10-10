@@ -89,3 +89,23 @@ For a Private group, non-members see the title, description, image, and a member
 # Considerations for a Future Revision
 - There's no way today to report content with full anonymity assurance. The UI doesn't disclose who filed a report, but a resolving admin could, in some cases, infer who it was from context.
 - There's no mechanism for a group to export or archive its content before the 5-year retention deadline removes it.
+
+- Make a search bar on the groups page to search by group name
+- Allow users to pin groups on the groups page (those groups are then shown at the top)
+- The group photo cropper aspect ration should match what's displayed on the groups page.
+- Add the ability to delete a group photo from the group settings page.
+- On the groups page, when the window is 927 wide, if a group has a picture, the group card extends below the end of the browser screen on this mac.
+- On mobile, the "LEAVE" button in the group should stay on the same line as the group title until it absolutely has to flow to the next line in order to fit both.
+- On the files tab in a group, if the whole filename doesn't fit, wrap it to the next line so you can see the whole filename.
+- On an individual groups page, if there's a photo, the group messages extend beyond past the bottom of the screen, and I can't scroll to see them.
+- On an event, when an individual RSVPs yes, they should be able to state how many guests. Then, all others should be able to see (maybe via a modal) what all the RSVPs are and, for the yes RSVPs, how many guests each person is bringing. There should also be a total listed that indicates the overall total and the total member/guest counts
+
+TODO
+- On the settings page, add a section for groups notifications. It should enable you to set the default for all groups (all messages, only mentions, or none). On individual group settings, you should be able to set exceptions (notification settings different from the default that are specific for that group). On the settings page, it should show a list of the exceptions, and you should be able to delete that exception (then the notification settings for that group go back to the default). You should also be able to change that exception's settings right from the settings page.
+- Clicking on user names, user profile photos or profile photo placeholders, or @ mentions in the posts of a group page should link to that user's user page in the app.
+- @ mentions should be editable when editing a post
+- Location (on events) should be a google maps powered auto-complete like the address on a user (only if maps is turned on in the church's settings)
+- Streamline the groups posts page to make it more streamlined. The UI to write messages should be on the bottom with just a message bar and a + icon to add attachments. Messages should be displayed most recent on the bottom. Users can scroll up to see past messages. Messages should be paginated. When you scroll up to the end of a page, it should auto load the next page. Make the UI more like Slack. Also, we don't need a box around every message/post.
+- The group search should have higlighting like the other searches in the app.
+- Make the pin icon (for pinning groups) look more like a pin. The top part (above the horizontal crossbar) should be wider.
+- Don't show the group photo on the individual group's page. Only on the page that shows all the groups.

@@ -282,6 +282,118 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(detail.body.photoHeight).toBe(480);
       expect(detail.body.thumbUrl).not.toBeNull();
     });
+
+    it("returns a card URL when the upload includes a card crop, matching the groups-page card box", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const photoKey = `photos/${orgId}/group/${groupId}/01TESTULID0000000000000001/`;
+      const attach = await as(creator).call("PUT", `/api/groups/${groupId}/photo`, {
+        photoKey,
+        photoWidth: 640,
+        photoHeight: 480,
+        hasCard: true,
+      });
+      expect(attach.status).toBe(200);
+      expect(attach.body.cardUrl).toBe(`/${photoKey}card`);
+
+      const detail = await as(creator).call("GET", `/api/groups/${groupId}`);
+      expect(detail.body.cardUrl).toBe(`/${photoKey}card`);
+
+      const list = await as(creator).call("GET", "/api/groups");
+      expect(list.body.groups.find((g: { id: string }) => g.id === groupId).cardUrl).toBe(
+        `/${photoKey}card`
+      );
+    });
+
+    it("has no card URL when the upload has no card crop", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const attach = await as(creator).call("PUT", `/api/groups/${groupId}/photo`, {
+        photoKey: `photos/${orgId}/group/${groupId}/01TESTULID0000000000000002/`,
+        photoWidth: 640,
+        photoHeight: 480,
+      });
+      expect(attach.body.cardUrl).toBeNull();
+    });
+
+    it("clears the photo, its dimensions and its card flag together", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("PUT", `/api/groups/${groupId}/photo`, {
+        photoKey: `photos/${orgId}/group/${groupId}/01TESTULID0000000000000003/`,
+        photoWidth: 640,
+        photoHeight: 480,
+        hasCard: true,
+      });
+
+      const cleared = await as(creator).call("PUT", `/api/groups/${groupId}/photo`, {
+        photoKey: null,
+      });
+      expect(cleared.status).toBe(200);
+      expect(cleared.body.thumbUrl).toBeNull();
+      expect(cleared.body.cardUrl).toBeNull();
+
+      const detail = await as(creator).call("GET", `/api/groups/${groupId}`);
+      expect(detail.body.thumbUrl).toBeNull();
+      expect(detail.body.photoWidth).toBeNull();
+      expect(detail.body.cardUrl).toBeNull();
+    });
+  });
+
+  describe("pin", () => {
+    it("pins and unpins a group, sorting pinned groups first", async () => {
+      const g1 = await createGroup(creator, "PUBLIC");
+      const g2 = await createGroup(creator, "PUBLIC");
+
+      const before = await as(creator).call("GET", "/api/groups");
+      expect(before.body.groups.map((g: { id: string; pinned: boolean }) => g.pinned)).toEqual([
+        false,
+        false,
+      ]);
+
+      const pin = await as(creator).call("POST", `/api/groups/${g2}/pin`);
+      expect(pin.status).toBe(204);
+
+      const after = await as(creator).call("GET", "/api/groups");
+      expect(after.body.groups[0].id).toBe(g2);
+      expect(after.body.groups[0].pinned).toBe(true);
+      expect(after.body.groups.find((g: { id: string }) => g.id === g1).pinned).toBe(false);
+
+      const detail = await as(creator).call("GET", `/api/groups/${g2}`);
+      expect(detail.body.pinned).toBe(true);
+
+      const unpin = await as(creator).call("DELETE", `/api/groups/${g2}/pin`);
+      expect(unpin.status).toBe(204);
+
+      const afterUnpin = await as(creator).call("GET", `/api/groups/${g2}`);
+      expect(afterUnpin.body.pinned).toBe(false);
+    });
+
+    it("is personal -- one account pinning a group does not pin it for another", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/pin`);
+
+      const otherView = await as(outsider).call("GET", `/api/groups/${groupId}`);
+      expect(otherView.body.pinned).toBe(false);
+    });
+
+    it("lets anyone who can see a group pin it, not just members", async () => {
+      const groupId = await createGroup(creator, "PRIVATE");
+      const pin = await as(outsider).call("POST", `/api/groups/${groupId}/pin`);
+      expect(pin.status).toBe(204);
+      const detail = await as(outsider).call("GET", `/api/groups/${groupId}`);
+      expect(detail.body.pinned).toBe(true);
+    });
+
+    it("refuses to pin a secret group the caller cannot see", async () => {
+      const groupId = await createGroup(creator, "SECRET");
+      const pin = await as(outsider).call("POST", `/api/groups/${groupId}/pin`);
+      expect(pin.status).toBe(404);
+    });
+
+    it("pinning twice is a no-op, not an error", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/pin`);
+      const again = await as(creator).call("POST", `/api/groups/${groupId}/pin`);
+      expect(again.status).toBe(204);
+    });
   });
 
   describe("posts", () => {
@@ -431,6 +543,80 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(rsvp.status).toBe(200);
       expect(rsvp.body.event.rsvpCounts.yes).toBe(1);
       expect(rsvp.body.event.myRsvp).toEqual({ response: "YES", guestCount: 2 });
+    });
+  });
+
+  describe("rsvp roster", () => {
+    async function withMember(groupId: string): Promise<void> {
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+    }
+
+    it("lists every RSVP with the responder's name and guest count", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await withMember(groupId);
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Potluck", eventDate: "2030-01-01" },
+      });
+      const postId = event.body.id as string;
+
+      await as(creator).call("PUT", `/api/groups/${groupId}/posts/${postId}/rsvp`, {
+        response: "YES",
+        guestCount: 3,
+      });
+      await as(member).call("PUT", `/api/groups/${groupId}/posts/${postId}/rsvp`, {
+        response: "MAYBE",
+        guestCount: 0,
+      });
+
+      const roster = await as(member).call("GET", `/api/groups/${groupId}/posts/${postId}/rsvps`);
+      expect(roster.status).toBe(200);
+      expect(roster.body.rsvps).toHaveLength(2);
+      expect(roster.body.rsvps).toEqual(
+        expect.arrayContaining([
+          {
+            appUserId: creator.appUserId,
+            name: "Cara Creator",
+            thumbUrl: null,
+            response: "YES",
+            guestCount: 3,
+          },
+          {
+            appUserId: member.appUserId,
+            name: "Mo Member",
+            thumbUrl: null,
+            response: "MAYBE",
+            guestCount: 0,
+          },
+        ])
+      );
+    });
+
+    it("refuses a non-member of a private group", async () => {
+      const groupId = await createGroup(creator, "PRIVATE");
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Potluck", eventDate: "2030-01-01" },
+      });
+      const res = await as(outsider).call(
+        "GET",
+        `/api/groups/${groupId}/posts/${event.body.id}/rsvps`
+      );
+      expect(res.status).toBe(403);
+    });
+
+    it("404s for a post that is not an event", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Not an event",
+      });
+      const res = await as(creator).call(
+        "GET",
+        `/api/groups/${groupId}/posts/${post.body.id}/rsvps`
+      );
+      expect(res.status).toBe(404);
     });
   });
 

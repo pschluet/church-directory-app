@@ -7,6 +7,7 @@ import {
   fullName,
   type GroupMemberRole,
   type GroupNotificationPref,
+  type GroupRsvpResponse,
   type GroupVisibility,
 } from "../types";
 
@@ -34,6 +35,8 @@ export interface GroupRow {
   photo_key: string | null;
   photo_width: number | null;
   photo_height: number | null;
+  /** Whether `photo_key` has a third rendition framed for the groups-page card. */
+  photo_has_card: boolean;
   visibility: GroupVisibility;
   posting_restricted: boolean;
   invites_restricted: boolean;
@@ -46,8 +49,8 @@ export interface GroupRow {
 
 export const GROUP_COLUMNS = `
   g.id, g.organization_id, g.title, g.description, g.photo_key, g.photo_width, g.photo_height,
-  g.visibility, g.posting_restricted, g.invites_restricted, g.replies_restricted,
-  g.archived_at, g.created_by_person_id, g.created_at, g.updated_at
+  g.photo_has_card, g.visibility, g.posting_restricted, g.invites_restricted,
+  g.replies_restricted, g.archived_at, g.created_by_person_id, g.created_at, g.updated_at
 `;
 
 export async function loadGroupRow(
@@ -274,7 +277,7 @@ export async function assertValidReplyParent(
   }
 }
 
-/** The group photo's URLs -- free-form crop, thumb/full, no card rendition. */
+/** The group photo's thumb/full URLs -- see `familyCardUrl` for the card rendition. */
 export function groupPhotoFields(row: Pick<GroupRow, "photo_key">): {
   thumbUrl: string | null;
   fullUrl: string | null;
@@ -316,5 +319,46 @@ export function toGroupMemberDto(row: GroupMemberNameRow) {
     thumbUrl: photoUrls(row.photo_key).thumbUrl,
     role: row.role,
     joinedAt: new Date(row.joined_at).toISOString(),
+  };
+}
+
+export interface GroupEventRsvpRow {
+  app_user_id: string;
+  first_name: string;
+  last_name: string | null;
+  photo_key: string | null;
+  response: GroupRsvpResponse;
+  guest_count: number;
+}
+
+/**
+ * The full RSVP roster for one event post, with names -- what backs the "who
+ * said yes, and how many guests" view, since `rsvpCounts` on the post itself
+ * is only ever a headcount. Joined on `app_user_id`, not `person_id`: RSVPs
+ * are keyed by account (`group_event_rsvps`'s primary key), the same reason
+ * the mentions subquery in group-posts.ts joins the same way.
+ */
+export async function loadGroupEventRsvps(
+  q: Queryable,
+  postId: string
+): Promise<GroupEventRsvpRow[]> {
+  const { rows } = await q.query<GroupEventRsvpRow>(
+    `select r.app_user_id, p.first_name, p.last_name, p.photo_key, r.response, r.guest_count
+       from group_event_rsvps r
+       join persons_resolved p on p.app_user_id = r.app_user_id
+      where r.post_id = $1
+      order by r.response, p.first_name, p.last_name`,
+    [postId]
+  );
+  return rows;
+}
+
+export function toGroupRsvpDto(row: GroupEventRsvpRow) {
+  return {
+    appUserId: row.app_user_id,
+    name: fullName({ firstName: row.first_name, lastName: row.last_name }),
+    thumbUrl: photoUrls(row.photo_key).thumbUrl,
+    response: row.response,
+    guestCount: row.guest_count,
   };
 }

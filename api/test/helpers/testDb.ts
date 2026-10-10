@@ -60,6 +60,7 @@ const TABLES = [
   "group_post_attachments",
   "group_posts",
   "group_join_requests",
+  "group_pins",
   "group_members",
   "groups",
   "persons",

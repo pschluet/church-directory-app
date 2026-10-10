@@ -149,6 +149,8 @@ export const qk = {
   groupPosts: (orgId: string | null, id: string) => [...qk.group(orgId, id), "posts"] as const,
   groupReplies: (orgId: string | null, id: string, postId: string) =>
     [...qk.group(orgId, id), "posts", postId, "replies"] as const,
+  groupPostRsvps: (orgId: string | null, id: string, postId: string) =>
+    [...qk.group(orgId, id), "posts", postId, "rsvps"] as const,
   groupFiles: (orgId: string | null, id: string) => [...qk.group(orgId, id), "files"] as const,
   groupEvents: (orgId: string | null, id: string) => [...qk.group(orgId, id), "events"] as const,
   groupReports: (orgId: string | null, id: string) => [...qk.group(orgId, id), "reports"] as const,

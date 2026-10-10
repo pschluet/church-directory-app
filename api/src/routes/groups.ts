@@ -6,6 +6,7 @@ import { audit } from "../audit";
 import {
   deleteGroupAttachmentFile,
   deletePhoto,
+  familyCardUrl,
   groupAttachmentFileUrl,
   groupAttachmentPrefix,
   photoChange,
@@ -25,10 +26,12 @@ import {
   assertValidReplyParent,
   groupAccess,
   GROUP_COLUMNS,
+  loadGroupEventRsvps,
   loadGroupMembers,
   loadGroupRow,
   loadMembership,
   toGroupMemberDto,
+  toGroupRsvpDto,
   type GroupAccess,
   type GroupRow,
 } from "../services/groups";
@@ -97,6 +100,7 @@ function toGroupSummary(
     member_count: string;
     unread_count: string;
     pending_join_request_id: string | null;
+    pinned_at: Date | string | null;
   },
   access: GroupAccess
 ): GroupSummaryDto {
@@ -107,12 +111,14 @@ function toGroupSummary(
     description: row.description,
     thumbUrl,
     fullUrl,
+    cardUrl: familyCardUrl(row.photo_key, row.photo_has_card),
     visibility: row.visibility,
     memberCount: Number(row.member_count),
     archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : null,
     myRole: access.effectiveRole && access.isMember ? access.membership!.role : null,
     unreadCount: Number(row.unread_count),
     pendingJoinRequestId: row.pending_join_request_id,
+    pinned: row.pinned_at !== null,
   };
 }
 
@@ -158,6 +164,7 @@ routes.get("/", async (c) => {
       unread_count: string;
       pending_join_request_id: string | null;
       my_role: GroupMemberRole | null;
+      pinned_at: Date | string | null;
     }
   >(
     `select ${GROUP_COLUMNS},
@@ -174,13 +181,18 @@ routes.get("/", async (c) => {
                   and gp.author_person_id is distinct from $3::uuid
             ) end) as unread_count,
             (select jr.id from group_join_requests jr
-              where jr.group_id = g.id and jr.person_id = $3 and jr.status = 'PENDING') as pending_join_request_id
+              where jr.group_id = g.id and jr.person_id = $3 and jr.status = 'PENDING') as pending_join_request_id,
+            pin.pinned_at
        from groups g
        left join group_members my on my.group_id = g.id and my.app_user_id = $2
+       -- A pin is tracked independently of membership -- see
+       -- V17__group_pins.sql -- so this joins by caller directly rather than
+       -- riding along with the membership join above.
+       left join group_pins pin on pin.group_id = g.id and pin.app_user_id = $2
       where g.organization_id = $1
         and (g.visibility <> 'SECRET' or my.app_user_id is not null or $4)
         and (g.archived_at is null or my.app_user_id is not null)
-      order by g.title`,
+      order by (pin.pinned_at is null), g.title`,
     [organizationId, caller.appUserId, caller.personId, caller.isAdmin]
   );
 
@@ -247,7 +259,7 @@ routes.get("/:id", async (c) => {
   const access = await loadAccess(db, caller, group);
   assertCanReadGroup(access);
 
-  const [members, pendingJoinRequests, memberCount, creator] = await Promise.all([
+  const [members, pendingJoinRequests, memberCount, creator, pin] = await Promise.all([
     access.canReadContent ? loadGroupMembers(db, id) : Promise.resolve([]),
     access.canModerate
       ? db
@@ -292,6 +304,11 @@ routes.get("/:id", async (c) => {
           [group.created_by_person_id]
         )
       : Promise.resolve(null),
+    one<{ group_id: string }>(
+      db,
+      "select group_id from group_pins where group_id = $1 and app_user_id = $2",
+      [id, caller.appUserId]
+    ),
   ]);
 
   const pendingJoinRequestId = await one<{ id: string }>(
@@ -324,12 +341,14 @@ routes.get("/:id", async (c) => {
     description: group.description,
     thumbUrl,
     fullUrl,
+    cardUrl: familyCardUrl(group.photo_key, group.photo_has_card),
     visibility: group.visibility,
     memberCount: Number(memberCount?.count ?? 0),
     archivedAt: group.archived_at ? new Date(group.archived_at).toISOString() : null,
     myRole: access.membership?.role ?? null,
     unreadCount: Number(unread?.count ?? 0),
     pendingJoinRequestId: pendingJoinRequestId?.id ?? null,
+    pinned: pin !== null,
     organizationId: group.organization_id,
     photoWidth: group.photo_width,
     photoHeight: group.photo_height,
@@ -386,7 +405,9 @@ routes.put("/:id/photo", async (c) => {
   const db = c.get("db");
   const organizationId = requireOrganizationId(c);
   const id = uuidSchema.parse(c.req.param("id"));
-  const { photoKey, photoWidth, photoHeight } = photoAttachSchema.parse(await c.req.json());
+  const { photoKey, photoWidth, photoHeight, hasCard } = photoAttachSchema.parse(
+    await c.req.json()
+  );
 
   const group = await loadGroupRow(db, id, organizationId);
   const access = await loadAccess(db, caller, group);
@@ -396,12 +417,16 @@ routes.put("/:id/photo", async (c) => {
     throw new HTTPException(400, { message: "That photo does not belong to this group" });
   }
 
+  // Clearing the photo clears the dimensions and the card flag with it, so
+  // neither can outlive the image it described -- see routes/families.ts's
+  // identical handling.
   const width = photoKey ? (photoWidth ?? null) : null;
   const height = photoKey ? (photoHeight ?? null) : null;
+  const card = photoKey ? (hasCard ?? false) : false;
 
   await db.query(
-    "update groups set photo_key = $2, photo_width = $3, photo_height = $4 where id = $1",
-    [id, photoKey, width, height]
+    "update groups set photo_key = $2, photo_width = $3, photo_height = $4, photo_has_card = $5 where id = $1",
+    [id, photoKey, width, height, card]
   );
 
   const change = photoChange(group.photo_key, photoKey);
@@ -415,7 +440,7 @@ routes.put("/:id/photo", async (c) => {
   }
   if (group.photo_key && group.photo_key !== photoKey) await deletePhoto(group.photo_key);
 
-  return c.json(photoUrls(photoKey));
+  return c.json({ ...photoUrls(photoKey), cardUrl: familyCardUrl(photoKey, card) });
 });
 
 routes.post("/:id/visibility", async (c) => {
@@ -656,6 +681,46 @@ routes.post("/:id/leave", async (c) => {
     entityId: id,
     changes: { personId: caller.personId },
   });
+  return c.body(null, 204);
+});
+
+/**
+ * Pinning is personal and independent of membership -- gated on
+ * `assertCanReadGroup`, the same bar `GET /` already applies, rather than
+ * requiring membership, since a Public group is readable without joining it.
+ * Not audited: a pin changes nothing about the group itself, only where it
+ * sits on the caller's own groups page, the same reasoning
+ * PUT /:id/notification-preference gives for not logging that either.
+ */
+routes.post("/:id/pin", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroup(access);
+
+  await db.query(
+    `insert into group_pins (app_user_id, group_id) values ($1, $2)
+     on conflict (app_user_id, group_id) do nothing`,
+    [caller.appUserId, id]
+  );
+  return c.body(null, 204);
+});
+
+routes.delete("/:id/pin", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+
+  await loadGroupRow(db, id, organizationId);
+  await db.query("delete from group_pins where app_user_id = $1 and group_id = $2", [
+    caller.appUserId,
+    id,
+  ]);
   return c.body(null, 204);
 });
 
@@ -1232,6 +1297,30 @@ routes.put("/:id/posts/:postId/rsvp", async (c) => {
 
   const updated = await loadGroupPostRow(db, caller.appUserId, postId, id);
   return c.json(toGroupPostDto(updated!, access, caller.personId));
+});
+
+/**
+ * The full RSVP roster, names and guest counts included -- what the post's
+ * own `rsvpCounts` can't say, since that's a headcount only. Gated exactly
+ * like the RSVP write above: same group content access, same "is this
+ * actually an event" check.
+ */
+routes.get("/:id/posts/:postId/rsvps", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const postId = uuidSchema.parse(c.req.param("postId"));
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroupContent(access);
+
+  const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  if (row?.kind !== "EVENT") throw new HTTPException(404, { message: "Event not found" });
+
+  const rsvps = await loadGroupEventRsvps(db, postId);
+  return c.json({ rsvps: rsvps.map(toGroupRsvpDto) });
 });
 
 // ---------------------------------------------------------------------------
