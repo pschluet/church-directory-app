@@ -41,6 +41,7 @@ import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
 import { LocationAutocomplete } from "../components/AddressAutocomplete";
 import { Link } from "../components/nav";
+import { TYPING_SIGNAL_INTERVAL_MS, typingLabel, useGroupLive } from "../components/useGroupLive";
 import { useFillViewport } from "../components/useFillViewport";
 import { useInfiniteScroll } from "../components/useInfiniteScroll";
 import { PhotoLightbox } from "../components/PhotoLightbox";
@@ -102,6 +103,9 @@ export function GroupDetail() {
     return Promise.all([
       queryClient.invalidateQueries({ queryKey: qk.group(organizationId, groupId) }),
       queryClient.invalidateQueries({ queryKey: qk.groupPosts(organizationId, groupId) }),
+      // The list shows membership, member counts and archived groups too, so
+      // anything done here can change a row there -- not only a delete.
+      queryClient.invalidateQueries({ queryKey: qk.groups(organizationId), exact: true }),
       queryClient.invalidateQueries({ queryKey: qk.notifications() }),
     ]);
   }
@@ -176,6 +180,25 @@ export function GroupDetail() {
     if (group?.myRole && group.unreadCount > 0) markReadMutation.mutate();
   }, [groupId, group?.myRole, group?.unreadCount]);
 
+  /*
+   * Live while the page is open: other people's posts arrive on their own and
+   * the Messages tab learns who is typing. Marking read here is what keeps the
+   * unread badge from climbing under a member who is looking at the group; it
+   * refreshes only the groups list, not this page, which would just refetch
+   * everything the poll already refreshed.
+   */
+  const { typing } = useGroupLive(groupId, {
+    enabled: Boolean(
+      group && (group.visibility === "PUBLIC" || group.myRole !== null || group.viewingAsAdmin)
+    ),
+    markRead: group?.myRole
+      ? () =>
+          void api(`/groups/${groupId}/read`, { method: "POST" }).then(() =>
+            queryClient.invalidateQueries({ queryKey: qk.groups(organizationId), exact: true })
+          )
+      : undefined,
+  });
+
   if (groupQuery.isPending) return <Spinner label="Loading the group" />;
   if (groupQuery.error) {
     return (
@@ -190,8 +213,6 @@ export function GroupDetail() {
     );
   }
   if (!group) return null;
-
-  const busy = groupQuery.isFetching;
 
   return (
     <>
@@ -263,7 +284,7 @@ export function GroupDetail() {
         />
       )}
 
-      <div className="mb-4 flex items-center justify-between border-b border-line">
+      <div className="mb-4 flex items-center border-b border-line">
         <nav className="flex gap-1" aria-label="Group sections">
           {(["messages", "files", "events"] as const).map((t) => (
             <button
@@ -280,12 +301,6 @@ export function GroupDetail() {
             </button>
           ))}
         </nav>
-        <RefreshButton
-          busy={busy}
-          updatedAt={groupQuery.dataUpdatedAt}
-          now={now}
-          onRefresh={() => void refresh()}
-        />
       </div>
 
       {tab === "messages" && (
@@ -293,6 +308,7 @@ export function GroupDetail() {
           group={group}
           groupId={groupId}
           now={now}
+          typing={typing}
           onReport={setReporting}
           onChanged={refresh}
         />
@@ -379,50 +395,6 @@ function GroupDescription({ text }: { text: string }) {
         </button>
       )}
     </div>
-  );
-}
-
-function RefreshButton({
-  busy,
-  updatedAt,
-  now,
-  onRefresh,
-}: {
-  busy: boolean;
-  updatedAt: number;
-  now: Date;
-  onRefresh: () => void;
-}) {
-  return (
-    <span className="mb-2 flex items-center gap-2">
-      {updatedAt > 0 && (
-        <span className="text-sm text-ink-muted">
-          Updated · {formatPostedAt(new Date(updatedAt).toISOString(), now)}
-        </span>
-      )}
-      <button
-        type="button"
-        aria-label="Refresh"
-        onClick={onRefresh}
-        disabled={busy}
-        className="tap-target inline-flex items-center justify-center rounded-md text-ink-muted transition hover:bg-surface-muted hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 20 20"
-          className={`h-5 w-5 fill-current ${busy ? "animate-spin" : ""}`}
-        >
-          <path
-            d="M16 10a6 6 0 1 1-1.76-4.24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-          />
-          <path d="M-2.2 0h4.4l-2.2 3.2z" transform="translate(14.24 5.76) rotate(-45)" />
-        </svg>
-      </button>
-    </span>
   );
 }
 
@@ -543,6 +515,9 @@ function JoinRequestsBanner({
 // Messages tab
 // ---------------------------------------------------------------------------
 
+/** How long a finger must stay down on a message before its drawer opens. */
+const LONG_PRESS_MS = 450;
+
 /** Back-to-back messages by one person within this long share a single byline. */
 const GROUPING_WINDOW_MS = 5 * 60_000;
 
@@ -585,12 +560,15 @@ function MessagesTab({
   group,
   groupId,
   now,
+  typing,
   onReport,
   onChanged,
 }: {
   group: GroupDto;
   groupId: string;
   now: Date;
+  /** Names of the other people typing right now. */
+  typing: string[];
   onReport: (post: GroupPostDto) => void;
   onChanged: () => Promise<unknown>;
 }) {
@@ -776,6 +754,13 @@ function MessagesTab({
             </ol>
           </div>
 
+          {/* Always rendered, at a fixed height, so a name appearing does not shove the bar. */}
+          <p
+            aria-live="polite"
+            className="h-6 shrink-0 truncate px-1 pt-1 text-sm italic text-ink-muted"
+          >
+            {typingLabel(typing)}
+          </p>
           <div className="shrink-0 border-t border-line pt-3">
             {group.canPost ? (
               <ChatComposer
@@ -880,12 +865,100 @@ function ChatRow({
   // Replying lives in the actions menu rather than inline, so a row stays just
   // the message. Not for a reply (one level of threading) or a deleted post.
   const showReplyAction = canReply && !isReply && !isDeleted;
-  const hasActions =
-    !isDeleted && (showReplyAction || post.canEdit || post.canDelete || post.canReport);
   const header = showHeader || isReply;
 
+  /*
+   * What a message offers, in one list, so the hover menu on a desktop and the
+   * drawer on a phone cannot drift apart. "Copy text" is drawer-only: on a
+   * phone text selection is switched off on a row (it fights the long press),
+   * so this is how you get the text out.
+   */
+  const actions: { label: string; danger?: boolean; onSelect: () => void }[] = [];
+  if (showReplyAction) actions.push({ label: "Reply", onSelect: () => setReplying(true) });
+  if (!isDeleted && post.canEdit) actions.push({ label: "Edit", onSelect: () => setEditing(true) });
+  if (!isDeleted && post.canDelete)
+    actions.push({ label: "Delete", danger: true, onSelect: () => setConfirmDelete(true) });
+  if (!isDeleted && post.canReport)
+    actions.push({ label: "Report", onSelect: () => onReport(post) });
+
+  /*
+   * Long press, for a touch screen: it opens a drawer with the actions, because
+   * a button on every row covers the message it sits on. Only for a finger --
+   * a mouse has the hover menu -- and only when there is something to offer.
+   * Moving more than a few pixels is a scroll, not a press; the browser also
+   * cancels the pointer once it takes over a scroll, which clears the timer.
+   */
+  const [sheetOpen, setSheetOpen] = useState(false);
+  /** A finger is down and the drawer is about to open -- the row shows it has noticed. */
+  const [pressing, setPressing] = useState(false);
+  const press = useRef<{ timer: number; x: number; y: number } | null>(null);
+  /** The lift that ends a long press must not also click whatever is under the finger. */
+  const swallowClick = useRef(false);
+  const sheetAvailable = !isDeleted && !editing && (actions.length > 0 || Boolean(post.body));
+
+  function cancelPress(): void {
+    if (press.current) window.clearTimeout(press.current.timer);
+    press.current = null;
+    setPressing(false);
+  }
+  function startPress(event: React.PointerEvent): void {
+    if (event.pointerType !== "touch" || !sheetAvailable) return;
+    cancelPress();
+    setPressing(true);
+    press.current = {
+      x: event.clientX,
+      y: event.clientY,
+      timer: window.setTimeout(() => {
+        press.current = null;
+        setPressing(false);
+        // Most browsers fire no click after a long press, so the flag must not
+        // outlive the lift or it would eat the first tap in the drawer.
+        swallowClick.current = true;
+        window.setTimeout(() => {
+          swallowClick.current = false;
+        }, 400);
+        navigator.vibrate?.(10);
+        setSheetOpen(true);
+      }, LONG_PRESS_MS),
+    };
+  }
+  function movePress(event: React.PointerEvent): void {
+    const start = press.current;
+    if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) > 10) cancelPress();
+  }
+  useEffect(() => cancelPress, []);
+
   return (
-    <li className="group/row relative flex gap-3 rounded-md px-2 py-1 focus-within:bg-surface-muted/60 hover:bg-surface-muted/60">
+    <li
+      onPointerDown={startPress}
+      onPointerMove={movePress}
+      onPointerUp={cancelPress}
+      onPointerCancel={cancelPress}
+      onPointerLeave={cancelPress}
+      onClickCapture={(event) => {
+        // The drawer is portalled but React still bubbles its clicks through
+        // this row; only a click that really landed on the row is swallowed.
+        if (!swallowClick.current || !event.currentTarget.contains(event.target as Node)) return;
+        swallowClick.current = false;
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+      // Android raises its own context menu on a long press; ours replaces it.
+      onContextMenu={(event) => {
+        if (sheetAvailable && window.matchMedia?.("(hover: none)").matches) event.preventDefault();
+      }}
+      className={`group/row relative flex gap-3 rounded-md px-2 ${
+        // A byline starts a new run and gets some air above it; a continuation
+        // sits close under the line before it, as in a chat.
+        header ? "pb-0.5 pt-2" : "py-px"
+      } ${
+        // The message the drawer is about stays marked while it is open, and
+        // starts to show during the hold, so a long press is never a guess.
+        sheetOpen || pressing
+          ? "bg-accent-light/30 ring-1 ring-accent/50"
+          : "focus-within:bg-surface-muted/60 hover:bg-surface-muted/60"
+      } [@media(hover:none)]:select-none [@media(hover:none)]:[-webkit-touch-callout:none]`}
+    >
       {/* The same-width gutter on every row keeps a run of messages lined up under its byline. */}
       <div className="w-10 shrink-0">
         {header ? (
@@ -894,7 +967,7 @@ function ChatRow({
           <time
             dateTime={post.createdAt}
             title={formatPostedAt(post.createdAt, now)}
-            className="block pt-1 text-center text-[11px] leading-5 text-ink-muted opacity-0 group-hover/row:opacity-100"
+            className="block whitespace-nowrap pt-0.5 text-center text-[10px] leading-tight text-ink-muted opacity-0 group-hover/row:opacity-100"
           >
             {formatChatTime(post.createdAt)}
           </time>
@@ -940,7 +1013,7 @@ function ChatRow({
               />
             )}
             {post.body && (
-              <p className="whitespace-pre-line break-words text-ink">
+              <p className="whitespace-pre-line break-words leading-snug text-ink">
                 <MentionText text={post.body} mentions={post.mentions} />
                 {!header && post.editedAt && (
                   <span className="text-xs text-ink-muted"> (edited)</span>
@@ -1006,6 +1079,7 @@ function ChatRow({
               members={members}
               parentPostId={post.id}
               placeholder="Write a reply…"
+              onCancel={() => setReplying(false)}
               onPosted={async () => {
                 setReplying(false);
                 setShowReplies(true);
@@ -1018,23 +1092,64 @@ function ChatRow({
       </div>
 
       {/*
-        Revealed on hover or focus, by opacity and not `hidden`: a hidden
-        control cannot take focus, so a keyboard user could never reach it. A
-        touch screen has no hover, so there it is always shown.
+        On a mouse: revealed on hover or focus, by opacity and not `hidden` -- a
+        hidden control cannot take focus, so a keyboard user could never reach
+        it. On a touch screen there is no hover and a button on every row would
+        sit on top of the messages, so it is gone and a long press opens the
+        drawer below instead.
       */}
-      {hasActions && (
-        <div className="absolute -top-3 right-2 rounded-md border border-line bg-surface opacity-0 shadow-sm transition focus-within:opacity-100 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100">
+      {actions.length > 0 && (
+        <div className="absolute -top-3 right-2 rounded-md border border-line bg-surface opacity-0 shadow-sm transition focus-within:opacity-100 group-hover/row:opacity-100 [@media(hover:none)]:hidden">
           <MenuButton portal label={`Actions for this post`}>
-            {showReplyAction && <MenuItem onSelect={() => setReplying(true)}>Reply</MenuItem>}
-            {post.canEdit && <MenuItem onSelect={() => setEditing(true)}>Edit</MenuItem>}
-            {post.canDelete && (
-              <MenuItem danger onSelect={() => setConfirmDelete(true)}>
-                Delete
+            {actions.map((action) => (
+              <MenuItem key={action.label} danger={action.danger} onSelect={action.onSelect}>
+                {action.label}
               </MenuItem>
-            )}
-            {post.canReport && <MenuItem onSelect={() => onReport(post)}>Report</MenuItem>}
+            ))}
           </MenuButton>
         </div>
+      )}
+
+      {sheetOpen && (
+        <Modal title="Message" onClose={() => setSheetOpen(false)}>
+          {/* Which message this is for: its author and the start of what it says. */}
+          <p className="mb-2 line-clamp-2 break-words rounded-md border-l-4 border-accent bg-accent-light/30 px-3 py-2 text-sm text-ink">
+            <span className="font-bold">{post.authorName}</span>
+            {post.body ? `: ${post.body}` : ""}
+          </p>
+          <ul className="-mx-2 -mb-2 divide-y divide-line">
+            {post.body && (
+              <li>
+                <button
+                  type="button"
+                  className="tap-target block w-full px-2 py-3 text-left font-bold text-ink"
+                  onClick={() => {
+                    void navigator.clipboard?.writeText(post.body ?? "");
+                    setSheetOpen(false);
+                  }}
+                >
+                  Copy text
+                </button>
+              </li>
+            )}
+            {actions.map((action) => (
+              <li key={action.label}>
+                <button
+                  type="button"
+                  className={`tap-target block w-full px-2 py-3 text-left font-bold ${
+                    action.danger ? "text-primary" : "text-ink"
+                  }`}
+                  onClick={() => {
+                    setSheetOpen(false);
+                    action.onSelect();
+                  }}
+                >
+                  {action.label}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Modal>
       )}
 
       {confirmDelete && (
@@ -1365,6 +1480,8 @@ function MentionTextarea({
       event.preventDefault();
       pick(matches[highlighted]!);
     } else if (event.key === "Escape") {
+      // Closes the list only; not whatever surrounds this box (a reply, a dialog).
+      event.stopPropagation();
       setQuery(null);
       setCaret(null);
     }
@@ -1671,6 +1788,7 @@ function ChatComposer({
   parentPostId,
   placeholder,
   canStartEvent = false,
+  onCancel,
   onPosted,
 }: {
   groupId: string;
@@ -1679,6 +1797,8 @@ function ChatComposer({
   placeholder: string;
   /** Offer "Event…" in the + menu. Never for a reply: a reply cannot be an event. */
   canStartEvent?: boolean;
+  /** Offered as "Cancel" (and Escape) -- for a reply, which is opened on purpose and can be abandoned. */
+  onCancel?: () => void;
   onPosted: () => Promise<unknown>;
 }) {
   const [body, setBody] = useState("");
@@ -1687,6 +1807,22 @@ function ChatComposer({
   const [error, setError] = useState<string | null>(null);
   const picker = useGroupAttachmentPicker();
   const mentionable = useMentionable(members);
+
+  /*
+   * "I am typing", at most once per interval and only from the main bar -- a
+   * reply is a side conversation and would only make the indicator flicker. The
+   * server forgets it after a few seconds, so there is no "stopped" to send; a
+   * failure is not worth telling anyone about.
+   */
+  const lastSignal = useRef(0);
+  function onBodyChange(next: string): void {
+    setBody(next);
+    if (parentPostId || next.trim() === "") return;
+    const at = Date.now();
+    if (at - lastSignal.current < TYPING_SIGNAL_INTERVAL_MS) return;
+    lastSignal.current = at;
+    void Promise.resolve(api(`/groups/${groupId}/typing`, { method: "POST" })).catch(() => {});
+  }
 
   async function submit(): Promise<void> {
     if (busy || body.trim() === "") return;
@@ -1714,7 +1850,14 @@ function ChatComposer({
   }
 
   return (
-    <div className="space-y-2">
+    // Escape abandons a reply. The mention list stops its own Escape from
+    // reaching here, so closing the list does not also close the reply.
+    <div
+      className="space-y-2"
+      onKeyDown={(event) => {
+        if (onCancel && event.key === "Escape") onCancel();
+      }}
+    >
       {picker.attachments.length > 0 && (
         <ul className="flex flex-wrap gap-2">
           {picker.attachments.map((attachment) => (
@@ -1767,7 +1910,7 @@ function ChatComposer({
           autoGrow
           dropUp
           value={body}
-          onChange={setBody}
+          onChange={onBodyChange}
           members={mentionable}
           placeholder={placeholder}
           ariaLabel={parentPostId ? "Reply" : "Message"}
@@ -1785,6 +1928,14 @@ function ChatComposer({
           <SendIcon />
         </button>
       </div>
+
+      {onCancel && (
+        <div className="flex justify-end">
+          <Button variant="ghost" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      )}
 
       {picker.elements}
       {(picker.error || error) && (
@@ -2618,7 +2769,14 @@ function AdminSettingsPanel({
 
   const remove = useMutation({
     mutationFn: () => api(`/groups/${groupId}`, { method: "DELETE" }),
-    onSuccess: () => void navigate("/groups", { viewTransition: true }),
+    onSuccess: () => {
+      void navigate("/groups", { viewTransition: true });
+      // Gone for good: drop everything cached about it (which also stops its
+      // live poll asking for a group that no longer exists) and refetch the
+      // list, or the groups page shows it until a manual reload.
+      queryClient.removeQueries({ queryKey: qk.group(organizationId, groupId) });
+      void queryClient.invalidateQueries({ queryKey: qk.groups(organizationId), exact: true });
+    },
   });
 
   async function attachPhoto(

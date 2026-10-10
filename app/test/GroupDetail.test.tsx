@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen, waitFor, within } from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { GroupDto, GroupMemberDto, GroupPostDto, MeDto } from "@shared";
 import { GroupDetail } from "../src/pages/GroupDetail";
@@ -17,10 +17,12 @@ vi.mock("../src/lib/api", async () => {
   return { ...actual, api: (...args: unknown[]) => apiMock(...args) };
 });
 
+const adminState = { isAdmin: false };
+
 vi.mock("../src/context/MeContext", () => ({
   useMe: () => ({
     me: { appUser: { id: "user-me", personId: "person-me" } } as unknown as MeDto,
-    isAdmin: false,
+    isAdmin: adminState.isAdmin,
     organizationId: "org-1",
     maps: null,
   }),
@@ -112,13 +114,20 @@ function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
 
 interface Stub {
   group?: GroupDto;
+  typing?: string[];
   /** Newest-first pages, as the API returns them. */
   pages?: { posts: GroupPostDto[]; nextCursor: { createdAt: string; id: string } | null }[];
 }
 
-function stub({ group: g = group(), pages = [{ posts: [], nextCursor: null }] }: Stub = {}) {
+function stub({
+  group: g = group(),
+  pages = [{ posts: [], nextCursor: null }],
+  typing = [],
+}: Stub = {}) {
   apiMock.mockImplementation((path: string, options?: { query?: Record<string, string> }) => {
     if (path === "/groups/g1") return Promise.resolve(g);
+    if (path === "/groups/g1/live")
+      return Promise.resolve({ activityAt: "2026-10-10T10:00:00.000Z", typing });
     if (path === "/groups/g1/posts") {
       const cursor = options?.query?.cursorId;
       const index = cursor ? pages.findIndex((_, i) => pages[i - 1]?.nextCursor?.id === cursor) : 0;
@@ -140,6 +149,7 @@ function renderPage() {
 describe("GroupDetail", () => {
   beforeEach(() => {
     apiMock.mockReset();
+    adminState.isAdmin = false;
     seq = 0;
   });
 
@@ -380,6 +390,170 @@ describe("GroupDetail", () => {
     });
   });
 
+  describe("live updates", () => {
+    it("has no manual refresh button or 'Updated' text any more", async () => {
+      stub();
+      renderPage();
+      await screen.findByRole("heading", { name: "Youth Group" });
+      expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/^Updated/)).not.toBeInTheDocument();
+    });
+
+    it("says who is typing", async () => {
+      stub({ typing: ["Ann Lee"] });
+      renderPage();
+      expect(await screen.findByText("Ann Lee is typing…")).toBeInTheDocument();
+    });
+
+    it("tells the server I am typing, at most once per interval, and not for a blank bar", async () => {
+      let nowMs = 1_000_000;
+      const clock = vi.spyOn(Date, "now").mockImplementation(() => nowMs);
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      const typingCalls = () =>
+        apiMock.mock.calls.filter((call) => call[0] === "/groups/g1/typing");
+
+      await userEvent.type(bar, "   ");
+      expect(typingCalls()).toHaveLength(0);
+
+      await userEvent.type(bar, "abc");
+      expect(typingCalls()).toHaveLength(1);
+      expect(typingCalls()[0]![1]).toEqual({ method: "POST" });
+
+      nowMs += 3500;
+      await userEvent.type(bar, "d");
+      expect(typingCalls()).toHaveLength(2);
+      clock.mockRestore();
+    });
+
+    it("does not signal typing from a reply bar", async () => {
+      stub({ pages: [{ posts: [post({ body: "Hello" })], nextCursor: null }] });
+      renderPage();
+      await screen.findByText("Hello");
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
+      await userEvent.type(await screen.findByRole("textbox", { name: "Reply" }), "thinking");
+      expect(apiMock.mock.calls.some((call) => call[0] === "/groups/g1/typing")).toBe(false);
+    });
+  });
+
+  describe("deleting the group", () => {
+    it("drops it from the cached groups list so the groups page does not show it", async () => {
+      adminState.isAdmin = true;
+      stub({ group: group({ canModerate: true, myRole: "ADMIN" }) });
+      const { queryClient } = renderWithProviders(
+        <Routes>
+          <Route path="/groups/:id" element={<GroupDetail />} />
+          <Route path="/groups" element={<p>The groups page</p>} />
+        </Routes>,
+        { initialEntries: ["/groups/g1"] }
+      );
+      const invalidate = vi.spyOn(queryClient, "invalidateQueries");
+      const remove = vi.spyOn(queryClient, "removeQueries");
+
+      await userEvent.click(await screen.findByRole("button", { name: /3 members/ }));
+      await userEvent.click(await screen.findByRole("button", { name: "Delete group" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Delete it" }));
+
+      expect(await screen.findByText("The groups page")).toBeInTheDocument();
+      expect(apiMock).toHaveBeenCalledWith("/groups/g1", { method: "DELETE" });
+      expect(remove).toHaveBeenCalledWith({ queryKey: ["org", "org-1", "groups", "g1"] });
+      expect(invalidate).toHaveBeenCalledWith({
+        queryKey: ["org", "org-1", "groups"],
+        exact: true,
+      });
+    });
+  });
+
+  describe("long press on a touch screen", () => {
+    const messages = () => ({
+      pages: [
+        {
+          posts: [
+            post({
+              body: "Hello there",
+              authorPersonId: "person-me",
+              canEdit: true,
+              canDelete: true,
+            }),
+          ],
+          nextCursor: null,
+        },
+      ],
+    });
+    const press = (el: Element, init: PointerEventInit = {}) =>
+      fireEvent.pointerDown(el, { pointerType: "touch", clientX: 5, clientY: 5, ...init });
+
+    it("opens a drawer with the message's actions after a held touch", async () => {
+      stub(messages());
+      renderPage();
+      const row = (await screen.findByText("Hello there")).closest("li")!;
+
+      press(row);
+      expect(await screen.findByRole("dialog", { name: "Message" })).toBeInTheDocument();
+      const drawer = within(screen.getByRole("dialog", { name: "Message" }));
+      for (const name of ["Copy text", "Reply", "Edit", "Delete"]) {
+        expect(drawer.getByRole("button", { name })).toBeInTheDocument();
+      }
+    });
+
+    it("marks the pressed message while the finger is down, and while its drawer is open", async () => {
+      stub(messages());
+      renderPage();
+      const row = (await screen.findByText("Hello there")).closest("li")!;
+      expect(row.className).not.toContain("ring-accent");
+
+      press(row);
+      expect(row.className).toContain("ring-accent");
+      fireEvent.pointerUp(row, { pointerType: "touch" });
+      expect(row.className).not.toContain("ring-accent");
+
+      press(row);
+      const drawer = await screen.findByRole("dialog", { name: "Message" });
+      expect(row.className).toContain("ring-accent");
+      // The drawer says which message it is about.
+      expect(within(drawer).getByText(/Hello there/)).toBeInTheDocument();
+
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(row.className).not.toContain("ring-accent"));
+    });
+
+    it("does nothing for a quick tap, a drag, or a mouse", async () => {
+      stub(messages());
+      renderPage();
+      const row = (await screen.findByText("Hello there")).closest("li")!;
+
+      press(row);
+      fireEvent.pointerUp(row, { pointerType: "touch" });
+      press(row);
+      fireEvent.pointerMove(row, { pointerType: "touch", clientX: 5, clientY: 60 });
+      press(row, { pointerType: "mouse" });
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(screen.queryByRole("dialog", { name: "Message" })).not.toBeInTheDocument();
+    });
+
+    it("runs the chosen action and closes", async () => {
+      stub(messages());
+      renderPage();
+      const row = (await screen.findByText("Hello there")).closest("li")!;
+      press(row);
+      await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
+      expect(screen.queryByRole("dialog", { name: "Message" })).not.toBeInTheDocument();
+      expect(screen.getByDisplayValue("Hello there")).toBeInTheDocument();
+    });
+
+    it("hides the always-on three-dot button on a touch screen", async () => {
+      stub(messages());
+      renderPage();
+      await screen.findByText("Hello there");
+      const wrapper = screen
+        .getByRole("button", { name: "Actions for this post" })
+        .closest(".absolute");
+      expect(wrapper?.className).toContain("[@media(hover:none)]:hidden");
+    });
+  });
+
   describe("replying", () => {
     it("is in the actions menu, not inline on the message", async () => {
       stub({ pages: [{ posts: [post({ body: "Hello" })], nextCursor: null }] });
@@ -401,6 +575,42 @@ describe("GroupDetail", () => {
           })
         )
       );
+    });
+
+    it("can be cancelled, with the button or Escape, and nothing is sent", async () => {
+      stub({ pages: [{ posts: [post({ body: "Hello" })], nextCursor: null }] });
+      renderPage();
+      await screen.findByText("Hello");
+      const openReply = async () => {
+        await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+        await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
+        return screen.findByRole("textbox", { name: "Reply" });
+      };
+
+      let bar = await openReply();
+      await userEvent.type(bar, "never mind");
+      await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+
+      bar = await openReply();
+      await userEvent.type(bar, "{Escape}");
+      expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+
+      expect(
+        apiMock.mock.calls.some((c) => c[1]?.method === "POST" && c[0].endsWith("/posts"))
+      ).toBe(false);
+    });
+
+    it("keeps the reply open when Escape only closes the mention list", async () => {
+      stub({ pages: [{ posts: [post({ body: "Hello" })], nextCursor: null }] });
+      renderPage();
+      await screen.findByText("Hello");
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
+      const bar = await screen.findByRole("textbox", { name: "Reply" });
+      await userEvent.type(bar, "hi @An");
+      await userEvent.keyboard("{Escape}");
+      expect(screen.getByRole("textbox", { name: "Reply" })).toBeInTheDocument();
     });
 
     it("is not offered to someone who cannot reply", async () => {

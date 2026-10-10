@@ -21,10 +21,10 @@ import { useMe } from "../context/MeContext";
  * below, that costs at most one extra fetch for whichever group page happens
  * to be open, which is cheap next to adding a second, identity-carrying signal.
  *
- * It follows that members who have not enabled notifications get no live
- * updates at all -- for them the refresh button on the page and the refetch on
- * window focus are the whole mechanism. That is deliberate: see the plan's
- * costing of the poll it replaces.
+ * It follows that members who have not enabled notifications get no pushed
+ * updates for the bell or the other pages -- the refetch on window focus is the
+ * whole mechanism there. A group that is *open* is the exception: it polls
+ * itself (see useGroupLive), so it does not depend on push at all.
  *
  * Mounted once, in AppShell. Not in NotificationBell, which AppShell renders
  * *twice* (a phone copy beside the hamburger and a desktop copy in the account

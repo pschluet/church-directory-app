@@ -1262,6 +1262,15 @@ export interface GroupPostReportDto {
 }
 
 /** One row of the Files tab -- an attachment plus enough of its post to show context. */
+/**
+ * What an open group page polls: a stamp that changes whenever anything in the
+ * group does, and who else is typing right now.
+ */
+export interface GroupLiveDto {
+  activityAt: string;
+  typing: string[];
+}
+
 export interface GroupFileDto {
   postId: string;
   postCreatedAt: string;

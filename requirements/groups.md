@@ -78,7 +78,7 @@ For a Private group, non-members see the title, description, image, and a member
 - Notifications are delivered in-app (a badge/bell) and as web push notifications to a member's device. Email and text message notifications are not part of this release.
 - Members can set notification preferences on a per-group basis: notify on all new posts, notify only when they're @ mentioned, or don't notify at all.
 - Notification content never reveals the message itself — this matters especially for Secret groups. A notification only indicates that there's new activity and roughly how much, not what was said.
-- The group page refreshes automatically as new activity arrives if the member has notifications enabled on that device. It can always be refreshed manually as well, with a visible "last updated" indicator — the same pattern used elsewhere in the app, such as on Prayer Requests.
+- An open group page is live: new posts, replies, edits, deletions and RSVPs from other members appear within a couple of seconds without any action, and the Messages tab shows who else is typing ("Ann is typing…", "Several people are typing…"). There is no refresh button. Live updates only run while the page is open and visible; coming back to a hidden tab catches up straight away.
 
 # Retention
 - Posts and their attachments are automatically and permanently removed 5 years after they were posted. This is a hard deletion with no way to recover the content afterward, and no individual warning is given beforehand.

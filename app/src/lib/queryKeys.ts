@@ -151,6 +151,8 @@ export const qk = {
     [...qk.group(orgId, id), "posts", postId, "replies"] as const,
   groupPostRsvps: (orgId: string | null, id: string, postId: string) =>
     [...qk.group(orgId, id), "posts", postId, "rsvps"] as const,
+  /** The open group's poll. Under the group, so leaving or switching sweeps it. */
+  groupLive: (orgId: string | null, id: string) => [...qk.group(orgId, id), "live"] as const,
   groupFiles: (orgId: string | null, id: string) => [...qk.group(orgId, id), "files"] as const,
   groupEvents: (orgId: string | null, id: string) => [...qk.group(orgId, id), "events"] as const,
   groupReports: (orgId: string | null, id: string) => [...qk.group(orgId, id), "reports"] as const,

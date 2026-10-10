@@ -41,6 +41,7 @@ import {
   toGroupPostDto,
   type GroupPostRow,
 } from "../services/group-posts";
+import { clearTyping, loadActivityAt, loadTypingNames, markTyping } from "../services/group-live";
 import {
   loadGroupNotificationDefault,
   setGroupNotificationPref,
@@ -69,6 +70,7 @@ import {
   type GroupDto,
   type GroupFileDto,
   type GroupJoinRequestDto,
+  type GroupLiveDto,
   type GroupMemberRole,
   type GroupPostDto,
   type GroupPostReportDto,
@@ -939,6 +941,51 @@ routes.get("/:id/posts", async (c) => {
   });
 });
 
+/**
+ * The poll behind "live" -- see V20__group_live.sql. Same gate as reading the
+ * content, but deliberately not logged as an admin view: it fires every couple
+ * of seconds, and the visit itself was already recorded when the page loaded.
+ */
+routes.get("/:id/live", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  // 404 first for a Secret group, so even this endpoint does not confirm it exists.
+  assertCanReadGroup(access);
+  assertCanReadGroupContent(access);
+
+  const body: GroupLiveDto = {
+    activityAt: await loadActivityAt(db, id),
+    typing: await loadTypingNames(db, id, caller.appUserId),
+  };
+  c.header("Cache-Control", "no-store");
+  return c.json(body);
+});
+
+/** "I am typing", sent by the message bar. Not audited: it is presence, not a change. */
+routes.post("/:id/typing", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroup(access);
+  assertCanReadGroupContent(access);
+  // Somebody who cannot post or reply has nothing to type.
+  if (!access.canPost && !access.canReply) {
+    throw new HTTPException(403, { message: "You cannot post in this group" });
+  }
+
+  await markTyping(db, id, caller.appUserId);
+  return c.body(null, 204);
+});
+
 routes.get("/:id/posts/:postId/replies", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
@@ -1157,6 +1204,9 @@ routes.post("/:id/posts", async (c) => {
       actingAppUserId: caller.appUserId,
       mentionedAppUserIds: payload.mentionedAppUserIds,
     });
+
+    // Their message is here; "typing" ends now rather than after the window.
+    await clearTyping(tx, id, caller.appUserId);
 
     return created.id;
   });

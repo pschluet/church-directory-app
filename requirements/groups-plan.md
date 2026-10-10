@@ -21,7 +21,7 @@ intentionally leaves out.
 | Area | Decision |
 |---|---|
 | Notification channels | **In-app bell/badge + web push.** No email, no SMS. |
-| Freshness | Mirror Prayer Requests exactly: SW `postMessage` → query invalidation, `refetchOnWindowFocus`, manual refresh button. **No polling.** |
+| Freshness | Bell and the groups list: SW `postMessage` → query invalidation. An **open** group polls `GET /groups/:id/live` every 2s while visible (activity stamp + who is typing, see V20); no refresh button. No WebSocket: the VPC has no NAT or interface endpoints, so pushing from the Lambda would add a new API and a paid route out. |
 | Invites | **Instant add.** An invited person is a member immediately. |
 | Group end-of-life | Group admin **archives** (read-only, hidden from browse). Hard delete is parish-admin only. |
 | Attachments | **Images + documents.** Video deferred to a later phase. |
@@ -291,7 +291,7 @@ path doesn't already carry it, and assert the new rule in
   confirm a non-member cannot see a secret group in the list *or* by direct URL, and that a
   private group's messages 403 while its metadata loads.
 - Freshness: open two browser profiles on the same group, post from one, confirm the other
-  updates without a manual refresh (push enabled) and via the refresh button (push off).
+  updates within a couple of seconds, and shows "is typing…" while the other types.
 - Audit: confirm group actions land in `/audit-log` with group titles resolved, that an admin
   opening a group they are not in writes `group.adminView`, and that ordinary posts do **not**
   appear.

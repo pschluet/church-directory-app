@@ -940,4 +940,147 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(res.status).toBe(400);
     });
   });
+
+  describe("live updates", () => {
+    async function joined(): Promise<string> {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      return groupId;
+    }
+    const live = async (u: CreatedUser, groupId: string) =>
+      (await as(u).call("GET", `/api/groups/${groupId}/live`)).body as {
+        activityAt: string;
+        typing: string[];
+      };
+
+    it("gives a member the stamp and an empty typing list", async () => {
+      const groupId = await joined();
+      const res = await as(member).call("GET", `/api/groups/${groupId}/live`);
+      expect(res.status).toBe(200);
+      expect(res.body.typing).toEqual([]);
+      expect(Number.isNaN(Date.parse(res.body.activityAt))).toBe(false);
+    });
+
+    it("keeps a private group's pulse from non-members, and hides a secret one entirely", async () => {
+      const priv = await createGroup(creator, "PRIVATE");
+      expect((await as(outsider).call("GET", `/api/groups/${priv}/live`)).status).toBe(403);
+      const secret = await createGroup(creator, "SECRET");
+      expect((await as(outsider).call("GET", `/api/groups/${secret}/live`)).status).toBe(404);
+    });
+
+    it("lets a parish admin watch without logging each poll as a visit", async () => {
+      const groupId = await createGroup(creator, "SECRET");
+      await as(parishAdmin).call("GET", `/api/groups/${groupId}`);
+      const { rows: before } = await db().query<{ n: string }>(
+        "select count(*)::text as n from audit_log where action = 'group.adminView'"
+      );
+      for (let i = 0; i < 3; i++) {
+        expect((await as(parishAdmin).call("GET", `/api/groups/${groupId}/live`)).status).toBe(200);
+      }
+      const { rows: after } = await db().query<{ n: string }>(
+        "select count(*)::text as n from audit_log where action = 'group.adminView'"
+      );
+      expect(after[0]!.n).toBe(before[0]!.n);
+    });
+
+    it("moves the stamp for a post, a reply, an edit, a delete and an RSVP, and not for a read", async () => {
+      const groupId = await joined();
+      let last = (await live(member, groupId)).activityAt;
+      const changed = async (): Promise<boolean> => {
+        const now = (await live(member, groupId)).activityAt;
+        const moved = now !== last;
+        last = now;
+        return moved;
+      };
+
+      expect(await changed()).toBe(false);
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Hi" });
+      expect(await changed()).toBe(true);
+      expect(await changed()).toBe(false);
+
+      await as(member).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Reply",
+        parentPostId: post.body.id,
+      });
+      expect(await changed()).toBe(true);
+
+      await as(creator).call("PATCH", `/api/groups/${groupId}/posts/${post.body.id}`, {
+        body: "Hi!",
+      });
+      expect(await changed()).toBe(true);
+
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Potluck", eventDate: "2030-01-01" },
+      });
+      await changed();
+      await as(member).call("PUT", `/api/groups/${groupId}/posts/${event.body.id}/rsvp`, {
+        response: "YES",
+        guestCount: 0,
+      });
+      expect(await changed()).toBe(true);
+
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${post.body.id}`);
+      expect(await changed()).toBe(true);
+    });
+
+    it("shows who else is typing, never the caller, and not for long", async () => {
+      const groupId = await joined();
+      expect((await as(member).call("POST", `/api/groups/${groupId}/typing`)).status).toBe(204);
+
+      expect((await live(creator, groupId)).typing).toEqual(["Mo Member"]);
+      expect((await live(member, groupId)).typing).toEqual([]);
+
+      await db().query(
+        "update group_typing set typed_at = now() - interval '10 seconds' where group_id = $1",
+        [groupId]
+      );
+      expect((await live(creator, groupId)).typing).toEqual([]);
+    });
+
+    it("clears somebody's typing when their message lands", async () => {
+      const groupId = await joined();
+      await as(member).call("POST", `/api/groups/${groupId}/typing`);
+      expect((await live(creator, groupId)).typing).toEqual(["Mo Member"]);
+      await as(member).call("POST", `/api/groups/${groupId}/posts`, { body: "Done" });
+      expect((await live(creator, groupId)).typing).toEqual([]);
+    });
+
+    it("sweeps stale typing markers when the next one arrives, and keeps one row each", async () => {
+      const groupId = await joined();
+      await as(member).call("POST", `/api/groups/${groupId}/typing`);
+      await db().query(
+        "update group_typing set typed_at = now() - interval '5 minutes' where group_id = $1",
+        [groupId]
+      );
+      await as(creator).call("POST", `/api/groups/${groupId}/typing`);
+      await as(creator).call("POST", `/api/groups/${groupId}/typing`);
+      const { rows } = await db().query<{ app_user_id: string }>(
+        "select app_user_id from group_typing where group_id = $1",
+        [groupId]
+      );
+      expect(rows.map((r) => r.app_user_id)).toEqual([creator.appUserId]);
+    });
+
+    it("refuses typing from someone who is not in the group, or who cannot post or reply", async () => {
+      const groupId = await createGroup(creator, "PRIVATE");
+      expect((await as(outsider).call("POST", `/api/groups/${groupId}/typing`)).status).toBe(403);
+    });
+
+    it("lists several typists oldest first", async () => {
+      const groupId = await joined();
+      await as(outsider).call("POST", `/api/groups/${groupId}/members`, {
+        personId: outsider.personId,
+      });
+      await as(member).call("POST", `/api/groups/${groupId}/typing`);
+      await db().query(
+        "update group_typing set typed_at = now() - interval '2 seconds' where group_id = $1",
+        [groupId]
+      );
+      await as(outsider).call("POST", `/api/groups/${groupId}/typing`);
+      expect((await live(creator, groupId)).typing).toEqual(["Mo Member", "Ozzy Outsider"]);
+    });
+  });
 });

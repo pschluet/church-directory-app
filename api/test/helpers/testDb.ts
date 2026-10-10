@@ -61,6 +61,7 @@ const TABLES = [
   "group_posts",
   "group_join_requests",
   "group_pins",
+  "group_typing",
   "group_members",
   "groups",
   "persons",
