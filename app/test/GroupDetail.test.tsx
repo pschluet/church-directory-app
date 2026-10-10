@@ -449,6 +449,63 @@ describe("GroupDetail", () => {
     });
   });
 
+  describe("the description", () => {
+    const LONG = "A long description. ".repeat(20);
+
+    it("shows a short description whole, with nothing to expand", async () => {
+      stub({ group: group({ description: "Short and sweet." }) });
+      renderPage();
+      expect(await screen.findByText("Short and sweet.")).not.toHaveClass("line-clamp-3");
+      expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+    });
+
+    it("previews a long one and expands on request", async () => {
+      stub({ group: group({ description: LONG }) });
+      renderPage();
+      const text = await screen.findByText(LONG.trim());
+      expect(text).toHaveClass("line-clamp-3");
+
+      await userEvent.click(screen.getByRole("button", { name: "Show more" }));
+      expect(text).not.toHaveClass("line-clamp-3");
+      await userEvent.click(screen.getByRole("button", { name: "Show less" }));
+      expect(text).toHaveClass("line-clamp-3");
+    });
+
+    it("lets a group admin edit it from group settings", async () => {
+      stub({ group: group({ description: "Old", canModerate: true, myRole: "ADMIN" }) });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: /3 members/ }));
+
+      const box = await screen.findByLabelText(/^Description/);
+      const save = screen.getByRole("button", { name: "Save details" });
+      expect(save).toBeDisabled();
+
+      await userEvent.clear(box);
+      await userEvent.type(box, "New words");
+      await userEvent.click(save);
+
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/groups/g1", {
+          method: "PATCH",
+          body: { title: "Youth Group", description: "New words" },
+        })
+      );
+    });
+  });
+
+  describe("the members list", () => {
+    it("opens a member's actions menu outside the modal, so it is not clipped", async () => {
+      stub({ group: group({ canModerate: true, myRole: "ADMIN" }) });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: /3 members/ }));
+      await userEvent.click(await screen.findByRole("button", { name: "Actions for Ann Lee" }));
+
+      const menu = screen.getByRole("menu", { name: "Actions for Ann Lee" });
+      expect(menu.parentElement).toBe(document.body);
+      expect(screen.getByRole("menuitem", { name: "Make admin" })).toBeInTheDocument();
+    });
+  });
+
   describe("notification setting", () => {
     it("offers to follow the default, and sends null for it", async () => {
       stub({ group: group({ notificationPref: "NONE", notificationPrefDefault: "MENTIONS" }) });

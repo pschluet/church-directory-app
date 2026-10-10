@@ -111,5 +111,6 @@ TODO
 - Don't show the group photo on the individual group's page. Only on the page that shows all the groups.
 
 - The group description should be editable.
+- If the group description is long, the description should only show a preview on the group's page with the option to expand so it doesn't take up too much of the messages space.
 - On the group settings page, when you click the 3 dots button next to a group member's name, the modal is hidden. Fix this.
-- The group messages/posts must be realtime. One one user posts a message, it should be immediately visible to everyone (like Slack).
+- The group messages/posts must be realtime. When one user posts a message, it should be immediately visible to everyone (like Slack). The messages page should also indicate when another user (or potentially multiple users) are typing (like Slack).

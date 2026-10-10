@@ -13,12 +13,14 @@ import {
 import { useNavigate, useParams } from "react-router";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  GROUP_DESCRIPTION_MAX,
   GROUP_EVENT_LOCATION_MAX,
   GROUP_EVENT_TITLE_MAX,
   GROUP_NOTIFICATION_PREFS,
   GROUP_NOTIFICATION_PREF_LABELS,
   GROUP_POST_BODY_MAX,
   GROUP_REPORT_REASON_MAX,
+  GROUP_TITLE_MAX,
   GROUP_VISIBILITIES,
   groupVisibilityLabel,
   type GroupDto,
@@ -251,7 +253,7 @@ export function GroupDetail() {
         </div>
       )}
 
-      {group.description && <p className="mb-4 text-ink-muted">{group.description}</p>}
+      {group.description && <GroupDescription text={group.description} />}
 
       {group.pendingJoinRequests.length > 0 && (
         <JoinRequestsBanner
@@ -343,6 +345,40 @@ export function GroupDetail() {
         </ConfirmDialog>
       )}
     </>
+  );
+}
+
+/** Past this many characters or lines the description is previewed, not shown whole. */
+const DESCRIPTION_PREVIEW_CHARS = 200;
+const DESCRIPTION_PREVIEW_LINES = 3;
+
+/**
+ * The group's description, collapsed to a few lines when it is long so it does
+ * not eat the room the messages need. Judged by length rather than measured:
+ * it is deterministic, costs no layout pass, and a line or two of slack either
+ * way does not matter for a preview.
+ */
+function GroupDescription({ text }: { text: string }) {
+  const [expanded, setExpanded] = useState(false);
+  const long =
+    text.length > DESCRIPTION_PREVIEW_CHARS || text.split("\n").length > DESCRIPTION_PREVIEW_LINES;
+
+  return (
+    <div className="mb-4 text-ink-muted">
+      <p className={`whitespace-pre-line break-words ${long && !expanded ? "line-clamp-3" : ""}`}>
+        {text}
+      </p>
+      {long && (
+        <button
+          type="button"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((v) => !v)}
+          className="mt-1 text-sm font-bold text-accent hover:underline"
+        >
+          {expanded ? "Show less" : "Show more"}
+        </button>
+      )}
+    </div>
   );
 }
 
@@ -2379,14 +2415,16 @@ function MemberRow({
           <span>
             {member.name}
             {member.role === "ADMIN" && (
-              <Badge tone="accent">
-                <span className="ml-1">Admin</span>
-              </Badge>
+              <span className="ml-2 inline-block">
+                <Badge tone="accent">Admin</Badge>
+              </span>
             )}
           </span>
         </div>
+        {/* Portalled: the members list sits in a modal whose own scrolling clips a
+            panel that hangs off the bottom of it, hiding the menu. */}
         {canModerate && !isSelf && (
-          <MenuButton label={`Actions for ${member.name}`}>
+          <MenuButton portal label={`Actions for ${member.name}`}>
             {member.role === "MEMBER" ? (
               <MenuItem onSelect={() => setRole.mutate("ADMIN")}>Make admin</MenuItem>
             ) : (
@@ -2534,7 +2572,26 @@ function AdminSettingsPanel({
   const [repliesRestricted, setRepliesRestricted] = useState(group.repliesRestricted);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const { organizationId } = useMe();
+  const queryClient = useQueryClient();
+  const [title, setTitle] = useState(group.title);
+  const [description, setDescription] = useState(group.description ?? "");
   const navigate = useNavigate();
+
+  const saveDetails = useMutation({
+    mutationFn: () =>
+      api(`/groups/${groupId}`, {
+        method: "PATCH",
+        body: { title, description },
+      }),
+    onSuccess: () => {
+      // The groups page shows the same title and description.
+      void queryClient.invalidateQueries({ queryKey: qk.groups(organizationId) });
+      void onChanged();
+    },
+  });
+  const detailsChanged =
+    title.trim() !== group.title || description.trim() !== (group.description ?? "");
 
   const saveSettings = useMutation({
     mutationFn: () =>
@@ -2588,6 +2645,42 @@ function AdminSettingsPanel({
   return (
     <div className="space-y-4 border-t border-line pt-4">
       <p className="font-bold text-ink">Group settings</p>
+
+      <form
+        className="space-y-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          if (detailsChanged && title.trim() !== "") saveDetails.mutate();
+        }}
+      >
+        <Field label="Title">
+          <input
+            className={inputClass}
+            value={title}
+            maxLength={GROUP_TITLE_MAX}
+            onChange={(event) => setTitle(event.target.value)}
+          />
+        </Field>
+        <Field label="Description" hint="Optional.">
+          <textarea
+            className={`${inputClass} min-h-24`}
+            value={description}
+            maxLength={GROUP_DESCRIPTION_MAX}
+            onChange={(event) => setDescription(event.target.value)}
+          />
+        </Field>
+        {saveDetails.error && (
+          <p role="alert" className="text-sm font-bold text-primary">
+            {saveDetails.error.message}
+          </p>
+        )}
+        <Button
+          type="submit"
+          disabled={saveDetails.isPending || !detailsChanged || title.trim() === ""}
+        >
+          {saveDetails.isPending ? "Saving…" : "Save details"}
+        </Button>
+      </form>
 
       {group.thumbUrl && (
         <GroupPhoto
