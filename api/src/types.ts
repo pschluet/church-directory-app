@@ -100,6 +100,8 @@ export const AUDIT_ENTITY_TYPES = [
   "organization",
   "prayerRequest",
   "specialDate",
+  "group",
+  "groupPost",
 ] as const;
 export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[number];
 
@@ -158,6 +160,25 @@ export const AUDIT_ACTIONS = [
   "specialDate.create",
   "specialDate.update",
   "specialDate.delete",
+
+  "group.create",
+  "group.update",
+  "group.convertVisibility",
+  "group.archive",
+  "group.delete",
+  "group.addMember",
+  "group.removeMember",
+  "group.leave",
+  "group.promoteAdmin",
+  "group.demoteAdmin",
+  "group.approveJoinRequest",
+  "group.denyJoinRequest",
+  "group.post.adminDelete",
+  "group.post.report",
+  "group.post.resolveReport",
+  "group.post.dismissReport",
+  "group.post.expire",
+  "group.adminView",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -204,6 +225,25 @@ const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "specialDate.create": "Special date added",
   "specialDate.update": "Special date edited",
   "specialDate.delete": "Special date deleted",
+
+  "group.create": "Group created",
+  "group.update": "Group edited",
+  "group.convertVisibility": "Group visibility changed",
+  "group.archive": "Group archived",
+  "group.delete": "Group deleted",
+  "group.addMember": "Group member added",
+  "group.removeMember": "Group member removed",
+  "group.leave": "Left a group",
+  "group.promoteAdmin": "Made a group admin",
+  "group.demoteAdmin": "Removed as group admin",
+  "group.approveJoinRequest": "Group join approved",
+  "group.denyJoinRequest": "Group join declined",
+  "group.post.adminDelete": "Group post removed by an admin",
+  "group.post.report": "Group post reported",
+  "group.post.resolveReport": "Group post report resolved",
+  "group.post.dismissReport": "Group post report dismissed",
+  "group.post.expire": "Group posts expired",
+  "group.adminView": "Viewed a group as an administrator",
 };
 
 /**
@@ -227,6 +267,8 @@ const AUDIT_ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   organization: "Church",
   prayerRequest: "Prayer request",
   specialDate: "Special date",
+  group: "Group",
+  groupPost: "Group post",
 };
 
 export function auditEntityTypeLabel(entityType: string): string {
@@ -712,7 +754,15 @@ export interface PrayerRequestDto {
 // The bell in the nav. One row per recipient per event, so "unread" is a fact
 // about a person; see V9__notifications.sql.
 // ---------------------------------------------------------------------------
-export const NOTIFICATION_TYPES = ["PRAYER_REQUEST", "PRAYER_REQUEST_REVIEW"] as const;
+export const NOTIFICATION_TYPES = [
+  "PRAYER_REQUEST",
+  "PRAYER_REQUEST_REVIEW",
+  "GROUP_POST",
+  "GROUP_MENTION",
+  "GROUP_JOIN_REQUEST",
+  "GROUP_EVENT",
+  "GROUP_POST_REPORT",
+] as const;
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
 export type NotificationType = z.infer<typeof notificationTypeSchema>;
 
@@ -720,15 +770,15 @@ export interface NotificationDto {
   id: string;
   type: NotificationType;
   /**
-   * The prayer request's title.
-   *
-   * For `PRAYER_REQUEST` that is the whole of the message. For
-   * `PRAYER_REQUEST_REVIEW` the message is "this one needs you", so the type
-   * carries the meaning and the title only says which request -- the bell
-   * renders a different subtitle for each.
+   * The prayer request's title, or the group's -- whichever this notification
+   * is about. For `PRAYER_REQUEST` and every `GROUP_*` type this is the whole
+   * of the message; `PRAYER_REQUEST_REVIEW` says "this one needs you" and the
+   * title only names which request, same as the group types name which group.
    */
   title: string;
   prayerRequestId: string | null;
+  groupId: string | null;
+  groupPostId: string | null;
   createdAt: string;
   read: boolean;
 }
@@ -738,6 +788,10 @@ export interface InboxDto {
   unreadCount: number;
   notifications: NotificationDto[];
 }
+
+export const GROUP_NOTIFICATION_PREFS = ["ALL", "MENTIONS", "NONE"] as const;
+export const groupNotificationPrefSchema = z.enum(GROUP_NOTIFICATION_PREFS);
+export type GroupNotificationPref = z.infer<typeof groupNotificationPrefSchema>;
 
 /**
  * What somebody wants to be told about.
@@ -757,12 +811,26 @@ export interface InboxDto {
 export const notificationPreferencesSchema = z.object({
   prayerRequests: z.boolean().optional(),
   prayerRequestReviews: z.boolean().optional(),
+  /** The default for every group; a group's own setting is an exception to it. */
+  groupNotificationPref: groupNotificationPrefSchema.optional(),
 });
 export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>;
 
 export interface NotificationPreferencesDto {
   prayerRequests: boolean;
   prayerRequestReviews: boolean;
+  groupNotificationPref: GroupNotificationPref;
+  groupExceptions: GroupNotificationExceptionDto[];
+}
+
+/** A group whose notification setting differs from the account default. */
+export interface GroupNotificationExceptionDto {
+  groupId: string;
+  groupTitle: string;
+  /** May differ from the active parish for a super admin; the SPA only links when it matches. */
+  organizationId: string;
+  /** Never null: an exception is, by definition, a stated preference. */
+  notificationPref: GroupNotificationPref;
 }
 
 /**
@@ -788,6 +856,427 @@ export type PushUnsubscribe = z.infer<typeof pushUnsubscribeSchema>;
 
 export interface PushSubscriptionDto {
   subscribed: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Groups
+//
+// Member-created spaces for messaging, files and events. See
+// requirements/groups.md for the product rules and
+// requirements/groups-plan.md for the engineering decisions; these enums
+// mirror the CHECK constraints in db/migrations/V16__groups.sql.
+// ---------------------------------------------------------------------------
+export const GROUP_VISIBILITIES = ["PUBLIC", "PRIVATE", "SECRET"] as const;
+export const groupVisibilitySchema = z.enum(GROUP_VISIBILITIES);
+export type GroupVisibility = z.infer<typeof groupVisibilitySchema>;
+
+const GROUP_VISIBILITY_LABELS: Record<GroupVisibility, string> = {
+  PUBLIC: "Public",
+  PRIVATE: "Private",
+  SECRET: "Secret",
+};
+
+export function groupVisibilityLabel(visibility: string): string {
+  return GROUP_VISIBILITY_LABELS[visibility as GroupVisibility] ?? visibility;
+}
+
+/**
+ * Legal visibility conversions, as a lookup rather than a comparison.
+ *
+ * "A group can move toward being more closed, with one exception -- Secret can
+ * loosen to Private -- and nothing may ever become Public again once changed"
+ * reads like an ordering, but Secret -> Private is a loosening, so there is no
+ * single direction to compare against. A table of the four allowed edges says
+ * exactly what the product rule says, with nothing left to infer.
+ */
+const GROUP_VISIBILITY_CONVERSIONS: Record<GroupVisibility, readonly GroupVisibility[]> = {
+  PUBLIC: ["PRIVATE", "SECRET"],
+  PRIVATE: ["SECRET"],
+  SECRET: ["PRIVATE"],
+};
+
+export function canConvertGroupVisibility(from: GroupVisibility, to: GroupVisibility): boolean {
+  return GROUP_VISIBILITY_CONVERSIONS[from].includes(to);
+}
+
+export const GROUP_MEMBER_ROLES = ["ADMIN", "MEMBER"] as const;
+export const groupMemberRoleSchema = z.enum(GROUP_MEMBER_ROLES);
+export type GroupMemberRole = z.infer<typeof groupMemberRoleSchema>;
+
+/**
+ * One set of words for the three preferences, shared by the Settings page and
+ * the group's own panel so the two cannot drift apart.
+ */
+export const GROUP_NOTIFICATION_PREF_LABELS: Record<GroupNotificationPref, string> = {
+  ALL: "All messages",
+  MENTIONS: "Only when I'm mentioned",
+  NONE: "Nothing",
+};
+
+/**
+ * A separate lifecycle from `JOIN_REQUEST_STATUSES`, even though the values
+ * match -- the same reasoning `MERGE_REQUEST_STATUSES` gives for not reusing
+ * the family one: nothing should be able to pass a family join-request status
+ * where a group one belongs, and the two are free to diverge later.
+ */
+export const GROUP_JOIN_REQUEST_STATUSES = ["PENDING", "APPROVED", "DENIED", "CANCELLED"] as const;
+export const groupJoinRequestStatusSchema = z.enum(GROUP_JOIN_REQUEST_STATUSES);
+export type GroupJoinRequestStatus = z.infer<typeof groupJoinRequestStatusSchema>;
+
+export const GROUP_POST_KINDS = ["MESSAGE", "EVENT"] as const;
+export const groupPostKindSchema = z.enum(GROUP_POST_KINDS);
+export type GroupPostKind = z.infer<typeof groupPostKindSchema>;
+
+export const GROUP_ATTACHMENT_KINDS = ["IMAGE", "FILE"] as const;
+export const groupAttachmentKindSchema = z.enum(GROUP_ATTACHMENT_KINDS);
+export type GroupAttachmentKind = z.infer<typeof groupAttachmentKindSchema>;
+
+export const GROUP_RSVP_RESPONSES = ["YES", "NO", "MAYBE"] as const;
+export const groupRsvpResponseSchema = z.enum(GROUP_RSVP_RESPONSES);
+export type GroupRsvpResponse = z.infer<typeof groupRsvpResponseSchema>;
+
+const GROUP_RSVP_LABELS: Record<GroupRsvpResponse, string> = {
+  YES: "Going",
+  NO: "Not going",
+  MAYBE: "Maybe",
+};
+export function groupRsvpResponseLabel(response: string): string {
+  return GROUP_RSVP_LABELS[response as GroupRsvpResponse] ?? response;
+}
+
+export const GROUP_POST_REPORT_STATUSES = ["PENDING", "RESOLVED", "DISMISSED"] as const;
+export const groupPostReportStatusSchema = z.enum(GROUP_POST_REPORT_STATUSES);
+export type GroupPostReportStatus = z.infer<typeof groupPostReportStatusSchema>;
+
+/**
+ * How long a group post lives before retention hard-deletes it. One constant
+ * read by both the scheduled purge (services/group-retention.ts) and this
+ * schema's own documentation -- see requirements/groups.md's Retention section
+ * for the product rule, including why a thread with a recent reply, or an
+ * event not yet in the past, is exempt.
+ */
+export const POST_RETENTION_YEARS = 5;
+
+export const GROUP_TITLE_MAX = 150;
+export const GROUP_DESCRIPTION_MAX = 2000;
+export const GROUP_POST_BODY_MAX = 4000;
+export const GROUP_EVENT_LOCATION_MAX = 200;
+export const GROUP_EVENT_TITLE_MAX = 150;
+export const GROUP_EVENT_DESCRIPTION_MAX = 2000;
+export const GROUP_REPORT_REASON_MAX = 500;
+/** Matches PRAYER_REQUEST_MAX_IMAGES's reasoning: a feed stays readable. */
+export const GROUP_POST_MAX_ATTACHMENTS = 10;
+
+export const groupCreateSchema = z.object({
+  title: z.string().trim().min(1, "A group needs a title").max(GROUP_TITLE_MAX),
+  description: trimmedOptional(GROUP_DESCRIPTION_MAX),
+  visibility: groupVisibilitySchema.default("PUBLIC"),
+});
+export type GroupCreate = z.infer<typeof groupCreateSchema>;
+
+export const groupUpdateSchema = z.object({
+  title: z.string().trim().min(1, "A group needs a title").max(GROUP_TITLE_MAX),
+  description: trimmedOptional(GROUP_DESCRIPTION_MAX),
+});
+export type GroupUpdate = z.infer<typeof groupUpdateSchema>;
+
+export const groupVisibilityChangeSchema = z.object({ visibility: groupVisibilitySchema });
+export type GroupVisibilityChange = z.infer<typeof groupVisibilityChangeSchema>;
+
+/** The three admin-only posting/inviting/replying toggles, sent together. */
+export const groupSettingsSchema = z.object({
+  postingRestricted: z.boolean(),
+  invitesRestricted: z.boolean(),
+  repliesRestricted: z.boolean(),
+});
+export type GroupSettings = z.infer<typeof groupSettingsSchema>;
+
+export const groupNotificationPrefUpdateSchema = z.object({
+  /** Null means "follow my default" -- the exception is removed. */
+  notificationPref: groupNotificationPrefSchema.nullable(),
+});
+export type GroupNotificationPrefUpdate = z.infer<typeof groupNotificationPrefUpdateSchema>;
+
+export const groupMemberAddSchema = z.object({ personId: uuidSchema });
+export type GroupMemberAdd = z.infer<typeof groupMemberAddSchema>;
+
+/** One already-uploaded attachment, as POST /groups/:id/posts attaches it. */
+export const groupPostAttachmentSchema = z.object({
+  photoKey: z.string().min(1).max(500),
+  kind: groupAttachmentKindSchema,
+  filename: z.string().trim().min(1).max(255),
+  contentType: z.string().min(1).max(255),
+  byteSize: z.number().int().positive(),
+  width: z.number().int().positive().max(20000).optional(),
+  height: z.number().int().positive().max(20000).optional(),
+});
+export type GroupPostAttachment = z.infer<typeof groupPostAttachmentSchema>;
+
+const groupEventFieldsSchema = z
+  .object({
+    eventTitle: z.string().trim().min(1, "Give the event a title").max(GROUP_EVENT_TITLE_MAX),
+    eventDescription: trimmedOptional(GROUP_EVENT_DESCRIPTION_MAX),
+    /** yyyy-mm-dd, naive local -- see V16__groups.sql for why not timestamptz. */
+    eventDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Pick a date"),
+    /** HH:MM, 24-hour, naive local. */
+    startTime: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/)
+      .nullable()
+      .optional(),
+    endTime: z
+      .string()
+      .regex(/^\d{2}:\d{2}$/)
+      .nullable()
+      .optional(),
+    location: trimmedOptional(GROUP_EVENT_LOCATION_MAX),
+  })
+  .refine((v) => !v.endTime || Boolean(v.startTime), {
+    message: "An end time needs a start time",
+    path: ["endTime"],
+  });
+
+export const groupPostCreateSchema = z
+  .object({
+    kind: groupPostKindSchema.default("MESSAGE"),
+    body: trimmedOptional(GROUP_POST_BODY_MAX),
+    parentPostId: uuidSchema.nullable().optional(),
+    mentionedAppUserIds: z.array(uuidSchema).max(50).default([]),
+    attachments: z.array(groupPostAttachmentSchema).max(GROUP_POST_MAX_ATTACHMENTS).default([]),
+    event: groupEventFieldsSchema.optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.kind === "MESSAGE" && !value.body) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["body"],
+        message: "Say something",
+      });
+    }
+    if (value.kind === "EVENT" && !value.event) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["event"],
+        message: "An event needs its details",
+      });
+    }
+    if (value.kind === "EVENT" && value.parentPostId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["parentPostId"],
+        message: "A reply cannot be an event",
+      });
+    }
+  });
+export type GroupPostCreate = z.infer<typeof groupPostCreateSchema>;
+
+export const groupPostUpdateSchema = z.object({
+  body: z.string().trim().min(1, "Say something").max(GROUP_POST_BODY_MAX).optional(),
+  /** Absent leaves mentions alone, so an event-only edit cannot wipe them. */
+  mentionedAppUserIds: z.array(uuidSchema).max(50).optional(),
+  event: groupEventFieldsSchema.optional(),
+});
+export type GroupPostUpdate = z.infer<typeof groupPostUpdateSchema>;
+
+export const groupRsvpSchema = z.object({
+  response: groupRsvpResponseSchema,
+  guestCount: z.number().int().min(0).max(50).default(0),
+});
+export type GroupRsvp = z.infer<typeof groupRsvpSchema>;
+
+export const groupPostReportSchema = z.object({
+  reason: trimmedOptional(GROUP_REPORT_REASON_MAX),
+});
+export type GroupPostReport = z.infer<typeof groupPostReportSchema>;
+
+export interface GroupMemberDto {
+  personId: string;
+  appUserId: string;
+  name: string;
+  thumbUrl: string | null;
+  role: GroupMemberRole;
+  joinedAt: string;
+}
+
+export interface GroupJoinRequestDto {
+  id: string;
+  groupId: string;
+  groupTitle: string;
+  personId: string;
+  personName: string;
+  status: GroupJoinRequestStatus;
+  requestedAt: string;
+  decidedAt: string | null;
+}
+
+/** A row in the groups list. */
+export interface GroupSummaryDto {
+  id: string;
+  title: string;
+  description: string | null;
+  thumbUrl: string | null;
+  fullUrl: string | null;
+  /** The groups-page card crop, or null until someone frames one. See FamilySummaryDto.cardUrl. */
+  cardUrl: string | null;
+  visibility: GroupVisibility;
+  memberCount: number;
+  archivedAt: string | null;
+  /** The caller's own role, or null when they are not a member. */
+  myRole: GroupMemberRole | null;
+  /** Posts since the caller's `last_read_at` for this group. */
+  unreadCount: number;
+  /** The caller's own undecided request to join this group, if any. */
+  pendingJoinRequestId: string | null;
+  /** Whether the caller has pinned this group to the top of their list. */
+  pinned: boolean;
+}
+
+export interface GroupDto extends GroupSummaryDto {
+  organizationId: string;
+  /**
+   * The intrinsic size of the group photo, from its free-form crop -- same
+   * reasoning as FamilyDto.photoWidth/Height: the page needs this to reserve
+   * the box before the image paints. Null when there is no photo, or it
+   * predates this field.
+   */
+  photoWidth: number | null;
+  photoHeight: number | null;
+  postingRestricted: boolean;
+  invitesRestricted: boolean;
+  repliesRestricted: boolean;
+  createdByPersonId: string | null;
+  createdByName: string | null;
+  createdAt: string;
+  members: GroupMemberDto[];
+  /** Requests waiting on the caller to decide. Empty unless the caller is an admin. */
+  pendingJoinRequests: GroupJoinRequestDto[];
+  /** The caller's exception for this group, or null when they follow their default. */
+  notificationPref: GroupNotificationPref | null;
+  /** The caller's account-wide default, so the panel can name what "default" means. */
+  notificationPrefDefault: GroupNotificationPref;
+  /**
+   * Per-row capability flags, as on PersonDto.canEdit -- the SPA renders off
+   * these rather than re-deriving the membership/role/restriction rules in two
+   * places. See services/groups.ts groupAccess for where they come from.
+   */
+  canPost: boolean;
+  canInvite: boolean;
+  canReply: boolean;
+  canModerate: boolean;
+  canConvertVisibility: GroupVisibility[];
+  canArchive: boolean;
+  canRequestToJoin: boolean;
+  /**
+   * True when the caller can see this group only because they are a parish
+   * admin and not a member -- what the UI discloses (see
+   * requirements/groups.md, Membership & Admins) and what the route logs as
+   * `group.adminView`.
+   */
+  viewingAsAdmin: boolean;
+}
+
+export interface GroupEventDto {
+  title: string;
+  description: string | null;
+  eventDate: string;
+  startTime: string | null;
+  endTime: string | null;
+  location: string | null;
+  rsvpCounts: { yes: number; no: number; maybe: number };
+  /** The caller's own RSVP, or null if they have not answered. */
+  myRsvp: { response: GroupRsvpResponse; guestCount: number } | null;
+}
+
+/**
+ * One person's RSVP, for the full roster behind `GroupEventDto.rsvpCounts` --
+ * that only ever carries headcounts, never who or how many guests. `guestCount`
+ * is only ever nonzero for a YES, since `groupRsvpSchema` is the only place it
+ * is written and nothing stops the field being set before a YES, but the UI
+ * only surfaces it there.
+ */
+export interface GroupEventRsvpDto {
+  appUserId: string;
+  personId: string;
+  name: string;
+  thumbUrl: string | null;
+  response: GroupRsvpResponse;
+  guestCount: number;
+}
+
+export interface GroupPostAttachmentDto {
+  id: string;
+  kind: GroupAttachmentKind;
+  filename: string;
+  contentType: string;
+  byteSize: number;
+  /** Only set for an IMAGE attachment. */
+  thumbUrl: string | null;
+  fullUrl: string | null;
+  width: number | null;
+  height: number | null;
+  /** The raw object, for a FILE attachment's download link. */
+  downloadUrl: string | null;
+}
+
+export interface GroupPostMentionDto {
+  appUserId: string;
+  personId: string;
+  name: string;
+}
+
+export interface GroupPostDto {
+  id: string;
+  groupId: string;
+  authorPersonId: string;
+  authorName: string;
+  authorThumbUrl: string | null;
+  parentPostId: string | null;
+  kind: GroupPostKind;
+  /** Null for a deleted post -- the tombstone copy is in `deletedAt`/`deletedBySelf`. */
+  body: string | null;
+  editedAt: string | null;
+  deletedAt: string | null;
+  /** Whether the author removed it themselves, vs. a group or parish admin. */
+  deletedBySelf: boolean | null;
+  createdAt: string;
+  attachments: GroupPostAttachmentDto[];
+  mentions: GroupPostMentionDto[];
+  event: GroupEventDto | null;
+  /** How many replies exist, whether or not this response included them. */
+  replyCount: number;
+  canEdit: boolean;
+  canDelete: boolean;
+  canReport: boolean;
+}
+
+export interface GroupPostReportDto {
+  id: string;
+  groupId: string;
+  groupTitle: string;
+  postId: string | null;
+  postExcerpt: string;
+  reporterName: string | null;
+  reason: string | null;
+  status: GroupPostReportStatus;
+  createdAt: string;
+}
+
+/** One row of the Files tab -- an attachment plus enough of its post to show context. */
+/**
+ * What an open group page polls: a stamp that changes whenever anything in the
+ * group does, and who else is typing right now.
+ */
+export interface GroupLiveDto {
+  activityAt: string;
+  typing: string[];
+}
+
+export interface GroupFileDto {
+  postId: string;
+  postCreatedAt: string;
+  authorPersonId: string;
+  authorName: string;
+  attachment: GroupPostAttachmentDto;
 }
 
 // ---------------------------------------------------------------------------
@@ -1333,18 +1822,21 @@ export const photoUploadSchema = z
     renditions: z.object({
       thumb: renditionSizeSchema,
       full: renditionSizeSchema,
-      // The families-page card. Family-only -- a person framing their own
-      // photo has nothing shaped like a directory card to presign.
+      // The families/groups-page card. Family or group only -- a person
+      // framing their own photo has nothing shaped like a directory card to
+      // presign.
       card: renditionSizeSchema.optional(),
     }),
     personId: uuidSchema.optional(),
     familyId: uuidSchema.optional(),
+    /** A group's own cover photo -- free-form crop, thumb/full, and a card. */
+    groupId: uuidSchema.optional(),
   })
-  .refine((v) => Boolean(v.personId) !== Boolean(v.familyId), {
-    message: "Provide exactly one of personId or familyId",
+  .refine((v) => [v.personId, v.familyId, v.groupId].filter(Boolean).length === 1, {
+    message: "Provide exactly one of personId, familyId or groupId",
   })
-  .refine((v) => !v.renditions.card || Boolean(v.familyId), {
-    message: "Only a family photo can have a card rendition",
+  .refine((v) => !v.renditions.card || Boolean(v.familyId) || Boolean(v.groupId), {
+    message: "Only a family or group photo can have a card rendition",
     path: ["renditions", "card"],
   });
 export type PhotoUpload = z.infer<typeof photoUploadSchema>;
@@ -1363,6 +1855,61 @@ export const prayerRequestImageUploadSchema = z.object({
 });
 export type PrayerRequestImageUpload = z.infer<typeof prayerRequestImageUploadSchema>;
 
+/**
+ * Non-image attachments a group post may carry. Deliberately not decoded to a
+ * canvas -- see useAttachmentPicker in the SPA and the `group-post` passthrough
+ * in api/src/photos.ts, which stores one object rather than two renditions.
+ * PDF, the three common Office formats, plain text and CSV: the set
+ * requirements/groups.md names ("pictures and documents"), with video deferred
+ * to a later phase.
+ */
+export const GROUP_DOCUMENT_CONTENT_TYPES = [
+  "application/pdf",
+  "application/msword",
+  "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+  "application/vnd.ms-excel",
+  "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+  "application/vnd.ms-powerpoint",
+  "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+  "text/plain",
+  "text/csv",
+] as const;
+export type GroupDocumentContentType = (typeof GROUP_DOCUMENT_CONTENT_TYPES)[number];
+
+/**
+ * Presigning one group-post attachment. A discriminated union on `kind` rather
+ * than one shape with optional fields, because the two are presigned
+ * completely differently: an image gets two renditions the way a
+ * prayer-request image does, a file gets exactly one presigned PUT for the
+ * object as the browser has it.
+ *
+ * No owner field, same reasoning as `prayerRequestImageUploadSchema`: scoped to
+ * the caller's own person record, so the upload can happen before the post it
+ * will be attached to exists.
+ */
+export const groupAttachmentUploadSchema = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("IMAGE"),
+    contentType: z.enum(PHOTO_UPLOAD_TYPES),
+    filename: z.string().trim().min(1).max(255),
+    renditions: z.object({ thumb: renditionSizeSchema, full: renditionSizeSchema }),
+  }),
+  z.object({
+    kind: z.literal("FILE"),
+    contentType: z.enum(GROUP_DOCUMENT_CONTENT_TYPES),
+    filename: z.string().trim().min(1).max(255),
+    contentLength: z.number().int().positive().max(MAX_PHOTO_BYTES),
+  }),
+]);
+export type GroupAttachmentUpload = z.infer<typeof groupAttachmentUploadSchema>;
+
+export interface GroupAttachmentUploadDto {
+  photoKey: string;
+  kind: GroupAttachmentKind;
+  /** One URL for a FILE, `{thumb, full}` for an IMAGE. */
+  uploadUrls: { file: string } | Record<PhotoRendition, string>;
+}
+
 export interface PhotoUploadDto {
   /**
    * The prefix both renditions live under, ending in "/". This is what gets
@@ -1375,9 +1922,10 @@ export interface PhotoUploadDto {
 /**
  * Attaching an already-uploaded photo, or clearing one with a null key.
  *
- * Dimensions are only meaningful for a family, whose crop is free-form; the
- * person endpoint ignores them. `hasCard` is family-only too, and only
- * meaningful alongside a key -- clearing a photo always clears it.
+ * Dimensions are only meaningful for a family or group, whose crop is
+ * free-form; the person endpoint ignores them. `hasCard` is family/group only
+ * too, and only meaningful alongside a key -- clearing a photo always clears
+ * it.
  */
 export const photoAttachSchema = z
   .object({

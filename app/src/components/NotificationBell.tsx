@@ -32,7 +32,20 @@ import { useNow } from "./ui";
 const NOTIFICATION_LABELS: Record<NotificationType, string> = {
   PRAYER_REQUEST: "Prayer request",
   PRAYER_REQUEST_REVIEW: "Needs your approval",
+  GROUP_POST: "New activity",
+  GROUP_MENTION: "You were mentioned",
+  GROUP_JOIN_REQUEST: "Someone wants to join",
+  GROUP_EVENT: "Event changed",
+  GROUP_POST_REPORT: "A post was reported",
 };
+
+/** Where tapping a notification lands -- its group, or the prayer requests page. */
+function notificationHref(notification: {
+  type: NotificationType;
+  groupId: string | null;
+}): string {
+  return notification.groupId ? `/groups/${notification.groupId}` : "/prayer-requests";
+}
 
 export function NotificationBell({ className = "" }: { className?: string }) {
   const queryClient = useQueryClient();
@@ -230,7 +243,7 @@ export function NotificationBell({ className = "" }: { className?: string }) {
               {notifications.map((notification) => (
                 <li key={notification.id}>
                   <Link
-                    to="/prayer-requests"
+                    to={notificationHref(notification)}
                     onClick={() => setOpen(false)}
                     className="block px-3 py-2.5 transition hover:bg-surface-muted"
                   >

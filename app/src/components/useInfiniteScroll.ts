@@ -14,6 +14,12 @@ import { useCallback, useEffect, useRef } from "react";
  * `rootMargin` fires the load before the sentinel is actually visible, so the
  * next page is usually already in hand by the time the list runs out.
  *
+ * `root` is the scrolling element when the list lives inside one. Without it the
+ * observer measures against the window, and a sentinel inside an
+ * `overflow-y: auto` pane is clipped by that pane -- it never reports as
+ * intersecting, so nothing would ever load. Leave it undefined for a list that
+ * scrolls with the page.
+ *
  * `enabled` should be "there is a next page and we are not already fetching
  * it". The observer fires repeatedly while the sentinel stays in view -- which
  * it does, since a short page leaves it on screen -- and disconnecting while a
@@ -21,7 +27,11 @@ import { useCallback, useEffect, useRef } from "react";
  */
 export function useInfiniteScroll(
   onLoadMore: () => void,
-  { enabled, rootMargin = "400px" }: { enabled: boolean; rootMargin?: string }
+  {
+    enabled,
+    rootMargin = "400px",
+    root,
+  }: { enabled: boolean; rootMargin?: string; root?: Element | null }
 ): (node: Element | null) => void {
   const nodeRef = useRef<Element | null>(null);
 
@@ -48,11 +58,11 @@ export function useInfiniteScroll(
       (entries) => {
         if (entries.some((entry) => entry.isIntersecting)) onLoadMoreRef.current();
       },
-      { rootMargin }
+      { root: root ?? null, rootMargin }
     );
     observer.observe(node);
     observerRef.current = observer;
-  }, [enabled, rootMargin]);
+  }, [enabled, rootMargin, root]);
 
   useEffect(() => {
     observe();

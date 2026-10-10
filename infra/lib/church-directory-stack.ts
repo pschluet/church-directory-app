@@ -573,6 +573,58 @@ export class ChurchDirectoryStack extends Stack {
       description: 'Invoke with {"backfill":true} to geocode addresses that have no pin',
     });
 
+    // -------------------------------------------------------------------
+    // Group post retention -- a second daily job, same shape as the geocode
+    // refresh above: its own function rather than a schedule pointed at the
+    // API, because that one sits behind a JWT authorizer with no claims for
+    // EventBridge to present. Same subnets, same security group, same
+    // database grant. See api/src/expire-group-posts.ts and
+    // api/src/services/group-retention.ts for the rule itself.
+    // -------------------------------------------------------------------
+    const expireGroupPostsFn = new NodejsFunction(this, "ExpireGroupPostsFunction", {
+      entry: path.join(__dirname, "..", "..", "api", "src", "expire-group-posts.ts"),
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 256,
+      // A purge touches at most a handful of dormant threads a day at parish
+      // scale; this is generous headroom, not an expectation of needing it.
+      timeout: Duration.minutes(5),
+      bundling: { minify: true, target: "node22" },
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      securityGroups: [apiSecurityGroup],
+      logGroup: new logs.LogGroup(this, "ExpireGroupPostsLogGroup", {
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: RemovalPolicy.DESTROY,
+      }),
+      environment: {
+        DB_HOST: database.dbInstanceEndpointAddress,
+        DB_PORT: database.dbInstanceEndpointPort,
+        DB_NAME,
+        DB_USER: APP_DB_ROLE,
+        DB_AUTH: "iam",
+        PHOTOS_BUCKET: photosBucket.bucketName,
+      },
+    });
+    expireGroupPostsFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["rds-db:connect"],
+        resources: [
+          `arn:aws:rds-db:${this.region}:${this.account}:dbuser:${database.instanceResourceId}/${APP_DB_ROLE}`,
+        ],
+      })
+    );
+    // Delete only -- this job removes expired attachments, it never writes new
+    // ones, so it gets none of the read/write/delete grant apiFn needs.
+    photosBucket.grantDelete(expireGroupPostsFn);
+
+    new events.Rule(this, "ExpireGroupPostsSchedule", {
+      schedule: events.Schedule.rate(Duration.days(1)),
+      description: "Purge group posts and attachments five years after their thread went quiet",
+      targets: [new eventTargets.LambdaFunction(expireGroupPostsFn)],
+    });
+
     photosBucket.grantReadWrite(apiFn);
     photosBucket.grantDelete(apiFn);
     apiFn.addToRolePolicy(

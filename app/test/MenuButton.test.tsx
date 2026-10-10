@@ -196,3 +196,40 @@ describe("MenuButton placement", () => {
     expect(screen.getByRole("menu").className).toContain("top-full");
   });
 });
+
+describe("MenuButton in a scrolling pane (portal)", () => {
+  function renderPortal(onSelect = vi.fn()) {
+    render(
+      <div style={{ overflow: "hidden", height: 20 }} data-testid="pane">
+        <MenuButton portal label="Add" trigger={<span>+</span>}>
+          <MenuItem onSelect={onSelect}>Photo or file</MenuItem>
+        </MenuButton>
+      </div>
+    );
+    return { onSelect, trigger: screen.getByRole("button", { name: "Add" }) };
+  }
+
+  it("renders the panel on the body, outside the clipping pane", async () => {
+    const { trigger } = renderPortal();
+    await userEvent.click(trigger);
+    const menu = screen.getByRole("menu");
+    expect(menu.parentElement).toBe(document.body);
+    expect(screen.getByTestId("pane")).not.toContainElement(menu);
+  });
+
+  it("still runs the item's handler and closes, since the panel is not inside the button", async () => {
+    const { trigger, onSelect } = renderPortal();
+    await userEvent.click(trigger);
+    await userEvent.click(screen.getByRole("menuitem", { name: "Photo or file" }));
+    expect(onSelect).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+  });
+
+  it("returns focus to the button on Escape", async () => {
+    const { trigger } = renderPortal();
+    await userEvent.click(trigger);
+    await userEvent.keyboard("{Escape}");
+    expect(screen.queryByRole("menu")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
+  });
+});

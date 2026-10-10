@@ -16,6 +16,7 @@ import familyRoutes from "./routes/families";
 import mergeRoutes from "./routes/merges";
 import specialDateRoutes from "./routes/special-dates";
 import prayerRequestRoutes from "./routes/prayer-requests";
+import groupRoutes from "./routes/groups";
 import notificationRoutes from "./routes/notifications";
 import pushRoutes from "./routes/push";
 import uploadRoutes from "./routes/uploads";
@@ -115,6 +116,7 @@ export function createApp(queryable?: Queryable) {
   app.route("/api/merges", mergeRoutes);
   app.route("/api/special-dates", specialDateRoutes);
   app.route("/api/prayer-requests", prayerRequestRoutes);
+  app.route("/api/groups", groupRoutes);
   app.route("/api/notifications", notificationRoutes);
   app.route("/api/push", pushRoutes);
   app.route("/api/uploads", uploadRoutes);

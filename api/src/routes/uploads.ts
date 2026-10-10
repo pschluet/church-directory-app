@@ -3,8 +3,15 @@ import { HTTPException } from "hono/http-exception";
 import { requireOrganizationId, type AppEnv } from "../auth";
 import { one } from "../db";
 import { assertCanEditFamily, assertCanEditPerson } from "../services/access";
-import { buildPhotoKey, presignUploads } from "../photos";
-import { photoUploadSchema, prayerRequestImageUploadSchema, type PhotoUploadDto } from "../types";
+import { groupAccess, loadGroupRow, loadMembership, assertCanModerate } from "../services/groups";
+import { buildPhotoKey, presignGroupAttachmentFile, presignUploads } from "../photos";
+import {
+  groupAttachmentUploadSchema,
+  photoUploadSchema,
+  prayerRequestImageUploadSchema,
+  type GroupAttachmentUploadDto,
+  type PhotoUploadDto,
+} from "../types";
 
 /**
  * Presigned photo uploads.
@@ -55,9 +62,17 @@ routes.post("/photo", async (c) => {
       throw new HTTPException(404, { message: "Family not found" });
     }
     assertCanEditFamily(caller, { id: family.id, organizationId: family.organization_id });
+  } else if (payload.groupId) {
+    const group = await loadGroupRow(db, payload.groupId, organizationId);
+    const membership = await loadMembership(db, group.id, caller.appUserId);
+    assertCanModerate(groupAccess(caller, group, membership));
   }
 
-  const owner = payload.personId ? { personId: payload.personId } : { familyId: payload.familyId! };
+  const owner = payload.personId
+    ? { personId: payload.personId }
+    : payload.familyId
+      ? { familyId: payload.familyId }
+      : { groupId: payload.groupId! };
   const photoKey = buildPhotoKey(organizationId, owner);
   const uploadUrls = await presignUploads(photoKey, payload.contentType, {
     thumb: payload.renditions.thumb.contentLength,
@@ -101,6 +116,52 @@ routes.post("/prayer-request-image", async (c) => {
   });
 
   const body: PhotoUploadDto = { photoKey, uploadUrls };
+  return c.json(body);
+});
+
+/**
+ * An attachment for a group post the caller has not written yet.
+ *
+ * Same scoping as `/prayer-request-image` above -- the key is tied to the
+ * caller's own person record rather than to any owner, so attachments can go
+ * up before the post row exists. The two kinds are presigned completely
+ * differently: an IMAGE gets a rendition pair, a FILE gets exactly one PUT for
+ * the object as the browser has it, under `MAX_PHOTO_BYTES` rather than the
+ * much smaller rendition ceiling -- see `presignGroupAttachmentFile`.
+ */
+routes.post("/group-attachment", async (c) => {
+  const caller = c.get("caller");
+  const organizationId = requireOrganizationId(c);
+  const payload = groupAttachmentUploadSchema.parse(await c.req.json());
+
+  if (!caller.personId) {
+    throw new HTTPException(400, { message: "Your own directory record is missing" });
+  }
+
+  const photoKey = buildPhotoKey(organizationId, { groupPostAuthorPersonId: caller.personId });
+
+  const body: GroupAttachmentUploadDto =
+    payload.kind === "IMAGE"
+      ? {
+          photoKey,
+          kind: "IMAGE",
+          uploadUrls: await presignUploads(photoKey, payload.contentType, {
+            thumb: payload.renditions.thumb.contentLength,
+            full: payload.renditions.full.contentLength,
+          }),
+        }
+      : {
+          photoKey,
+          kind: "FILE",
+          uploadUrls: {
+            file: await presignGroupAttachmentFile(
+              photoKey,
+              payload.contentType,
+              payload.contentLength
+            ),
+          },
+        };
+
   return c.json(body);
 });
 

@@ -139,6 +139,26 @@ export const qk = {
   pendingPrayerRequests: (orgId: string | null) =>
     [...qk.prayerRequests(orgId), "pending"] as const,
 
+  /**
+   * Groups. Nested so one prefix sweeps a group's entire subtree -- posts,
+   * files, events and reports alike -- the same `invalidateQueries({queryKey:
+   * qk.group(orgId, id)})` that a mutation on any of them calls.
+   */
+  groups: (orgId: string | null) => [...qk.org(orgId), "groups"] as const,
+  group: (orgId: string | null, id: string) => [...qk.groups(orgId), id] as const,
+  groupPosts: (orgId: string | null, id: string) => [...qk.group(orgId, id), "posts"] as const,
+  groupReplies: (orgId: string | null, id: string, postId: string) =>
+    [...qk.group(orgId, id), "posts", postId, "replies"] as const,
+  groupPostRsvps: (orgId: string | null, id: string, postId: string) =>
+    [...qk.group(orgId, id), "posts", postId, "rsvps"] as const,
+  /** The open group's poll. Under the group, so leaving or switching sweeps it. */
+  groupLive: (orgId: string | null, id: string) => [...qk.group(orgId, id), "live"] as const,
+  groupFiles: (orgId: string | null, id: string) => [...qk.group(orgId, id), "files"] as const,
+  groupEvents: (orgId: string | null, id: string) => [...qk.group(orgId, id), "events"] as const,
+  groupReports: (orgId: string | null, id: string) => [...qk.group(orgId, id), "reports"] as const,
+  /** Parish-wide moderation queue, outside any one group's subtree. */
+  allGroupReports: (orgId: string | null) => [...qk.org(orgId), "group-reports"] as const,
+
   specialDates: (orgId: string | null) => [...qk.org(orgId), "special-dates"] as const,
   upcomingDates: (orgId: string | null, start: string, days: number) =>
     [...qk.specialDates(orgId), "upcoming", { start, days }] as const,

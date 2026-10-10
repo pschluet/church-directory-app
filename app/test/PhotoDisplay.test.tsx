@@ -171,6 +171,33 @@ describe("PhotoLightbox", () => {
     expect(document.body.style.overflow).not.toBe("hidden");
   });
 
+  /*
+   * Two dismissables can be mounted at once on a group's detail page -- the
+   * photo lightbox alongside the members modal, say. Each used to capture
+   * `document.body.style.overflow` as its own "previous" value and restore
+   * that on close; with two mounted, the second's "previous" was really the
+   * first's "hidden", so closing it alone could unlock the page out from
+   * under the first, or closing the first could re-lock it forever after the
+   * second had already closed. The fix is a shared, reference-counted lock —
+   * this is the scenario a single-instance test can't catch.
+   */
+  it("keeps the page locked while a second dismissable is still open, even if re-rendered", () => {
+    const first = render(<PhotoLightbox src="/photos/a/full" alt="First" onClose={vi.fn()} />);
+    const second = render(<PhotoLightbox src="/photos/b/full" alt="Second" onClose={vi.fn()} />);
+    expect(document.body.style.overflow).toBe("hidden");
+
+    // A re-render with a brand new inline `onClose` identity, as every real
+    // call site passes -- this used to tear down and re-run the lock effect.
+    first.rerender(<PhotoLightbox src="/photos/a/full" alt="First" onClose={vi.fn()} />);
+    expect(document.body.style.overflow).toBe("hidden");
+
+    first.unmount();
+    expect(document.body.style.overflow).toBe("hidden");
+
+    second.unmount();
+    expect(document.body.style.overflow).not.toBe("hidden");
+  });
+
   it("puts focus in the dialog so Tab does not wander the page behind", () => {
     render(<PhotoLightbox src="/photos/x/full" alt="A photo" onClose={vi.fn()} />);
     expect(screen.getByRole("button", { name: "Close" })).toHaveFocus();

@@ -12,6 +12,8 @@ import { PersonDetail } from "./pages/PersonDetail";
 import { MyDetails } from "./pages/MyDetails";
 import { Families } from "./pages/Families";
 import { PrayerRequests } from "./pages/PrayerRequests";
+import { Groups } from "./pages/Groups";
+import { GroupDetail } from "./pages/GroupDetail";
 import { Settings } from "./pages/Settings";
 import { FamilyDetail } from "./pages/FamilyDetail";
 import { AdminUsers } from "./pages/AdminUsers";
@@ -52,6 +54,8 @@ export const router = createBrowserRouter([
       { path: "me", element: <MyDetails /> },
       { path: "settings", element: <Settings /> },
       { path: "prayer-requests", element: <PrayerRequests /> },
+      { path: "groups", element: <Groups /> },
+      { path: "groups/:id", element: <GroupDetail /> },
       { path: "families", element: <Families /> },
       { path: "families/:id", element: <FamilyDetail /> },
       {

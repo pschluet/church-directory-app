@@ -47,7 +47,7 @@ export const MAX_CANVAS_PIXELS = 16_777_216;
 export const MAX_WORKING_PIXELS = 8_000_000;
 
 /** What a photo is for, which is what decides how large its renditions are. */
-export type RenditionOwner = "person" | "family" | "attachment";
+export type RenditionOwner = "person" | "family" | "attachment" | "group";
 
 /** The long edge each rendition is allowed, per owner kind. */
 export const RENDITION_LIMITS: Record<RenditionOwner, Record<PhotoRendition, number>> = {
@@ -60,6 +60,8 @@ export const RENDITION_LIMITS: Record<RenditionOwner, Record<PhotoRendition, num
   // is smaller than a family photo's; the full size matches, because both end
   // up in the same lightbox.
   attachment: { thumb: 480, full: 1600 },
+  // A group's own cover photo -- free-form like a family's, same sizing.
+  group: { thumb: 800, full: 1600 },
 };
 
 export const RENDITION_QUALITY: Record<PhotoRendition, number> = {

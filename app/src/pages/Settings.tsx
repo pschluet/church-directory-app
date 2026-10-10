@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { NotificationPreferencesDto, OrganizationAddressDto } from "@shared";
+import {
+  GROUP_NOTIFICATION_PREFS,
+  GROUP_NOTIFICATION_PREF_LABELS,
+  type GroupNotificationPref,
+  type NotificationPreferencesDto,
+  type OrganizationAddressDto,
+} from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import {
@@ -12,6 +18,7 @@ import {
 import { useMe } from "../context/MeContext";
 import { MAPS_PROVIDERS, forgetPreferredProvider, preferredProvider } from "../lib/maps";
 import { AddressAutocomplete } from "../components/AddressAutocomplete";
+import { Link } from "../components/nav";
 import { Button, ErrorNotice, Field, PageHeading, Spinner, inputClass } from "../components/ui";
 
 /**
@@ -38,7 +45,7 @@ import { Button, ErrorNotice, Field, PageHeading, Spinner, inputClass } from "..
  * is otherwise nowhere.
  */
 export function Settings() {
-  const { me, canApprovePrayerRequests, isAdmin } = useMe();
+  const { me, canApprovePrayerRequests, isAdmin, organizationId } = useMe();
   const queryClient = useQueryClient();
 
   const publicKey = me?.pushPublicKey ?? null;
@@ -59,10 +66,45 @@ export function Settings() {
   const savePreferences = useMutation({
     // Only the switch that was touched: the server coalesces an absent field to
     // whatever it already held, so this cannot clear the other one.
-    mutationFn: (body: Partial<NotificationPreferencesDto>) =>
+    mutationFn: (
+      body: Partial<
+        Pick<
+          NotificationPreferencesDto,
+          "prayerRequests" | "prayerRequestReviews" | "groupNotificationPref"
+        >
+      >
+    ) =>
       api<NotificationPreferencesDto>("/notifications/preferences", {
         method: "PUT",
         body,
+        withOrg: false,
+      }),
+    onSuccess: (updated) => queryClient.setQueryData(qk.notificationPreferences(), updated),
+    onError: (err) => setError(err instanceof Error ? err.message : "Could not save that setting"),
+  });
+
+  /*
+   * A group's exception, changed or removed from here. Account-scoped routes
+   * rather than the group's own, because this list can include a group in
+   * another parish (a super admin belongs to several) and the group's route
+   * only answers for the active one. Both return the whole preferences object,
+   * so the cache is replaced from one shape.
+   */
+  const saveException = useMutation({
+    mutationFn: ({ groupId, pref }: { groupId: string; pref: GroupNotificationPref }) =>
+      api<NotificationPreferencesDto>(`/notifications/group-preferences/${groupId}`, {
+        method: "PUT",
+        body: { notificationPref: pref },
+        withOrg: false,
+      }),
+    onSuccess: (updated) => queryClient.setQueryData(qk.notificationPreferences(), updated),
+    onError: (err) => setError(err instanceof Error ? err.message : "Could not save that setting"),
+  });
+
+  const removeException = useMutation({
+    mutationFn: (groupId: string) =>
+      api<NotificationPreferencesDto>(`/notifications/group-preferences/${groupId}`, {
+        method: "DELETE",
         withOrg: false,
       }),
     onSuccess: (updated) => queryClient.setQueryData(qk.notificationPreferences(), updated),
@@ -147,7 +189,17 @@ export function Settings() {
   const preferences = preferencesQuery.data;
   const prayerRequests = preferences?.prayerRequests ?? true;
   const prayerRequestReviews = preferences?.prayerRequestReviews ?? true;
-  const saving = preferencesQuery.isPending || savePreferences.isPending;
+  const groupNotificationPref = preferences?.groupNotificationPref ?? "ALL";
+  const groupExceptions = preferences?.groupExceptions ?? [];
+  const saving =
+    preferencesQuery.isPending ||
+    savePreferences.isPending ||
+    saveException.isPending ||
+    removeException.isPending;
+  // Push has something to send if any group could still speak up, not just
+  // prayer requests.
+  const anyGroupNotifications =
+    groupNotificationPref !== "NONE" || groupExceptions.some((e) => e.notificationPref !== "NONE");
   const message = error ?? preferencesQuery.error?.message ?? null;
 
   return (
@@ -166,8 +218,8 @@ export function Settings() {
       <section className="rounded-lg border border-line bg-surface p-4">
         <h2 className="font-bold text-ink">Notifications</h2>
         <p className="mt-1 text-sm text-ink-muted">
-          The directory can tell you about prayer requests two ways: a badge on the bell in the top
-          corner, and a notification on your phone or computer.
+          The directory can tell you about prayer requests and group messages two ways: a badge on
+          the bell in the top corner, and a notification on your phone or computer.
         </p>
 
         <div className="mt-5">
@@ -202,6 +254,92 @@ export function Settings() {
 
         <div className="mt-5 border-t border-line pt-5">
           <h3 className="mb-2 text-sm font-bold uppercase tracking-wide text-ink-muted">
+            Group messages
+          </h3>
+          <label className="block">
+            <span className="block font-bold text-ink">By default, tell me about</span>
+            <select
+              className={`${inputClass} mt-1 sm:max-w-xs`}
+              value={groupNotificationPref}
+              disabled={saving}
+              onChange={(event) =>
+                savePreferences.mutate({
+                  groupNotificationPref: event.target.value as GroupNotificationPref,
+                })
+              }
+            >
+              {GROUP_NOTIFICATION_PREFS.map((pref) => (
+                <option key={pref} value={pref}>
+                  {GROUP_NOTIFICATION_PREF_LABELS[pref]}
+                </option>
+              ))}
+            </select>
+            <span className="mt-1 block text-sm text-ink-muted">
+              Applies to every group. To treat one group differently, change it from that group's
+              member list.
+            </span>
+          </label>
+
+          {groupExceptions.length > 0 && (
+            <div className="mt-4">
+              <h4 className="mb-1 font-bold text-ink">Except in these groups</h4>
+              <ul className="divide-y divide-line rounded-md border border-line">
+                {groupExceptions.map((exception) => (
+                  <li
+                    key={exception.groupId}
+                    className="flex flex-wrap items-center justify-between gap-2 p-3"
+                  >
+                    {/* A link only inside the active parish: out of it the page
+                        would open the group under the wrong church. */}
+                    {exception.organizationId === organizationId ? (
+                      <Link
+                        to={`/groups/${exception.groupId}`}
+                        className="min-w-0 break-words font-bold text-ink hover:text-accent"
+                      >
+                        {exception.groupTitle}
+                      </Link>
+                    ) : (
+                      <span className="min-w-0 break-words font-bold text-ink">
+                        {exception.groupTitle}
+                      </span>
+                    )}
+                    <span className="flex items-center gap-2">
+                      <select
+                        aria-label={`Notifications for ${exception.groupTitle}`}
+                        className={`${inputClass} w-auto`}
+                        value={exception.notificationPref}
+                        disabled={saving}
+                        onChange={(event) =>
+                          saveException.mutate({
+                            groupId: exception.groupId,
+                            pref: event.target.value as GroupNotificationPref,
+                          })
+                        }
+                      >
+                        {GROUP_NOTIFICATION_PREFS.map((pref) => (
+                          <option key={pref} value={pref}>
+                            {GROUP_NOTIFICATION_PREF_LABELS[pref]}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        variant="ghost"
+                        aria-label={`Use your default for ${exception.groupTitle}`}
+                        disabled={saving}
+                        onClick={() => removeException.mutate(exception.groupId)}
+                      >
+                        Use my default
+                      </Button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+        </div>
+
+        <div className="mt-5 border-t border-line pt-5">
+          <h3 className="mb-2 text-sm font-bold uppercase tracking-wide text-ink-muted">
             On this device
           </h3>
 
@@ -213,7 +351,9 @@ export function Settings() {
               hint={
                 // The two switches compose, so say so rather than leaving
                 // somebody with push on and nothing selected to send.
-                !prayerRequests && !(canApprovePrayerRequests && prayerRequestReviews)
+                !prayerRequests &&
+                !(canApprovePrayerRequests && prayerRequestReviews) &&
+                !anyGroupNotifications
                   ? "Nothing to send while everything above is switched off."
                   : subscribed
                     ? "This device will be notified even when the directory is closed."

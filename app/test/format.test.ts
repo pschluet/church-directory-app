@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   displayPhone,
+  formatChatDay,
+  localDayIso,
   formatMonthDay,
   formatMonthDayShort,
   formatMultilineAddress,
@@ -245,5 +247,32 @@ describe("memberPreview", () => {
   it("does not invent a negative overflow", () => {
     // A total behind the names is a caller bug, not something to render.
     expect(memberPreview(["Anna", "Boris"], 1)).toBe("Anna, Boris");
+  });
+});
+
+describe("chat days", () => {
+  const now = new Date(2026, 9, 10, 1, 0); // 10 Oct 2026, 1am local
+
+  it("names today and yesterday by calendar day, not by 24-hour span", () => {
+    expect(formatChatDay(new Date(2026, 9, 10, 0, 30).toISOString(), now)).toBe("Today");
+    // 11pm last night is only two hours ago, but it is yesterday.
+    expect(formatChatDay(new Date(2026, 9, 9, 23, 0).toISOString(), now)).toBe("Yesterday");
+  });
+
+  it("uses the weekday inside the past week and a date after it", () => {
+    const threeDays = new Date(2026, 9, 7, 12, 0);
+    expect(formatChatDay(threeDays.toISOString(), now)).toBe(
+      threeDays.toLocaleDateString(undefined, { weekday: "long" })
+    );
+    expect(formatChatDay(new Date(2026, 8, 1, 12, 0).toISOString(), now)).toMatch(/September/);
+  });
+
+  it("includes the year for a different year", () => {
+    expect(formatChatDay(new Date(2025, 2, 3, 12, 0).toISOString(), now)).toMatch(/2025/);
+  });
+
+  it("localDayIso uses the local date, not UTC", () => {
+    expect(localDayIso(new Date(2026, 0, 1, 0, 5))).toBe("2026-01-01");
+    expect(localDayIso(new Date(2026, 11, 31, 23, 55))).toBe("2026-12-31");
   });
 });

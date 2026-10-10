@@ -17,10 +17,10 @@ const PhotoCropper = lazy(() =>
 
 export interface UploadedPhoto {
   photoKey: string;
-  /** The full rendition's size; only a family stores it, since its crop is free-form. */
+  /** The full rendition's size; only a family or group stores it, since that crop is free-form. */
   width: number;
   height: number;
-  /** Whether a families-page card rendition was framed too. Family-only. */
+  /** Whether a list-page card rendition was framed too. Family or group only. */
   hasCard: boolean;
 }
 
@@ -41,7 +41,7 @@ export function usePhotoPicker({
   owner,
   onUploaded,
 }: {
-  owner: { personId: string } | { familyId: string };
+  owner: { personId: string } | { familyId: string } | { groupId: string };
   onUploaded: (photo: UploadedPhoto) => Promise<void> | void;
 }): {
   open: () => void;
@@ -55,6 +55,9 @@ export function usePhotoPicker({
   const [cropping, setCropping] = useState<File | null>(null);
 
   const isFamily = "familyId" in owner;
+  // A group crops in two steps too, exactly like a family -- see
+  // PhotoCropper's `owner` prop.
+  const cropperOwner = isFamily ? "family" : "groupId" in owner ? "group" : "person";
 
   function handleFile(file: File): void {
     setError(null);
@@ -121,7 +124,7 @@ export function usePhotoPicker({
         <Suspense fallback={<Spinner label="Opening the photo" />}>
           <PhotoCropper
             file={cropping}
-            owner={isFamily ? "family" : "person"}
+            owner={cropperOwner}
             onCancel={() => {
               setCropping(null);
               if (inputRef.current) inputRef.current.value = "";
