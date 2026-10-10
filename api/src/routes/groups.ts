@@ -1175,10 +1175,25 @@ routes.delete("/:id/posts/:postId", async (c) => {
     throw new HTTPException(403, { message: "That post is not yours to remove" });
   }
 
+  // Attachments are purged immediately, not held for the 5-year retention
+  // sweep -- the tombstone says "message deleted", and a still-live file URL
+  // behind that text would make the delete a lie. Collected before the
+  // update since nothing downstream needs these rows once the post itself is
+  // gone from view.
+  const { rows: attachments } = await db.query<{ photo_key: string; kind: "IMAGE" | "FILE" }>(
+    "select photo_key, kind from group_post_attachments where post_id = $1",
+    [postId]
+  );
+
   await db.query(
     "update group_posts set deleted_at = now(), deleted_by_person_id = $2 where id = $1",
     [postId, caller.personId]
   );
+  await db.query("delete from group_post_attachments where post_id = $1", [postId]);
+  for (const attachment of attachments) {
+    if (attachment.kind === "IMAGE") await deletePhoto(attachment.photo_key);
+    else await deleteGroupAttachmentFile(attachment.photo_key);
+  }
 
   if (!isMine) {
     await audit(db, caller, {

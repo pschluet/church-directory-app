@@ -333,6 +333,31 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(found.deletedAt).not.toBeNull();
     });
 
+    it("purges a post's attachments, not just its visible content, on delete", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Here's the file",
+        attachments: [
+          {
+            photoKey: `photos/${orgId}/group-post/${creator.personId}/01TESTULID0000000000000001/`,
+            kind: "FILE",
+            filename: "handout.txt",
+            contentType: "text/plain",
+            byteSize: 42,
+          },
+        ],
+      });
+      expect(post.body.attachments).toHaveLength(1);
+
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${post.body.id}`);
+
+      const { rows } = await db().query(
+        "select id from group_post_attachments where post_id = $1",
+        [post.body.id]
+      );
+      expect(rows).toHaveLength(0);
+    });
+
     it("keeps an existing reply thread reachable after the root is deleted, but refuses a new reply", async () => {
       const groupId = await createGroup(creator, "PUBLIC");
       const root = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {

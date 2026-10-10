@@ -807,6 +807,24 @@ function EditForm({
   onClose: () => void;
   onSaved: () => Promise<unknown>;
 }) {
+  return post.kind === "EVENT" && post.event ? (
+    <EventEditForm post={post} event={post.event} groupId={groupId} onClose={onClose} onSaved={onSaved} />
+  ) : (
+    <MessageEditForm post={post} groupId={groupId} onClose={onClose} onSaved={onSaved} />
+  );
+}
+
+function MessageEditForm({
+  post,
+  groupId,
+  onClose,
+  onSaved,
+}: {
+  post: GroupPostDto;
+  groupId: string;
+  onClose: () => void;
+  onSaved: () => Promise<unknown>;
+}) {
   const [body, setBody] = useState(post.body ?? "");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -836,6 +854,127 @@ function EditForm({
       {error && <p className="text-sm font-bold text-primary">{error}</p>}
       <div className="flex gap-2">
         <Button disabled={busy || body.trim() === ""} onClick={() => void save()}>
+          {busy ? "Saving…" : "Save"}
+        </Button>
+        <Button variant="ghost" onClick={onClose} disabled={busy}>
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Editing an event's date, time, or location keeps every RSVP as-is and
+ * notifies whoever already answered -- "they're notified of the change"
+ * (requirements/groups.md) -- which is why this posts the whole `event`
+ * object on save rather than patching one field at a time.
+ */
+function EventEditForm({
+  post,
+  event,
+  groupId,
+  onClose,
+  onSaved,
+}: {
+  post: GroupPostDto;
+  event: NonNullable<GroupPostDto["event"]>;
+  groupId: string;
+  onClose: () => void;
+  onSaved: () => Promise<unknown>;
+}) {
+  const [eventTitle, setEventTitle] = useState(event.title);
+  const [eventDate, setEventDate] = useState(event.eventDate);
+  const [startTime, setStartTime] = useState(event.startTime ?? "");
+  const [endTime, setEndTime] = useState(event.endTime ?? "");
+  const [location, setLocation] = useState(event.location ?? "");
+  const [description, setDescription] = useState(event.description ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function save(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await api(`/groups/${groupId}/posts/${post.id}`, {
+        method: "PATCH",
+        body: {
+          event: {
+            eventTitle,
+            eventDescription: description || undefined,
+            eventDate,
+            startTime: startTime || undefined,
+            endTime: endTime || undefined,
+            location: location || undefined,
+          },
+        },
+      });
+      onClose();
+      await onSaved();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save that change");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const canSave = eventTitle.trim() !== "" && eventDate !== "";
+
+  return (
+    <div className="mt-2 space-y-2">
+      <Field label="Event title">
+        <input
+          className={inputClass}
+          value={eventTitle}
+          maxLength={GROUP_EVENT_TITLE_MAX}
+          onChange={(ev) => setEventTitle(ev.target.value)}
+        />
+      </Field>
+      <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <Field label="Date">
+          <input
+            type="date"
+            className={inputClass}
+            value={eventDate}
+            onChange={(ev) => setEventDate(ev.target.value)}
+          />
+        </Field>
+        <Field label="Start time" hint="Optional">
+          <input
+            type="time"
+            className={inputClass}
+            value={startTime}
+            onChange={(ev) => setStartTime(ev.target.value)}
+          />
+        </Field>
+        <Field label="End time" hint="Optional">
+          <input
+            type="time"
+            className={inputClass}
+            value={endTime}
+            disabled={!startTime}
+            onChange={(ev) => setEndTime(ev.target.value)}
+          />
+        </Field>
+      </div>
+      <Field label="Location" hint="Optional">
+        <input
+          className={inputClass}
+          value={location}
+          maxLength={GROUP_EVENT_LOCATION_MAX}
+          onChange={(ev) => setLocation(ev.target.value)}
+        />
+      </Field>
+      <Field label="Description" hint="Optional">
+        <textarea
+          className={`${inputClass} min-h-20`}
+          value={description}
+          onChange={(ev) => setDescription(ev.target.value)}
+        />
+      </Field>
+      {error && <p className="text-sm font-bold text-primary">{error}</p>}
+      <div className="flex gap-2">
+        <Button disabled={busy || !canSave} onClick={() => void save()}>
           {busy ? "Saving…" : "Save"}
         </Button>
         <Button variant="ghost" onClick={onClose} disabled={busy}>
@@ -1568,7 +1707,10 @@ function AdminSettingsPanel({
 
   const archive = useMutation({
     mutationFn: () => api(`/groups/${groupId}/archive`, { method: "POST" }),
-    onSuccess: () => void onChanged(),
+    onSuccess: () => {
+      setConfirmArchive(false);
+      void onChanged();
+    },
   });
 
   const remove = useMutation({
