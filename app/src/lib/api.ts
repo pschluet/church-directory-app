@@ -1,5 +1,5 @@
 import { fetchAuthSession } from "aws-amplify/auth";
-import { PHOTO_RENDITIONS, type PhotoUploadDto } from "@shared";
+import { PHOTO_RENDITIONS, type GroupAttachmentUploadDto, type PhotoUploadDto } from "@shared";
 import type { Renditions } from "./images";
 
 /**
@@ -180,7 +180,7 @@ async function putRenditions(
 }
 
 export async function uploadPhoto(
-  owner: { personId: string } | { familyId: string },
+  owner: { personId: string } | { familyId: string } | { groupId: string },
   renditions: Renditions
 ): Promise<string> {
   const { photoKey, uploadUrls } = await api<PhotoUploadDto>("/uploads/photo", {
@@ -197,5 +197,66 @@ export async function uploadPhoto(
   });
 
   await putRenditions(uploadUrls, renditions);
+  return photoKey;
+}
+
+/**
+ * Uploads one group post IMAGE attachment -- the same presign-then-PUT dance
+ * as `uploadPrayerRequestImage`, against the endpoint scoped to the caller's
+ * own person record so the upload can precede the post it will attach to.
+ */
+export async function uploadGroupImageAttachment(
+  filename: string,
+  renditions: Renditions
+): Promise<{ photoKey: string; width: number; height: number }> {
+  const { photoKey, uploadUrls } = await api<GroupAttachmentUploadDto>(
+    "/uploads/group-attachment",
+    {
+      method: "POST",
+      body: {
+        kind: "IMAGE",
+        contentType: renditions.contentType,
+        filename,
+        renditions: {
+          thumb: { contentLength: renditions.blobs.thumb.size },
+          full: { contentLength: renditions.blobs.full.size },
+        },
+      },
+    }
+  );
+
+  await putRenditions(uploadUrls as Record<string, string>, renditions);
+  return { photoKey, width: renditions.size.width, height: renditions.size.height };
+}
+
+/**
+ * Uploads one group post FILE attachment -- a document passed through whole,
+ * with no crop and no rendition, under the same ownership scoping as the
+ * image path above.
+ */
+export async function uploadGroupFileAttachment(file: File): Promise<string> {
+  const { photoKey, uploadUrls } = await api<GroupAttachmentUploadDto>(
+    "/uploads/group-attachment",
+    {
+      method: "POST",
+      body: {
+        kind: "FILE",
+        contentType: file.type,
+        filename: file.name,
+        contentLength: file.size,
+      },
+    }
+  );
+
+  const url = (uploadUrls as { file: string }).file;
+  const put = await fetch(url, {
+    method: "PUT",
+    headers: {
+      "content-type": file.type,
+      "cache-control": "public, max-age=31536000, immutable",
+    },
+    body: file,
+  });
+  if (!put.ok) throw new ApiError(put.status, "That file could not be uploaded");
   return photoKey;
 }

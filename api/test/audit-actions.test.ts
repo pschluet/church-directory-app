@@ -25,7 +25,18 @@ const ROUTE_FILES = [
   "special-dates.ts",
   "me.ts",
   "notifications.ts",
+  "groups.ts",
 ];
+
+/**
+ * `group.post.expire` is the one action nothing in `src/routes/` writes. It
+ * comes from services/group-retention.ts, a scheduled job with no `Caller` to
+ * hand `audit()` -- so it inserts into `audit_log` directly, as a raw SQL
+ * literal rather than an `action:` object property the regex above can see.
+ * Read as plain text instead, the same exception `auditMerge` gets for the one
+ * action that does not arrive as a literal either.
+ */
+const RETENTION_ACTION_PATTERN = /'(group\.post\.expire)'/;
 
 /**
  * The two `action:` occurrences that are not a value at all: `auditMerge`'s
@@ -74,6 +85,13 @@ function scanRoutes(): Scan {
       for (const found of match[1]!.matchAll(/"([^"]+)"/g)) actions.add(found[1]!);
     }
   }
+
+  const retentionSource = readFileSync(
+    join(__dirname, "..", "src", "services", "group-retention.ts"),
+    "utf8"
+  );
+  const retentionMatch = RETENTION_ACTION_PATTERN.exec(retentionSource);
+  if (retentionMatch) actions.add(retentionMatch[1]!);
 
   return { actions, entityTypes, unreadable };
 }

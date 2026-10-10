@@ -94,6 +94,15 @@ const TARGET_LABEL = `
         from special_dates s
         join persons_resolved p on p.id = s.person_id
        where s.id = a.entity_id)
+    when 'group' then (select gr.title from groups gr where gr.id = a.entity_id)
+    -- A group post has no name of its own; borrow the group's, the same way a
+    -- special date borrows whose it is above -- "Group post removed by an
+    -- admin" on its own says nothing about which conversation.
+    when 'groupPost' then (
+      select gr.title
+        from group_posts gpo
+        join groups gr on gr.id = gpo.group_id
+       where gpo.id = a.entity_id)
     else null
   end`;
 

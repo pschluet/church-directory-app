@@ -2,6 +2,7 @@ import { DeleteObjectsCommand, PutObjectCommand, S3Client } from "@aws-sdk/clien
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { ulid } from "ulid";
 import {
+  MAX_PHOTO_BYTES,
   MAX_RENDITION_BYTES,
   PHOTO_RENDITIONS,
   type PhotoRendition,
@@ -64,12 +65,33 @@ export type PhotoOwner =
    * ownership check at attach time is unaffected -- the author is exactly who
    * it needs to verify.
    */
-  | { prayerRequestAuthorPersonId: string };
+  | { prayerRequestAuthorPersonId: string }
+  /** A group's own cover photo -- free-form crop, thumb/full, no card. */
+  | { groupId: string }
+  /**
+   * A group post attachment, scoped to the *author* for the same reason as a
+   * prayer request image above: the post may not exist yet when the files go
+   * up. Covers both an IMAGE attachment's renditions and a FILE attachment's
+   * single object -- see `GROUP_ATTACHMENT_FILE_OBJECT` for the latter.
+   */
+  | { groupPostAuthorPersonId: string };
 
 /** The path prefix a prayer request attachment's key must start with. */
 export function prayerRequestImagePrefix(organizationId: string, authorPersonId: string): string {
   return `photos/${organizationId}/prayer-request/${authorPersonId}/`;
 }
+
+/** The path prefix a group post attachment's key must start with. */
+export function groupAttachmentPrefix(organizationId: string, authorPersonId: string): string {
+  return `photos/${organizationId}/group-post/${authorPersonId}/`;
+}
+
+/**
+ * The single object name a FILE-kind attachment is stored under, inside its
+ * own ULID prefix -- the document equivalent of `thumb`/`full`. There is only
+ * ever one, because a FILE is never decoded to produce a second rendition.
+ */
+export const GROUP_ATTACHMENT_FILE_OBJECT = "file";
 
 /**
  * The prefix both renditions live under, ending in "/" -- this is what goes in
@@ -83,6 +105,12 @@ export function buildPhotoKey(organizationId: string, owner: PhotoOwner): string
   }
   if ("familyId" in owner) {
     return `photos/${organizationId}/family/${owner.familyId}/${ulid()}/`;
+  }
+  if ("groupId" in owner) {
+    return `photos/${organizationId}/group/${owner.groupId}/${ulid()}/`;
+  }
+  if ("groupPostAuthorPersonId" in owner) {
+    return `${groupAttachmentPrefix(organizationId, owner.groupPostAuthorPersonId)}${ulid()}/`;
   }
   return `${prayerRequestImagePrefix(organizationId, owner.prayerRequestAuthorPersonId)}${ulid()}/`;
 }
@@ -130,6 +158,11 @@ export function photoUrls(key: string | null): PhotoUrls {
   return { thumbUrl: `/${keys.thumb}`, fullUrl: `/${keys.full}` };
 }
 
+/** The same-origin download path for a group post FILE attachment. */
+export function groupAttachmentFileUrl(key: string): string {
+  return `/${key}${GROUP_ATTACHMENT_FILE_OBJECT}`;
+}
+
 /**
  * The families-page card URL, or null when this photo has no card rendition --
  * either because `hasCard` is false (nothing has framed one yet) or the key
@@ -144,9 +177,10 @@ export function familyCardUrl(key: string | null, hasCard: boolean): string | nu
 export async function presignUpload(
   key: string,
   contentType: PhotoUploadType,
-  contentLength: number
+  contentLength: number,
+  maxBytes: number = MAX_RENDITION_BYTES
 ): Promise<string> {
-  if (contentLength > MAX_RENDITION_BYTES) {
+  if (contentLength > maxBytes) {
     throw new Error("Photo is too large");
   }
   if (STORAGE === "local") {
@@ -160,6 +194,39 @@ export async function presignUpload(
       ContentType: contentType,
       // Signing the length stops a presigned URL from being reused to upload
       // something much bigger than the browser said it would.
+      ContentLength: contentLength,
+      CacheControl: IMMUTABLE_CACHE_CONTROL,
+    }),
+    {
+      expiresIn: UPLOAD_URL_TTL_SECONDS,
+      signableHeaders: new Set(["content-type", "content-length", "cache-control"]),
+    }
+  );
+}
+
+/**
+ * Presigns one group post FILE attachment -- a single passthrough object, not
+ * a pair of renditions, under `MAX_PHOTO_BYTES` rather than the much smaller
+ * `MAX_RENDITION_BYTES` a compressed image rendition is held to. `contentType`
+ * is widened to `string` here rather than `PhotoUploadType`: the route already
+ * validates it against `GROUP_DOCUMENT_CONTENT_TYPES` with Zod, and this
+ * function has no independent opinion about what a document's content type may
+ * be.
+ */
+export async function presignGroupAttachmentFile(
+  photoKey: string,
+  contentType: string,
+  contentLength: number
+): Promise<string> {
+  const key = `${photoKey}${GROUP_ATTACHMENT_FILE_OBJECT}`;
+  if (contentLength > MAX_PHOTO_BYTES) throw new Error("File is too large");
+  if (STORAGE === "local") return `/${key}`;
+  return getSignedUrl(
+    s3(),
+    new PutObjectCommand({
+      Bucket: BUCKET,
+      Key: key,
+      ContentType: contentType,
       ContentLength: contentLength,
       CacheControl: IMMUTABLE_CACHE_CONTROL,
     }),
@@ -226,6 +293,27 @@ export function photoChange(
  * cleanup sends exactly the request it sent before the card rendition
  * existed -- there is never a card object at those prefixes to ask for.
  */
+/**
+ * Best-effort delete of a group post FILE attachment's single object.
+ *
+ * Not `deletePhoto`: that function assumes a `thumb`/`full` pair lives under
+ * the prefix, which is true for an IMAGE attachment but not a FILE one -- a
+ * document is never decoded, so there is exactly one object to remove.
+ */
+export async function deleteGroupAttachmentFile(key: string | null): Promise<void> {
+  if (!key || STORAGE === "local") return;
+  try {
+    await s3().send(
+      new DeleteObjectsCommand({
+        Bucket: BUCKET,
+        Delete: { Objects: [{ Key: `${key}${GROUP_ATTACHMENT_FILE_OBJECT}` }], Quiet: true },
+      })
+    );
+  } catch (err) {
+    console.error("Failed to delete group attachment file", key, err);
+  }
+}
+
 export async function deletePhoto(key: string | null): Promise<void> {
   if (!key || STORAGE === "local") return;
   const keys = photoVariantKeys(key);

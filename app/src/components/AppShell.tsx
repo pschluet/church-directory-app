@@ -31,6 +31,7 @@ const NAV_ITEMS: NavItem[] = [
   { to: "/", label: "Directory" },
   { to: "/dates", label: "Special Dates" },
   { to: "/prayer-requests", label: "Prayer Requests" },
+  { to: "/groups", label: "Groups" },
   { to: "/families", label: "Families" },
   { to: "/me", label: "My Details" },
   { to: "/admin/users", label: "People & Accounts", adminOnly: true },

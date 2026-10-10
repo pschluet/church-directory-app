@@ -49,7 +49,8 @@ export function PhotoCropper({
   onCropped,
 }: {
   file: File;
-  owner: "person" | "family";
+  /** A group's cover photo crops free-form like a family's, with no card step. */
+  owner: "person" | "family" | "group";
   onCancel: () => void;
   onCropped: (renditions: Renditions) => Promise<void> | void;
 }) {

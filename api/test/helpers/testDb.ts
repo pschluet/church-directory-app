@@ -51,6 +51,17 @@ const TABLES = [
   "push_subscriptions",
   "prayer_request_images",
   "prayer_requests",
+  // Groups. TRUNCATE ... CASCADE resolves the dependency order itself, so
+  // listing every one here is what matters, not the order they appear in.
+  "group_post_reports",
+  "group_post_mentions",
+  "group_event_rsvps",
+  "group_events",
+  "group_post_attachments",
+  "group_posts",
+  "group_join_requests",
+  "group_members",
+  "groups",
   "persons",
   "families",
   "app_users",

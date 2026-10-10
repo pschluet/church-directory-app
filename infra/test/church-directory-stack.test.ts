@@ -338,6 +338,23 @@ describe("ChurchDirectoryStack", () => {
       });
     });
 
+    it("purges expired group posts on a second daily schedule, with no Google key", () => {
+      /*
+       * Two independent daily jobs by the time this feature landed, so this
+       * pins the retention purge as its own function rather than assuming the
+       * geocode refresh's schedule above is also covering it. It gets a photos
+       * bucket grant and a database grant but no Maps key at all -- it has
+       * nothing to do with geocoding.
+       */
+      template.resourceCountIs("AWS::Events::Rule", 2);
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        Environment: {
+          Variables: Match.objectLike({ DB_AUTH: "iam" }),
+        },
+        VpcConfig: Match.objectLike({ Ipv6AllowedForDualStack: Match.absent() }),
+      });
+    });
+
     it("needs nothing added to the network to send a push", () => {
       /*
        * Web Push goes to Apple, Google and Mozilla, none of them AWS -- the

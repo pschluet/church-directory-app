@@ -65,6 +65,8 @@ const TYPE_RANK: Record<AuditEntityType, number> = {
   organization: 3,
   prayerRequest: 4,
   specialDate: 5,
+  group: 6,
+  groupPost: 7,
 };
 
 /**
@@ -106,7 +108,10 @@ export async function resolveAuditReferences(
        from app_users u where u.id = any($1::uuid[])
      union all
      select o.id::text, 'organization', o.name
-       from organizations o where o.id = any($1::uuid[])`,
+       from organizations o where o.id = any($1::uuid[])
+     union all
+     select gr.id::text, 'group', gr.title
+       from groups gr where gr.id = any($1::uuid[])`,
     [ids]
   );
 

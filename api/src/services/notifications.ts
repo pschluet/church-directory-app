@@ -16,61 +16,83 @@ export const NOTIFICATION_PAGE_SIZE = 30;
 /**
  * Whether a notification still leads anywhere, by type.
  *
- * Both branches exist so a notification can retire itself rather than needing
+ * Every branch exists so a notification can retire itself rather than needing
  * to be marked read or deleted:
  *
- *   PRAYER_REQUEST         posted, and still inside the month the page shows.
- *                          One that has aged off the feed is a link to nothing.
- *   PRAYER_REQUEST_REVIEW  still waiting. The moment *anyone* decides the
- *                          request -- including another reviewer getting there
- *                          first -- it stops being something to review, and the
- *                          badge drops on its own.
+ *   PRAYER_REQUEST          posted, and still inside the month the page shows.
+ *                           One that has aged off the feed is a link to nothing.
+ *   PRAYER_REQUEST_REVIEW   still waiting. The moment *anyone* decides the
+ *                           request -- including another reviewer getting there
+ *                           first -- it stops being something to review, and the
+ *                           badge drops on its own.
+ *   GROUP_POST/MENTION/
+ *   EVENT/POST_REPORT       the post still exists and its group is not
+ *                           archived. A hard-deleted post takes its
+ *                           notifications with it through the FK cascade (see
+ *                           V16__groups.sql), so this is really "the group
+ *                           hasn't since been archived".
+ *   GROUP_JOIN_REQUEST      the group still exists and is not archived. Unlike
+ *                           PRAYER_REQUEST_REVIEW this does not track whether
+ *                           the specific request was decided -- there is no
+ *                           request id on the row, only the group -- so an
+ *                           admin clears it by reading it rather than it
+ *                           retiring itself the moment somebody acts.
  *
  * Kept as one fragment because `loadInbox` and `unreadNotificationCounts` both
  * need it and must not drift: the count on a push notification and the badge
  * the member then sees come from these two queries, and the two disagreeing is
  * the sort of thing nobody reports and everybody notices.
  *
- * It belongs in the `ON` clause, and the parentheses are not decoration.
- * `loadInbox` composes its count by appending `and n.read_at is null` to the
- * trailing WHERE; an unparenthesised `or` in that WHERE would bind as
- * `(app_user_id and A) or (B and unread)` and start counting other people's
- * notifications.
+ * The parentheses are not decoration. `loadInbox` composes its count by
+ * appending `and n.read_at is null` to the trailing WHERE; an unparenthesised
+ * `or` in that WHERE would bind as `(app_user_id and A) or (B and unread)` and
+ * start counting other people's notifications.
  */
 const NOTIFICATION_VISIBLE = `(
        (n.type = 'PRAYER_REQUEST'
          and pr.status = 'APPROVED'
          and pr.posted_at > now() - interval '${PRAYER_REQUEST_WINDOW}')
     or (n.type = 'PRAYER_REQUEST_REVIEW' and pr.status = 'PENDING')
+    or (n.type in ('GROUP_POST', 'GROUP_MENTION', 'GROUP_EVENT', 'GROUP_POST_REPORT')
+         and gp.id is not null and g.archived_at is null)
+    or (n.type = 'GROUP_JOIN_REQUEST' and g.id is not null and g.archived_at is null)
   )`;
 
 /**
  * Everything a notification needs to be readable.
  *
- * The join is inner, not left: a notification whose request is no longer
- * visible under the rules above is neither listed nor counted. Withdrawn
- * requests take their notifications with them through the FK cascade, so they
- * need no clause here.
+ * Left joins, not inner: a single query now spans two unrelated reference
+ * tables (a prayer request or a group), and at most one of `prayer_request_id`
+ * / `group_id` is ever set (see the CHECK constraints added in
+ * V16__groups.sql), so an inner join to either would silently drop every row
+ * of the other kind. `NOTIFICATION_VISIBLE` moved into the WHERE clause
+ * accordingly -- it used to sit in prayer_requests' own ON clause, which an
+ * outer join no longer lets it do.
  */
 const NOTIFICATION_SELECT = `
   select n.id,
          n.type,
          n.prayer_request_id,
-         pr.title as prayer_request_title,
+         n.group_id,
+         n.group_post_id,
+         coalesce(pr.title, g.title) as title,
          n.created_at,
          n.read_at
     from notifications n
-    join prayer_requests pr
-      on pr.id = n.prayer_request_id
-     and ${NOTIFICATION_VISIBLE}
+    left join prayer_requests pr on pr.id = n.prayer_request_id
+    left join groups g on g.id = n.group_id
+    left join group_posts gp on gp.id = n.group_post_id
    where n.app_user_id = $1
+     and ${NOTIFICATION_VISIBLE}
 `;
 
 interface NotificationRow {
   id: string;
   type: NotificationDto["type"];
   prayer_request_id: string | null;
-  prayer_request_title: string | null;
+  group_id: string | null;
+  group_post_id: string | null;
+  title: string | null;
   created_at: Date | string;
   read_at: Date | string | null;
 }
@@ -99,10 +121,12 @@ export async function loadInbox(q: Queryable, appUserId: string): Promise<Inbox>
     notifications: rows.map((row) => ({
       id: row.id,
       type: row.type,
-      // For a prayer request notification the title is the whole message --
-      // "for each prayer request notification, this should just show the title".
-      title: row.prayer_request_title ?? "",
+      // The title is the whole message for a prayer-request notification, and
+      // the group's own title for every GROUP_* type -- see NotificationDto.
+      title: row.title ?? "",
       prayerRequestId: row.prayer_request_id,
+      groupId: row.group_id,
+      groupPostId: row.group_post_id,
       createdAt: new Date(row.created_at).toISOString(),
       read: row.read_at !== null,
     })),
@@ -167,10 +191,13 @@ export async function unreadNotificationCounts(
   const { rows } = await q.query<{ app_user_id: string; count: string }>(
     `select n.app_user_id, count(*)::text as count
        from notifications n
-       join prayer_requests pr on pr.id = n.prayer_request_id and ${NOTIFICATION_VISIBLE}
+       left join prayer_requests pr on pr.id = n.prayer_request_id
+       left join groups g on g.id = n.group_id
+       left join group_posts gp on gp.id = n.group_post_id
       where n.app_user_id = any($1::uuid[])
         and n.type = $2
         and n.read_at is null
+        and ${NOTIFICATION_VISIBLE}
       group by n.app_user_id`,
     [appUserIds, type]
   );

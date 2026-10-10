@@ -4,13 +4,22 @@ import { qk } from "../lib/queryKeys";
 import { useMe } from "../context/MeContext";
 
 /**
- * Refreshes the bell and the prayer requests page when the service worker says
- * something changed.
+ * Refreshes the bell, the prayer requests page and every group when the
+ * service worker says something changed.
  *
  * This is the app's whole real-time story, and it exists because nothing polls:
- * a prayer request is posted by somebody else, so the only signal that arrives
- * on its own is the Web Push message the worker already receives. `sw.ts`
- * forwards it to every open tab; this turns it into a cache invalidation.
+ * a prayer request or a group post is posted by somebody else, so the only
+ * signal that arrives on its own is the Web Push message the worker already
+ * receives. `sw.ts` forwards it to every open tab; this turns it into a cache
+ * invalidation.
+ *
+ * The signal is deliberately bare -- see sw.ts's `notifyOpenTabs`, which never
+ * learns which group a push was about, because the service worker has no auth
+ * context and a shared device's one subscription may belong to a different
+ * account than the open tab. So a push for any reason invalidates every
+ * group's subtree, not just the one that changed; with `refetchType: "active"`
+ * below, that costs at most one extra fetch for whichever group page happens
+ * to be open, which is cheap next to adding a second, identity-carrying signal.
  *
  * It follows that members who have not enabled notifications get no live
  * updates at all -- for them the refresh button on the page and the refetch on
@@ -61,6 +70,14 @@ export function useRealtimeRefresh(): void {
       void queryClient.invalidateQueries({ queryKey: qk.notifications(), refetchType });
       void queryClient.invalidateQueries({
         queryKey: qk.prayerRequests(organizationId),
+        refetchType,
+      });
+      // One prefix sweeps every group's posts, files, events and reports --
+      // see the module docblock for why this cannot be narrowed to the one
+      // group that actually changed.
+      void queryClient.invalidateQueries({ queryKey: qk.groups(organizationId), refetchType });
+      void queryClient.invalidateQueries({
+        queryKey: qk.allGroupReports(organizationId),
         refetchType,
       });
     }

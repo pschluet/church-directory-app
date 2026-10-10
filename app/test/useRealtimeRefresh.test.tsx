@@ -74,6 +74,14 @@ describe("useRealtimeRefresh", () => {
       queryKey: qk.prayerRequests("org-1"),
       refetchType: "active",
     });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: qk.groups("org-1"),
+      refetchType: "active",
+    });
+    expect(invalidate).toHaveBeenCalledWith({
+      queryKey: qk.allGroupReports("org-1"),
+      refetchType: "active",
+    });
   });
 
   it("marks invalid without a request when the tab is hidden", async () => {
@@ -109,8 +117,8 @@ describe("useRealtimeRefresh", () => {
     post({ type: CHANGED });
     await vi.advanceTimersByTimeAsync(300);
 
-    // Two keys, once each -- not six calls.
-    expect(invalidate).toHaveBeenCalledTimes(2);
+    // Four keys, once each -- not twelve calls.
+    expect(invalidate).toHaveBeenCalledTimes(4);
   });
 
   it("starts the message queue, so a cold start does not swallow the first push", () => {

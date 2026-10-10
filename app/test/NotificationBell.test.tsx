@@ -54,6 +54,8 @@ const notification = (
   type,
   title,
   prayerRequestId: `pr-${id}`,
+  groupId: null,
+  groupPostId: null,
   createdAt: new Date().toISOString(),
   read,
 });
