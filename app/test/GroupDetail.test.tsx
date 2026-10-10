@@ -380,6 +380,42 @@ describe("GroupDetail", () => {
     });
   });
 
+  describe("replying", () => {
+    it("is in the actions menu, not inline on the message", async () => {
+      stub({ pages: [{ posts: [post({ body: "Hello" })], nextCursor: null }] });
+      renderPage();
+      await screen.findByText("Hello");
+      expect(screen.queryByRole("button", { name: "Reply" })).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
+
+      const bar = await screen.findByRole("textbox", { name: "Reply" });
+      await userEvent.type(bar, "Thanks{Enter}");
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith(
+          "/groups/g1/posts",
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({ body: "Thanks", parentPostId: "p1" }),
+          })
+        )
+      );
+    });
+
+    it("is not offered to someone who cannot reply", async () => {
+      stub({
+        group: group({ canReply: false }),
+        pages: [{ posts: [post({ body: "Hello" })], nextCursor: null }],
+      });
+      renderPage();
+      await screen.findByText("Hello");
+      expect(
+        screen.queryByRole("button", { name: "Actions for this post" })
+      ).not.toBeInTheDocument();
+    });
+  });
+
   describe("editing", () => {
     it("re-reads the mentions from the edited text", async () => {
       stub({

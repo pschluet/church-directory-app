@@ -733,6 +733,7 @@ function MessagesTab({
                     onReport={onReport}
                     onChanged={onChanged}
                     onMediaLoad={onMediaLoad}
+                    canReply={group.canReply}
                   />
                 )
               )}
@@ -803,10 +804,13 @@ function ChatRow({
   onReport,
   onChanged,
   onMediaLoad,
+  canReply = false,
   isReply = false,
 }: {
   post: GroupPostDto;
   showHeader: boolean;
+  /** Whether the caller may reply here; offers "Reply" in the actions menu. */
+  canReply?: boolean;
   groupId: string;
   members: GroupMemberDto[];
   now: Date;
@@ -837,7 +841,11 @@ function ChatRow({
   });
 
   const isDeleted = post.deletedAt !== null;
-  const hasActions = !isDeleted && (post.canEdit || post.canDelete || post.canReport);
+  // Replying lives in the actions menu rather than inline, so a row stays just
+  // the message. Not for a reply (one level of threading) or a deleted post.
+  const showReplyAction = canReply && !isReply && !isDeleted;
+  const hasActions =
+    !isDeleted && (showReplyAction || post.canEdit || post.canDelete || post.canReport);
   const header = showHeader || isReply;
 
   return (
@@ -914,28 +922,17 @@ function ChatRow({
           text. Only starting a *new* reply is cut off once there is nothing
           left to reply to.
         */}
-        {!isReply && (!isDeleted || post.replyCount > 0) && (
+        {!isReply && post.replyCount > 0 && (
           <div className="mt-1 flex items-center gap-4 text-sm">
-            {post.replyCount > 0 && (
-              <button
-                type="button"
-                className="font-bold text-accent hover:underline"
-                onClick={() => setShowReplies((v) => !v)}
-              >
-                {showReplies
-                  ? "Hide replies"
-                  : `${post.replyCount} ${post.replyCount === 1 ? "reply" : "replies"}`}
-              </button>
-            )}
-            {!isDeleted && (post.replyCount === 0 || showReplies) && (
-              <button
-                type="button"
-                className="font-bold text-ink-muted hover:text-primary"
-                onClick={() => setReplying((v) => !v)}
-              >
-                {post.replyCount === 0 ? "Reply" : "Write a reply"}
-              </button>
-            )}
+            <button
+              type="button"
+              className="font-bold text-accent hover:underline"
+              onClick={() => setShowReplies((v) => !v)}
+            >
+              {showReplies
+                ? "Hide replies"
+                : `${post.replyCount} ${post.replyCount === 1 ? "reply" : "replies"}`}
+            </button>
           </div>
         )}
 
@@ -992,6 +989,7 @@ function ChatRow({
       {hasActions && (
         <div className="absolute -top-3 right-2 rounded-md border border-line bg-surface opacity-0 shadow-sm transition focus-within:opacity-100 group-hover/row:opacity-100 [@media(hover:none)]:opacity-100">
           <MenuButton portal label={`Actions for this post`}>
+            {showReplyAction && <MenuItem onSelect={() => setReplying(true)}>Reply</MenuItem>}
             {post.canEdit && <MenuItem onSelect={() => setEditing(true)}>Edit</MenuItem>}
             {post.canDelete && (
               <MenuItem danger onSelect={() => setConfirmDelete(true)}>
