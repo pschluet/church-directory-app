@@ -86,6 +86,29 @@ export function formatPostedAt(iso: string, now: Date = new Date()): string {
   return then.toLocaleDateString(undefined, { month: "long", day: "numeric" });
 }
 
+/** "18:30" as "6:30 PM". Anything that is not HH:MM comes back as it was. */
+export function formatTime12(hm: string): string {
+  const match = /^(\d{1,2}):(\d{2})$/.exec(hm);
+  if (!match) return hm;
+  const hour = Number(match[1]);
+  const suffix = hour >= 12 ? "PM" : "AM";
+  return `${hour % 12 === 0 ? 12 : hour % 12}:${match[2]} ${suffix}`;
+}
+
+/**
+ * When an event happens, as a person would say it: "6:30 – 8:00 PM" when both
+ * ends share a half of the day, "6:30 PM – 12:00 AM" otherwise, "6:30 PM" with
+ * no end, and null with no start time at all (an event can be just a date).
+ */
+export function formatEventTimes(start: string | null, end: string | null): string | null {
+  if (!start) return null;
+  const from = formatTime12(start);
+  if (!end) return from;
+  const to = formatTime12(end);
+  const sameHalf = from.slice(-2) === to.slice(-2);
+  return `${sameHalf ? from.slice(0, -3) : from} – ${to}`;
+}
+
 /** The local yyyy-mm-dd of an instant, for deciding which day a message belongs to. */
 export function localDayIso(instant: string | Date): string {
   const date = typeof instant === "string" ? new Date(instant) : instant;

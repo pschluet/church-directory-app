@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import type { GroupDto, GroupMemberDto, GroupPostDto, MeDto } from "@shared";
 import { ApiError } from "../src/lib/api";
 import { NavStackProvider } from "../src/components/NavStack";
+import { localDayIso } from "../src/lib/format";
 import { GroupDetail } from "../src/pages/GroupDetail";
 import { renderWithProviders } from "./utils";
 import { Route, Routes, useLocation, useNavigationType } from "react-router";
@@ -633,6 +634,157 @@ describe("GroupDetail", () => {
       renderPage();
       await screen.findByRole("textbox", { name: "Message" });
       expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
+    });
+  });
+
+  describe("events", () => {
+    const nextWeek = () => {
+      const d = new Date();
+      d.setDate(d.getDate() + 7);
+      return localDayIso(d);
+    };
+    const event = (overrides: Partial<NonNullable<GroupPostDto["event"]>> = {}, id = "e1") =>
+      post({
+        id,
+        kind: "EVENT",
+        body: null,
+        event: {
+          title: "Parish Potluck",
+          description: "Bring a dish",
+          eventDate: nextWeek(),
+          startTime: "18:30",
+          endTime: "20:00",
+          location: "Parish Hall",
+          rsvpCounts: { yes: 3, no: 1, maybe: 2 },
+          myRsvp: null,
+          ...overrides,
+        },
+      });
+
+    it("shows an event as a card: date tile, when, a map link for where, and who is coming", async () => {
+      stub({ pages: [{ posts: [event()], nextCursor: null }] });
+      renderPage();
+      expect(await screen.findByRole("heading", { name: "Parish Potluck" })).toBeInTheDocument();
+      expect(screen.getByText("6:30 – 8:00 PM", { exact: false })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Parish Hall" })).toHaveAttribute(
+        "href",
+        expect.stringContaining("google.com/maps/search/?api=1&query=Parish%20Hall")
+      );
+      expect(screen.getByText("Bring a dish")).toBeInTheDocument();
+      expect(
+        screen.getByRole("button", { name: /3 going · 2 maybe · 1 not going/ })
+      ).toBeInTheDocument();
+    });
+
+    it("keeps a cancelled event's details but drops the RSVP controls and info", async () => {
+      const cancelled = {
+        ...event({ myRsvp: { response: "YES", guestCount: 2 } }),
+        deletedAt: "2026-10-09T12:00:00.000Z",
+        deletedBySelf: true,
+      };
+      stub({ pages: [{ posts: [cancelled], nextCursor: null }] });
+      renderPage();
+      expect(await screen.findByRole("heading", { name: "Parish Potluck" })).toBeInTheDocument();
+      expect(screen.getByText("Cancelled")).toBeInTheDocument();
+      expect(screen.getByText("6:30 – 8:00 PM", { exact: false })).toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Parish Hall" })).toBeInTheDocument();
+      // No RSVP side at all.
+      expect(screen.queryByRole("group", { name: "Your RSVP" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "More guests" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/going · /)).not.toBeInTheDocument();
+      // And no actions menu on a cancelled event.
+      expect(
+        screen.queryByRole("button", { name: "Actions for this post" })
+      ).not.toBeInTheDocument();
+    });
+
+    it("marks an event that has gone as Past", async () => {
+      stub({ pages: [{ posts: [event({ eventDate: "2020-01-01" })], nextCursor: null }] });
+      renderPage();
+      await screen.findByRole("heading", { name: "Parish Potluck" });
+      expect(screen.getByText("Past")).toBeInTheDocument();
+    });
+
+    it("says today for an event today", async () => {
+      stub({
+        pages: [{ posts: [event({ eventDate: localDayIso(new Date()) })], nextCursor: null }],
+      });
+      renderPage();
+      await screen.findByRole("heading", { name: "Parish Potluck" });
+      expect(screen.getByText("Today")).toBeInTheDocument();
+    });
+
+    it("RSVPs from a segmented control, and steps the guest count", async () => {
+      stub({
+        pages: [
+          {
+            posts: [event({ myRsvp: { response: "YES", guestCount: 1 } })],
+            nextCursor: null,
+          },
+        ],
+      });
+      renderPage();
+      await screen.findByRole("heading", { name: "Parish Potluck" });
+      const group = screen.getByRole("group", { name: "Your RSVP" });
+      expect(within(group).getByRole("button", { name: "Going" })).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      );
+      // Your own guests, not the event's total.
+      expect(screen.getByText("My guests")).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "More guests" }));
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts/e1/rsvp", {
+          method: "PUT",
+          body: { response: "YES", guestCount: 2 },
+        })
+      );
+      await userEvent.click(within(group).getByRole("button", { name: "Maybe" }));
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts/e1/rsvp", {
+          method: "PUT",
+          body: { response: "MAYBE", guestCount: 1 },
+        })
+      );
+    });
+
+    it("offers no guest stepper unless you are going, and none below zero", async () => {
+      stub({
+        pages: [
+          { posts: [event({ myRsvp: { response: "MAYBE", guestCount: 0 } })], nextCursor: null },
+        ],
+      });
+      renderPage();
+      await screen.findByRole("heading", { name: "Parish Potluck" });
+      expect(screen.queryByRole("button", { name: "More guests" })).not.toBeInTheDocument();
+    });
+
+    it("lists upcoming events soonest first and past ones most recent first, as cards", async () => {
+      const soon = event({ title: "Soon", eventDate: nextWeek() }, "e-soon");
+      const later = event(
+        { title: "Later", eventDate: localDayIso(new Date(Date.now() + 30 * 86_400_000)) },
+        "e-later"
+      );
+      const old = event({ title: "Old", eventDate: "2020-02-01" }, "e-old");
+      const older = event({ title: "Older", eventDate: "2019-02-01" }, "e-older");
+      apiMock.mockImplementation((path: string) => {
+        if (path === "/groups/g1") return Promise.resolve(group());
+        if (path === "/groups/g1/live") return Promise.resolve({ activityAt: "x", typing: [] });
+        if (path === "/groups/g1/events")
+          // The API's order: newest first.
+          return Promise.resolve({ events: [later, soon, old, older] });
+        return Promise.resolve({ pages: [], posts: [], nextCursor: null });
+      });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Events" }));
+      await screen.findByRole("heading", { name: "Soon" });
+
+      const titles = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
+      expect(titles).toEqual(["Soon", "Later", "Old", "Older"]);
+      expect(screen.getByRole("heading", { name: /Upcoming/ })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: /Past/ })).toBeInTheDocument();
+      expect(screen.getAllByText(/Posted by/)).toHaveLength(4);
     });
   });
 

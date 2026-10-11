@@ -1151,4 +1151,53 @@ describe.skipIf(!hasDb)("groups", () => {
       ).toBe(404);
     });
   });
+
+  describe("a cancelled event", () => {
+    async function cancelledEvent(): Promise<{ groupId: string; postId: string }> {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: {
+          eventTitle: "Potluck",
+          eventDate: "2030-01-01",
+          startTime: "18:00",
+          location: "Parish Hall",
+        },
+      });
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${event.body.id}`);
+      return { groupId, postId: event.body.id as string };
+    }
+
+    it("keeps its details in the conversation, so people can see what was cancelled", async () => {
+      const { groupId, postId } = await cancelledEvent();
+      const feed = await as(member).call("GET", `/api/groups/${groupId}/posts`);
+      const post = feed.body.posts.find((p: { id: string }) => p.id === postId);
+      expect(post.deletedAt).not.toBeNull();
+      expect(post.event).toMatchObject({
+        title: "Potluck",
+        eventDate: "2030-01-01",
+        startTime: "18:00",
+        location: "Parish Hall",
+      });
+      expect(post.canEdit).toBe(false);
+    });
+
+    it("is left off the Events tab", async () => {
+      const { groupId } = await cancelledEvent();
+      const res = await as(member).call("GET", `/api/groups/${groupId}/events`);
+      expect(res.body.events).toEqual([]);
+    });
+
+    it("can no longer be RSVP'd to", async () => {
+      const { groupId, postId } = await cancelledEvent();
+      const res = await as(member).call("PUT", `/api/groups/${groupId}/posts/${postId}/rsvp`, {
+        response: "YES",
+        guestCount: 0,
+      });
+      expect(res.status).toBe(409);
+    });
+  });
 });

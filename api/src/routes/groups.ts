@@ -1415,6 +1415,9 @@ routes.put("/:id/posts/:postId/rsvp", async (c) => {
 
   const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
   if (row?.kind !== "EVENT") throw new HTTPException(404, { message: "Event not found" });
+  // A cancelled event keeps its details so people can see what was cancelled,
+  // but nobody can RSVP to it any more.
+  if (row.deleted_at) throw new HTTPException(409, { message: "That event was cancelled" });
 
   await db.query(
     `insert into group_event_rsvps (post_id, app_user_id, response, guest_count)

@@ -36,7 +36,17 @@ import {
 } from "@shared";
 import { api, ApiError } from "../lib/api";
 import { qk } from "../lib/queryKeys";
-import { formatChatDay, formatChatTime, formatPostedAt, localDayIso } from "../lib/format";
+import {
+  formatChatDay,
+  formatChatTime,
+  formatDayLabel,
+  formatEventTimes,
+  formatPostedAt,
+  formatRelativeDay,
+  localDayIso,
+  parseIsoDate,
+  todayIso,
+} from "../lib/format";
 import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
 import { LocationAutocomplete } from "../components/AddressAutocomplete";
@@ -1223,8 +1233,12 @@ function ChatRow({
   showHeader: boolean;
   /** Whether the caller may reply here; offers "Reply" in the actions menu. */
   canReply?: boolean;
-  /** `root` is the message a thread page is about: a card, with no thread controls of its own. */
-  variant?: "row" | "root";
+  /**
+   * `root` is the message a thread page is about: a card, with no thread controls
+   * of its own. `card` is an event on the Events tab: just the event's card, with
+   * a quiet "posted by" line under it instead of an avatar gutter.
+   */
+  variant?: "row" | "root" | "card";
   /** Edit a message in the page's message bar. Without it a message edits inline. */
   onEdit?: (post: GroupPostDto) => void;
   /** The message currently being edited in the bar, which this row marks. */
@@ -1241,6 +1255,7 @@ function ChatRow({
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const isRoot = variant === "root";
+  const isCard = variant === "card";
 
   const remove = useMutation({
     mutationFn: () => api(`/groups/${groupId}/posts/${post.id}`, { method: "DELETE" }),
@@ -1358,40 +1373,50 @@ function ChatRow({
         if (sheetAvailable && window.matchMedia?.("(hover: none)").matches) event.preventDefault();
       }}
       className={`group/row relative flex gap-3 ${
-        isRoot
-          ? // The message a thread is about: a card, so it reads as the anchor
-            // the replies hang from rather than as one more line.
-            "gap-4 rounded-xl p-4 ring-1 ring-line"
-          : // A byline starts a new run and gets some air above it; a continuation
-            // sits close under the line before it, as in a chat.
-            `rounded-md px-2 ${header ? "pb-0.5 pt-2" : "py-px"}`
+        isCard
+          ? "rounded-2xl"
+          : isRoot
+            ? // The message a thread is about: a card, so it reads as the anchor
+              // the replies hang from rather than as one more line. A real border,
+              // not a ring: a ring is a shadow drawn outside the box, and the
+              // scrolling pane around it clips anything outside its own edge.
+              "gap-4 rounded-xl border border-line p-4"
+            : // A byline starts a new run and gets some air above it; a continuation
+              // sits close under the line before it, as in a chat.
+              `rounded-md px-2 ${header ? "pb-0.5 pt-2" : "py-px"}`
       } ${
         // The message the drawer is about stays marked while it is open, and
         // starts to show during the hold, so a long press is never a guess.
         sheetOpen || pressing || editingId === post.id
-          ? "bg-accent-light/30 ring-1 ring-accent/50"
-          : isRoot
-            ? "bg-surface-muted/60"
-            : "focus-within:bg-surface-muted/60 hover:bg-surface-muted/60"
+          ? isCard
+            ? "ring-2 ring-accent/60"
+            : "bg-accent-light/30 ring-1 ring-inset ring-accent/50"
+          : isCard
+            ? ""
+            : isRoot
+              ? "bg-surface-muted/60"
+              : "focus-within:bg-surface-muted/60 hover:bg-surface-muted/60"
       } ${TOUCH_NO_SELECT}`}
     >
       {/* The same-width gutter on every row keeps a run of messages lined up under its byline. */}
-      <div className={`shrink-0 ${isRoot ? "w-14" : "w-10"}`}>
-        {header ? (
-          <AuthorAvatar post={post} size={isRoot ? "md" : "sm"} />
-        ) : (
-          <time
-            dateTime={post.createdAt}
-            title={formatPostedAt(post.createdAt, now)}
-            className="block whitespace-nowrap pt-0.5 text-center text-[10px] leading-tight text-ink-muted opacity-0 group-hover/row:opacity-100"
-          >
-            {formatChatTime(post.createdAt)}
-          </time>
-        )}
-      </div>
+      {!isCard && (
+        <div className={`shrink-0 ${isRoot ? "w-14" : "w-10"}`}>
+          {header ? (
+            <AuthorAvatar post={post} size={isRoot ? "md" : "sm"} />
+          ) : (
+            <time
+              dateTime={post.createdAt}
+              title={formatPostedAt(post.createdAt, now)}
+              className="block whitespace-nowrap pt-0.5 text-center text-[10px] leading-tight text-ink-muted opacity-0 group-hover/row:opacity-100"
+            >
+              {formatChatTime(post.createdAt)}
+            </time>
+          )}
+        </div>
+      )}
 
       <div className="min-w-0 flex-1">
-        {header && (
+        {header && !isCard && (
           <p className="flex flex-wrap items-baseline gap-x-2">
             <AuthorName post={post} />
             <time
@@ -1405,7 +1430,18 @@ function ChatRow({
           </p>
         )}
 
-        {isDeleted ? (
+        {isDeleted && post.kind === "EVENT" && post.event ? (
+          // What was cancelled stays visible; only the RSVP side goes.
+          <EventBlock
+            event={post.event}
+            mentions={post.mentions}
+            postId={post.id}
+            groupId={groupId}
+            onChanged={onChanged}
+            wide={isCard}
+            cancelled
+          />
+        ) : isDeleted ? (
           <p className="italic text-ink-muted">
             {post.kind === "EVENT" ? "Event cancelled" : "Message deleted"}
           </p>
@@ -1426,6 +1462,7 @@ function ChatRow({
                 postId={post.id}
                 groupId={groupId}
                 onChanged={onChanged}
+                wide={isCard}
               />
             )}
             {post.body && (
@@ -1446,7 +1483,14 @@ function ChatRow({
           (requirements/groups.md) means the thread, not just the tombstone
           text -- so the summary shows whenever there are replies.
         */}
-        {!isReply && !isRoot && post.replyCount > 0 && (
+        {isCard && (
+          <p className="mt-1.5 px-1 text-xs text-ink-muted">
+            Posted by <AuthorName post={post} /> · {formatPostedAt(post.createdAt, now)}
+            {post.editedAt && " · edited"}
+          </p>
+        )}
+
+        {!isReply && !isRoot && !isCard && post.replyCount > 0 && (
           <ReplySummary post={post} groupId={groupId} now={now} />
         )}
       </div>
@@ -2529,79 +2573,219 @@ const RSVP_LABELS: Record<GroupRsvpResponse, string> = {
   NO: "Not going",
 };
 
+/** A page torn from a calendar: the month on a band, the day large beneath it. */
+function EventDateTile({ iso, past }: { iso: string; past: boolean }) {
+  const date = parseIsoDate(iso);
+  return (
+    <div
+      aria-hidden="true"
+      className="flex h-16 w-14 shrink-0 flex-col overflow-hidden rounded-xl border border-line bg-surface text-center shadow-sm"
+    >
+      <span
+        className={`py-0.5 text-[10px] font-bold uppercase tracking-wider text-white ${
+          past ? "bg-ink-muted" : "bg-primary"
+        }`}
+      >
+        {date.toLocaleDateString(undefined, { month: "short" })}
+      </span>
+      <span className="flex flex-1 items-center justify-center text-2xl font-bold leading-none text-ink">
+        {date.getDate()}
+      </span>
+    </div>
+  );
+}
+
+function EventMeta({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+  return (
+    <p className="flex items-start gap-2 text-sm text-ink">
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 20 20"
+        className="mt-0.5 h-4 w-4 shrink-0 fill-current text-ink-muted"
+      >
+        {icon}
+      </svg>
+      <span className="min-w-0 break-words">{children}</span>
+    </p>
+  );
+}
+
+/**
+ * An event, as a card: the date as a tile, the when and where with icons, then
+ * RSVP as a segmented control with a guest stepper, and who is coming. Used in
+ * the conversation and, larger, on the Events tab.
+ */
 function EventBlock({
   event,
   mentions,
   postId,
   groupId,
   onChanged,
+  wide = false,
+  cancelled = false,
 }: {
   event: NonNullable<GroupPostDto["event"]>;
   mentions: GroupPostDto["mentions"];
   postId: string;
   groupId: string;
   onChanged: () => Promise<unknown>;
+  /** Fill the width (up to a readable limit) -- the Events tab -- rather than a chat-sized card. */
+  wide?: boolean;
+  /**
+   * The event was cancelled. Its details stay, so people can see *what* was
+   * cancelled, but the RSVP controls and the who-is-coming line go.
+   */
+  cancelled?: boolean;
 }) {
-  const [guestCount, setGuestCount] = useState(event.myRsvp?.guestCount ?? 0);
   const [showRsvps, setShowRsvps] = useState(false);
   const rsvp = useMutation({
-    mutationFn: (response: GroupRsvpResponse) =>
+    mutationFn: ({ response, guests }: { response: GroupRsvpResponse; guests: number }) =>
       api(`/groups/${groupId}/posts/${postId}/rsvp`, {
         method: "PUT",
-        body: { response, guestCount },
+        body: { response, guestCount: guests },
       }),
     onSuccess: () => void onChanged(),
   });
 
-  return (
-    <div className="mt-1 max-w-xl rounded-md border border-line bg-surface-muted p-3">
-      <p className="font-bold text-ink">{event.title}</p>
-      <p className="text-sm text-ink-muted">
-        {event.eventDate}
-        {event.startTime && ` · ${event.startTime}${event.endTime ? `–${event.endTime}` : ""}`}
-        {event.location && ` · ${event.location}`}
-      </p>
-      {event.description && (
-        <p className="mt-1 whitespace-pre-line text-ink">
-          <MentionText text={event.description} mentions={mentions} />
-        </p>
-      )}
+  const mine = event.myRsvp;
+  const guests = mine?.guestCount ?? 0;
+  const past = event.eventDate < todayIso();
+  const soon = past || cancelled ? null : formatRelativeDay(event.eventDate);
+  const times = formatEventTimes(event.startTime, event.endTime);
+  const { yes, maybe, no } = event.rsvpCounts;
 
-      <div className="mt-2 flex flex-wrap items-center gap-2">
-        {RSVP_OPTIONS.map((option) => (
-          <Button
-            key={option}
-            variant={event.myRsvp?.response === option ? "primary" : "secondary"}
-            disabled={rsvp.isPending}
-            onClick={() => rsvp.mutate(option)}
+  return (
+    <div
+      className={`mt-1 w-full ${wide ? "max-w-2xl" : "max-w-xl"} overflow-hidden rounded-2xl border border-line bg-surface shadow-sm ${
+        past || cancelled ? "opacity-80" : ""
+      }`}
+    >
+      <div className="flex gap-3 p-4">
+        <EventDateTile iso={event.eventDate} past={past || cancelled} />
+        <div className="min-w-0 flex-1 space-y-1.5">
+          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+            <h3
+              className={`min-w-0 break-words text-lg font-bold leading-snug ${
+                cancelled ? "text-ink-muted line-through" : "text-ink"
+              }`}
+            >
+              {event.title}
+            </h3>
+            {cancelled && <Badge tone="primary">Cancelled</Badge>}
+            {soon && <Badge tone="accent">{soon}</Badge>}
+            {past && !cancelled && <Badge tone="neutral">Past</Badge>}
+          </div>
+          <EventMeta
+            icon={
+              <path d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm.8 4.2v3.5l2.7 1.6a.8.8 0 1 1-.8 1.4l-3.1-1.8a.8.8 0 0 1-.4-.7V6.2a.8.8 0 0 1 1.6 0Z" />
+            }
           >
-            {RSVP_LABELS[option]}
-          </Button>
-        ))}
-        {event.myRsvp?.response === "YES" && (
-          <label className="flex items-center gap-1 text-sm text-ink-muted">
-            +guests
-            <input
-              type="number"
-              min={0}
-              max={50}
-              value={guestCount}
-              onChange={(ev) => setGuestCount(Number(ev.target.value))}
-              onBlur={() => rsvp.mutate("YES")}
-              className="w-14 rounded-md border border-line px-1 py-0.5"
-            />
-          </label>
-        )}
+            {formatDayLabel(event.eventDate)}
+            {times && <span className="text-ink-muted"> · {times}</span>}
+          </EventMeta>
+          {event.location && (
+            <EventMeta
+              icon={
+                <path d="M10 1.8a6 6 0 0 0-6 6c0 4.2 5.2 9.9 5.4 10.1a.8.8 0 0 0 1.2 0C10.8 17.7 16 12 16 7.8a6 6 0 0 0-6-6Zm0 8.2a2.2 2.2 0 1 1 0-4.4 2.2 2.2 0 0 1 0 4.4Z" />
+              }
+            >
+              <a
+                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location)}`}
+                target="_blank"
+                rel="noreferrer"
+                className="text-accent underline-offset-2 hover:underline"
+              >
+                {event.location}
+              </a>
+            </EventMeta>
+          )}
+          {event.description && (
+            <p className="whitespace-pre-line break-words pt-1 text-sm leading-snug text-ink-muted">
+              <MentionText text={event.description} mentions={mentions} />
+            </p>
+          )}
+        </div>
       </div>
 
-      <button
-        type="button"
-        onClick={() => setShowRsvps(true)}
-        className="mt-2 text-sm text-ink-muted hover:underline"
-      >
-        {event.rsvpCounts.yes} going · {event.rsvpCounts.maybe} maybe · {event.rsvpCounts.no} not
-        going
-      </button>
+      {!cancelled && (
+        <div className="space-y-3 border-t border-line bg-surface-muted/60 px-4 py-3">
+          <div className="flex flex-wrap items-center gap-3">
+            <div
+              role="group"
+              aria-label="Your RSVP"
+              className="inline-flex overflow-hidden rounded-lg border border-line bg-surface"
+            >
+              {RSVP_OPTIONS.map((option) => {
+                const active = mine?.response === option;
+                return (
+                  <button
+                    key={option}
+                    type="button"
+                    aria-pressed={active}
+                    disabled={rsvp.isPending}
+                    onClick={() => rsvp.mutate({ response: option, guests })}
+                    className={`px-3 py-1.5 text-sm font-bold transition first:border-l-0 border-l border-line disabled:opacity-60 ${
+                      active ? "bg-primary text-white" : "text-ink hover:bg-surface-muted"
+                    }`}
+                  >
+                    {RSVP_LABELS[option]}
+                  </button>
+                );
+              })}
+            </div>
+
+            {mine?.response === "YES" && (
+              <div className="flex items-center gap-1 text-sm text-ink-muted">
+                <span id={`guests-${postId}`}>My guests</span>
+                <div
+                  role="group"
+                  aria-labelledby={`guests-${postId}`}
+                  className="inline-flex items-center overflow-hidden rounded-lg border border-line bg-surface"
+                >
+                  <button
+                    type="button"
+                    aria-label="Fewer guests"
+                    disabled={rsvp.isPending || guests <= 0}
+                    onClick={() => rsvp.mutate({ response: "YES", guests: guests - 1 })}
+                    className="px-2.5 py-1 text-base font-bold text-ink hover:bg-surface-muted disabled:text-ink-muted/50"
+                  >
+                    −
+                  </button>
+                  <span aria-live="polite" className="min-w-6 text-center font-bold text-ink">
+                    {guests}
+                  </span>
+                  <button
+                    type="button"
+                    aria-label="More guests"
+                    disabled={rsvp.isPending || guests >= 50}
+                    onClick={() => rsvp.mutate({ response: "YES", guests: guests + 1 })}
+                    className="px-2.5 py-1 text-base font-bold text-ink hover:bg-surface-muted disabled:text-ink-muted/50"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setShowRsvps(true)}
+            className="flex items-center gap-1.5 text-sm font-bold text-accent hover:underline"
+          >
+            <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+              <path d="M7 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm6.5.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM1.5 16a5.5 5.5 0 0 1 11 0 .8.8 0 0 1-.8.8H2.3a.8.8 0 0 1-.8-.8Zm11.7.8c.2-.3.3-.5.3-.8 0-1.6-.6-3-1.5-4a4.6 4.6 0 0 1 6.5 4.2.8.8 0 0 1-.8.8h-4.5Z" />
+            </svg>
+            {yes + maybe + no === 0 ? (
+              "No RSVPs yet"
+            ) : (
+              <span>
+                {yes} going · {maybe} maybe · {no} not going
+              </span>
+            )}
+          </button>
+        </div>
+      )}
 
       {showRsvps && (
         <RsvpListModal groupId={groupId} postId={postId} onClose={() => setShowRsvps(false)} />
@@ -2808,52 +2992,46 @@ function EventsTab({
   if (events.length === 0)
     return <EmptyState title="No events yet">Events posted to Messages show up here.</EmptyState>;
 
-  const todayIso = new Date().toISOString().slice(0, 10);
-  const upcoming = events.filter((e) => (e.event?.eventDate ?? "") >= todayIso);
-  const past = events.filter((e) => (e.event?.eventDate ?? "") < todayIso);
+  const today = todayIso();
+  // The API sends newest first. What is coming reads soonest first, and what has
+  // gone, most recent first -- so each list starts with the one nearest to now.
+  const dateOf = (post: GroupPostDto) => post.event?.eventDate ?? "";
+  const upcoming = events
+    .filter((e) => dateOf(e) >= today)
+    .sort((a, b) => dateOf(a).localeCompare(dateOf(b)));
+  const past = events
+    .filter((e) => dateOf(e) < today)
+    .sort((a, b) => dateOf(b).localeCompare(dateOf(a)));
+
+  const section = (title: string, posts: GroupPostDto[]) => (
+    <section>
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-ink-muted">
+        {title}
+        <span className="rounded-full bg-surface-muted px-2 py-0.5 text-xs">{posts.length}</span>
+      </h2>
+      <ul className="space-y-4">
+        {posts.map((post) => (
+          <ChatRow
+            key={post.id}
+            post={post}
+            showHeader
+            groupId={groupId}
+            members={members}
+            now={now}
+            onReport={onReport}
+            onChanged={onChanged}
+            isReply
+            variant="card"
+          />
+        ))}
+      </ul>
+    </section>
+  );
 
   return (
-    <div className="space-y-6">
-      {upcoming.length > 0 && (
-        <section>
-          <h2 className="mb-2 font-bold text-ink">Upcoming</h2>
-          <ul className="divide-y divide-line rounded-lg border border-line bg-surface">
-            {upcoming.map((post) => (
-              <ChatRow
-                key={post.id}
-                post={post}
-                showHeader
-                groupId={groupId}
-                members={members}
-                now={now}
-                onReport={onReport}
-                onChanged={onChanged}
-                isReply
-              />
-            ))}
-          </ul>
-        </section>
-      )}
-      {past.length > 0 && (
-        <section>
-          <h2 className="mb-2 font-bold text-ink">Past</h2>
-          <ul className="divide-y divide-line rounded-lg border border-line bg-surface opacity-80">
-            {past.map((post) => (
-              <ChatRow
-                key={post.id}
-                post={post}
-                showHeader
-                groupId={groupId}
-                members={members}
-                now={now}
-                onReport={onReport}
-                onChanged={onChanged}
-                isReply
-              />
-            ))}
-          </ul>
-        </section>
-      )}
+    <div className="space-y-8">
+      {upcoming.length > 0 && section("Upcoming", upcoming)}
+      {past.length > 0 && section("Past", past)}
     </div>
   );
 }
