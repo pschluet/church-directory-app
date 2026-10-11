@@ -18,14 +18,16 @@ function Probe({
   gap,
   min,
   holdWhileTyping,
+  clearHomeIndicator,
 }: {
   top: number;
   gap?: number;
   min?: number;
   holdWhileTyping?: boolean;
+  clearHomeIndicator?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const height = useFillViewport(ref, { gap, min, holdWhileTyping });
+  const height = useFillViewport(ref, { gap, min, holdWhileTyping, clearHomeIndicator });
   return (
     <div
       ref={(node) => {
@@ -69,6 +71,57 @@ describe("useFillViewport", () => {
     });
     render(<Probe top={300} />);
     expect(measured()).toBe("376");
+  });
+
+  describe("clearHomeIndicator, for a bar that sits at the bottom of the screen", () => {
+    function stubInset(paddingBottom: string) {
+      const real = window.getComputedStyle.bind(window);
+      vi.stubGlobal(
+        "getComputedStyle",
+        vi.fn((element: Element) => {
+          // Only the probe is position:fixed and hidden; everything else gets the real thing.
+          const style = (element as HTMLElement).style;
+          const probe = style?.position === "fixed" && style?.visibility === "hidden";
+          return probe ? { paddingBottom } : real(element);
+        })
+      );
+    }
+
+    it("leaves room for the home indicator on top of the gap", () => {
+      vi.stubGlobal("innerHeight", 900);
+      stubInset("34px");
+      render(<Probe top={300} gap={12} clearHomeIndicator />);
+      // 900 - 300 - 12 - 34.
+      expect(measured()).toBe("554");
+    });
+
+    it("adds nothing on a screen with no inset", () => {
+      vi.stubGlobal("innerHeight", 900);
+      stubInset("0px");
+      render(<Probe top={300} gap={12} clearHomeIndicator />);
+      expect(measured()).toBe("588");
+    });
+
+    it("treats an unreadable inset as none", () => {
+      vi.stubGlobal("innerHeight", 900);
+      stubInset("");
+      render(<Probe top={300} gap={12} clearHomeIndicator />);
+      expect(measured()).toBe("588");
+    });
+
+    it("ignores the inset unless asked", () => {
+      vi.stubGlobal("innerHeight", 900);
+      stubInset("34px");
+      render(<Probe top={300} gap={12} />);
+      expect(measured()).toBe("588");
+    });
+
+    it("does not leave its measuring element behind", () => {
+      vi.stubGlobal("innerHeight", 900);
+      stubInset("34px");
+      render(<Probe top={300} clearHomeIndicator />);
+      expect(document.body.querySelector('[style*="visibility: hidden"]')).toBeNull();
+    });
   });
 
   describe("holdWhileTyping, for a phone's keyboard", () => {

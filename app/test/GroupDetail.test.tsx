@@ -1,11 +1,20 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { GroupDto, GroupMemberDto, GroupPostDto, MeDto } from "@shared";
+import type {
+  GroupDto,
+  GroupFileDto,
+  GroupMemberDto,
+  GroupPostAttachmentDto,
+  GroupPostDto,
+  MeDto,
+} from "@shared";
+import { GROUP_POST_MAX_ATTACHMENTS } from "@shared";
 import { ApiError } from "../src/lib/api";
 import { NavStackProvider } from "../src/components/NavStack";
 import { localDayIso } from "../src/lib/format";
 import { GroupDetail } from "../src/pages/GroupDetail";
+import type { GroupAttachmentPicker } from "../src/components/useGroupAttachmentPicker";
 import { renderWithProviders } from "./utils";
 import { Route, Routes, useLocation, useNavigationType } from "react-router";
 
@@ -18,6 +27,25 @@ const apiMock = vi.fn();
 vi.mock("../src/lib/api", async () => {
   const actual = await vi.importActual<typeof import("../src/lib/api")>("../src/lib/api");
   return { ...actual, api: (...args: unknown[]) => apiMock(...args) };
+});
+
+/*
+ * The real picker reads files through canvas, which jsdom does not have, so a
+ * test that wants to say "a picture has been added" swaps in a fixed state.
+ */
+const pickerOverride: { value: Partial<GroupAttachmentPicker> | null } = { value: null };
+
+vi.mock("../src/components/useGroupAttachmentPicker", async () => {
+  const actual = await vi.importActual<typeof import("../src/components/useGroupAttachmentPicker")>(
+    "../src/components/useGroupAttachmentPicker"
+  );
+  return {
+    ...actual,
+    useGroupAttachmentPicker: () => {
+      const real = actual.useGroupAttachmentPicker();
+      return pickerOverride.value ? { ...real, ...pickerOverride.value } : real;
+    },
+  };
 });
 
 const adminState = { isAdmin: false };
@@ -117,8 +145,26 @@ function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
   };
 }
 
+function attachment(overrides: Partial<GroupPostAttachmentDto> = {}): GroupPostAttachmentDto {
+  return {
+    id: "a1",
+    kind: "IMAGE",
+    filename: "picnic.jpg",
+    contentType: "image/jpeg",
+    byteSize: 1000,
+    thumbUrl: "/picnic-thumb.webp",
+    fullUrl: "/picnic-full.webp",
+    width: 400,
+    height: 300,
+    downloadUrl: null,
+    ...overrides,
+  };
+}
+
 interface Stub {
   group?: GroupDto;
+  /** What the Files tab lists. */
+  files?: GroupFileDto[];
   /** A thread's root and its replies (oldest first), for the thread page. */
   thread?: { root: GroupPostDto; replies: GroupPostDto[] };
   typing?: string[];
@@ -131,6 +177,7 @@ function stub({
   pages = [{ posts: [], nextCursor: null }],
   typing = [],
   thread,
+  files = [],
 }: Stub = {}) {
   apiMock.mockImplementation((path: string, options?: { query?: Record<string, string> }) => {
     if (path === "/groups/g1") return Promise.resolve(g);
@@ -143,6 +190,7 @@ function stub({
       const reply = thread.replies.find((r) => path === `/groups/g1/posts/${r.id}`);
       if (reply) return Promise.resolve(reply);
     }
+    if (path === "/groups/g1/files") return Promise.resolve({ files });
     if (path === "/groups/g1/posts") {
       const cursor = options?.query?.cursorId;
       const index = cursor ? pages.findIndex((_, i) => pages[i - 1]?.nextCursor?.id === cursor) : 0;
@@ -181,6 +229,7 @@ describe("GroupDetail", () => {
   beforeEach(() => {
     apiMock.mockReset();
     adminState.isAdmin = false;
+    pickerOverride.value = null;
     seq = 0;
   });
 
@@ -375,6 +424,180 @@ describe("GroupDetail", () => {
           })
         )
       );
+    });
+
+    describe("sending only pictures or files", () => {
+      const added = {
+        photoKey: "photos/org-1/group-post/person-me/01TESTULID0000000000000001/",
+        kind: "IMAGE" as const,
+        filename: "picnic.jpg",
+        contentType: "image/jpeg",
+        byteSize: 1000,
+      };
+
+      const sendButton = () => screen.getByRole("button", { name: "Send" });
+
+      it("keeps Send off with no text and nothing attached", async () => {
+        stub();
+        renderPage();
+        await screen.findByRole("textbox", { name: "Message" });
+        expect(sendButton()).toBeDisabled();
+      });
+
+      it("sends an attachment with no text", async () => {
+        pickerOverride.value = { attachments: [added], busy: false };
+        stub();
+        renderPage();
+        await screen.findByRole("textbox", { name: "Message" });
+        expect(sendButton()).toBeEnabled();
+
+        await userEvent.click(sendButton());
+        await waitFor(() =>
+          expect(apiMock).toHaveBeenCalledWith(
+            "/groups/g1/posts",
+            expect.objectContaining({
+              method: "POST",
+              body: expect.objectContaining({ kind: "MESSAGE", body: "", attachments: [added] }),
+            })
+          )
+        );
+      });
+
+      it("sends an attachment with no text on Enter", async () => {
+        pickerOverride.value = { attachments: [added], busy: false };
+        stub();
+        renderPage();
+        const bar = await screen.findByRole("textbox", { name: "Message" });
+        await userEvent.click(bar);
+        await userEvent.keyboard("{Enter}");
+        await waitFor(() =>
+          expect(apiMock).toHaveBeenCalledWith(
+            "/groups/g1/posts",
+            expect.objectContaining({
+              method: "POST",
+              body: expect.objectContaining({ attachments: [added] }),
+            })
+          )
+        );
+      });
+
+      it("waits for a picture that is still being prepared", async () => {
+        // One is ready, another is still being prepared: sending now would leave it behind.
+        pickerOverride.value = { attachments: [added], busy: true };
+        stub();
+        renderPage();
+        await screen.findByRole("textbox", { name: "Message" });
+        expect(sendButton()).toBeDisabled();
+      });
+
+      it("sends an attachment with no text as a reply on a thread", async () => {
+        pickerOverride.value = { attachments: [added], busy: false };
+        stub({
+          thread: {
+            root: post({ id: "root-1", body: "Hello", replyCount: 0 }),
+            replies: [],
+          },
+        });
+        renderPage("/groups/g1/threads/root-1");
+        await screen.findByRole("textbox", { name: "Reply" });
+        expect(sendButton()).toBeEnabled();
+
+        await userEvent.click(sendButton());
+        await waitFor(() =>
+          expect(apiMock).toHaveBeenCalledWith(
+            "/groups/g1/posts",
+            expect.objectContaining({
+              method: "POST",
+              body: expect.objectContaining({
+                kind: "MESSAGE",
+                body: "",
+                parentPostId: "root-1",
+                attachments: [added],
+              }),
+            })
+          )
+        );
+      });
+
+      it("keeps Send off on a thread with nothing to send", async () => {
+        stub({
+          thread: {
+            root: post({ id: "root-1", body: "Hello", replyCount: 0 }),
+            replies: [],
+          },
+        });
+        renderPage("/groups/g1/threads/root-1");
+        await screen.findByRole("textbox", { name: "Reply" });
+        expect(sendButton()).toBeDisabled();
+      });
+
+      it("opens a picture-only message of mine for editing with an empty box, and needs text to save", async () => {
+        stub({
+          pages: [
+            {
+              posts: [
+                post({
+                  body: null,
+                  attachments: [attachment()],
+                  authorPersonId: "person-me",
+                  canEdit: true,
+                }),
+              ],
+              nextCursor: null,
+            },
+          ],
+        });
+        renderPage();
+        await userEvent.click(await screen.findByRole("button", { name: "Actions for this post" }));
+        await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+
+        const bar = await screen.findByRole("textbox", { name: "Edit message" });
+        expect(bar).toHaveValue("");
+        const save = screen.getByRole("button", { name: "Save changes" });
+        expect(save).toBeDisabled();
+
+        await userEvent.type(bar, "From the picnic");
+        expect(save).toBeEnabled();
+        await userEvent.click(save);
+        await waitFor(() =>
+          expect(apiMock).toHaveBeenCalledWith(
+            expect.stringMatching(/^\/groups\/g1\/posts\/p\d+$/),
+            expect.objectContaining({
+              method: "PATCH",
+              body: expect.objectContaining({ body: "From the picnic" }),
+            })
+          )
+        );
+      });
+
+      it("still sends text with no attachment", async () => {
+        stub();
+        renderPage();
+        await userEvent.type(await screen.findByRole("textbox", { name: "Message" }), "Hello");
+        expect(sendButton()).toBeEnabled();
+      });
+
+      it("treats spaces alone as no text", async () => {
+        stub();
+        renderPage();
+        await userEvent.type(await screen.findByRole("textbox", { name: "Message" }), "   ");
+        expect(sendButton()).toBeDisabled();
+      });
+
+      it("shows a message that is only a picture", async () => {
+        stub({
+          pages: [
+            {
+              posts: [post({ body: null, attachments: [attachment()] })],
+              nextCursor: null,
+            },
+          ],
+        });
+        renderPage();
+        expect(
+          await screen.findByRole("button", { name: "Show picnic.jpg full screen" })
+        ).toBeInTheDocument();
+      });
     });
 
     it("offers a photo or file and an event from the + menu", async () => {
@@ -635,6 +858,211 @@ describe("GroupDetail", () => {
       renderPage();
       await screen.findByRole("textbox", { name: "Message" });
       expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
+    });
+
+    describe("when the message field loses focus", () => {
+      afterEach(() => {
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      });
+
+      async function openMessageField() {
+        stub();
+        renderPage();
+        const field = await screen.findByRole("textbox", { name: "Message" });
+        field.focus();
+        vi.mocked(window.scrollTo).mockClear();
+        return field;
+      }
+
+      it("glides back to the top when the keyboard's pan left the page scrolled", async () => {
+        const field = await openMessageField();
+        vi.stubGlobal("scrollY", 120);
+        fireEvent.focusOut(field);
+        expect(window.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
+      });
+
+      it("does not animate for someone who asked for reduced motion", async () => {
+        const field = await openMessageField();
+        vi.stubGlobal(
+          "matchMedia",
+          vi.fn(() => ({ matches: true, addEventListener() {}, removeEventListener() {} }))
+        );
+        vi.stubGlobal("scrollY", 120);
+        fireEvent.focusOut(field);
+        expect(window.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "auto" });
+      });
+
+      it("leaves the page alone when it is already at the top", async () => {
+        const field = await openMessageField();
+        fireEvent.focusOut(field);
+        expect(window.scrollTo).not.toHaveBeenCalled();
+      });
+
+      it("leaves the page alone when focus moves to another field, so the keyboard stays up", async () => {
+        const field = await openMessageField();
+        const other = document.createElement("input");
+        document.body.appendChild(other);
+        vi.stubGlobal("scrollY", 120);
+        fireEvent.focusOut(field, { relatedTarget: other });
+        expect(window.scrollTo).not.toHaveBeenCalled();
+        other.remove();
+      });
+
+      it("snaps to the top once the keyboard has gone if the glide was not enough", async () => {
+        const field = await openMessageField();
+        vi.useFakeTimers();
+        vi.stubGlobal("scrollY", 120);
+        fireEvent.focusOut(field);
+        vi.mocked(window.scrollTo).mockClear();
+        vi.advanceTimersByTime(700);
+        expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
+      });
+
+      it("does not snap once the glide has arrived", async () => {
+        const field = await openMessageField();
+        vi.useFakeTimers();
+        vi.stubGlobal("scrollY", 120);
+        fireEvent.focusOut(field);
+        vi.mocked(window.scrollTo).mockClear();
+        vi.stubGlobal("scrollY", 0);
+        vi.advanceTimersByTime(700);
+        expect(window.scrollTo).not.toHaveBeenCalled();
+      });
+
+      it("stops listening once the conversation is left", async () => {
+        stub();
+        const { unmount } = renderPage();
+        await screen.findByRole("textbox", { name: "Message" });
+        unmount();
+        vi.mocked(window.scrollTo).mockClear();
+        vi.stubGlobal("scrollY", 120);
+        fireEvent.focusOut(document.body);
+        expect(window.scrollTo).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  describe("pictures in a conversation", () => {
+    beforeEach(() => {
+      window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
+    });
+
+    function feedWithPicture(extra: GroupPostAttachmentDto[] = []) {
+      stub({
+        pages: [{ posts: [post({ attachments: [attachment(), ...extra] })], nextCursor: null }],
+      });
+    }
+
+    it("opens a picture in the lightbox instead of navigating to the bare image", async () => {
+      feedWithPicture();
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Show picnic.jpg full screen" }));
+
+      const dialog = await screen.findByRole("dialog", { name: "picnic.jpg" });
+      expect(within(dialog).getByRole("img")).toHaveAttribute("src", "/picnic-full.webp");
+      // No link to the raw file is left to navigate to.
+      expect(document.querySelector('a[href="/picnic-full.webp"]')).toBeNull();
+    });
+
+    it("closes with the X", async () => {
+      feedWithPicture();
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Show picnic.jpg full screen" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("closes with Escape", async () => {
+      feedWithPicture();
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Show picnic.jpg full screen" }));
+      await screen.findByRole("dialog");
+      await userEvent.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it("opens the one that was tapped when a message has several", async () => {
+      feedWithPicture([
+        attachment({ id: "a2", filename: "cake.jpg", fullUrl: "/cake-full.webp" }),
+      ]);
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Show cake.jpg full screen" }));
+      const dialog = await screen.findByRole("dialog", { name: "cake.jpg" });
+      expect(within(dialog).getByRole("img")).toHaveAttribute("src", "/cake-full.webp");
+    });
+
+    it("does not offer a lightbox for a picture with no full-size rendition", async () => {
+      feedWithPicture([
+        attachment({ id: "a3", filename: "pending.jpg", fullUrl: null }),
+      ]);
+      renderPage();
+      expect(await screen.findByRole("button", { name: "Show pending.jpg full screen" })).toBeDisabled();
+    });
+
+    it("still downloads a document", async () => {
+      feedWithPicture([
+        attachment({
+          id: "a4",
+          kind: "FILE",
+          filename: "bulletin.pdf",
+          thumbUrl: null,
+          fullUrl: null,
+          downloadUrl: "/bulletin.pdf",
+        }),
+      ]);
+      renderPage();
+      expect(await screen.findByRole("link", { name: "bulletin.pdf" })).toHaveAttribute(
+        "href",
+        "/bulletin.pdf"
+      );
+    });
+
+    describe("on the Files tab", () => {
+      const imageFile: GroupFileDto = {
+        postId: "p1",
+        postCreatedAt: "2026-10-09T10:00:00.000Z",
+        authorPersonId: "person-ann",
+        authorName: "Ann Lee",
+        attachment: attachment(),
+      };
+      const documentFile: GroupFileDto = {
+        ...imageFile,
+        attachment: attachment({
+          id: "a5",
+          kind: "FILE",
+          filename: "bulletin.pdf",
+          thumbUrl: null,
+          fullUrl: null,
+          downloadUrl: "/bulletin.pdf",
+        }),
+      };
+
+      async function openFiles() {
+        renderPage();
+        await userEvent.click(await screen.findByRole("button", { name: "Files" }));
+      }
+
+      it("opens an image from Open in the lightbox", async () => {
+        stub({ files: [imageFile] });
+        await openFiles();
+        await userEvent.click(await screen.findByRole("button", { name: "Open" }));
+
+        const dialog = await screen.findByRole("dialog", { name: "picnic.jpg" });
+        expect(within(dialog).getByRole("img")).toHaveAttribute("src", "/picnic-full.webp");
+        await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      });
+
+      it("keeps Open as a download link for a document", async () => {
+        stub({ files: [documentFile] });
+        await openFiles();
+        expect(await screen.findByRole("link", { name: "Open" })).toHaveAttribute(
+          "href",
+          "/bulletin.pdf"
+        );
+        expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
+      });
     });
   });
 
@@ -1124,18 +1552,21 @@ describe("GroupDetail", () => {
       expect(within(screen.getByRole("log")).queryByRole("textbox")).not.toBeInTheDocument();
     });
 
-    it("swaps send for accept and cancel, and drops the + menu", async () => {
+    it("swaps send for accept and cancel, and keeps the + menu for pictures but not an event", async () => {
       stub(mine());
       renderPage();
       await startEdit();
       expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
-      expect(screen.queryByRole("button", { name: "Add to this message" })).not.toBeInTheDocument();
       const accept = screen.getByRole("button", { name: "Save changes" });
       const cancel = screen.getByRole("button", { name: "Cancel editing" });
       expect(accept.className).toContain("green");
       expect(cancel.className).toContain("red");
       // Nothing has changed yet, so there is nothing to accept.
       expect(accept).toBeDisabled();
+
+      await userEvent.click(screen.getByRole("button", { name: "Add to this message" }));
+      expect(screen.getByRole("menuitem", { name: "Photo or file" })).toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: "Event…" })).not.toBeInTheDocument();
     });
 
     it("marks the message being edited", async () => {
@@ -1160,13 +1591,173 @@ describe("GroupDetail", () => {
           "/groups/g1/posts/p1",
           expect.objectContaining({
             method: "PATCH",
-            body: { body: "Hello @Bo Park ", mentionedAppUserIds: ["user-bo"] },
+            body: {
+              body: "Hello @Bo Park ",
+              mentionedAppUserIds: ["user-bo"],
+              removeAttachmentIds: [],
+              addAttachments: [],
+            },
           })
         )
       );
       // Back to the ordinary bar.
       await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument());
       expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
+    });
+
+    describe("pictures and files", () => {
+      const picnic = attachment({ id: "a1", filename: "picnic.jpg" });
+      const cake = attachment({
+        id: "a2",
+        filename: "cake.jpg",
+        thumbUrl: "/cake-thumb.webp",
+        fullUrl: "/cake-full.webp",
+      });
+      const added = {
+        photoKey: "photos/org-1/group-post/person-me/01TESTULID0000000000000009/",
+        kind: "IMAGE" as const,
+        filename: "new.jpg",
+        contentType: "image/jpeg",
+        byteSize: 1000,
+      };
+
+      const withPictures = (overrides: Partial<GroupPostDto> = {}) => ({
+        pages: [
+          {
+            posts: [
+              post({
+                body: "Hello",
+                attachments: [picnic, cake],
+                authorPersonId: "person-me",
+                canEdit: true,
+                ...overrides,
+              }),
+            ],
+            nextCursor: null,
+          },
+        ],
+      });
+
+      const patchBody = () =>
+        apiMock.mock.calls.find((c) => c[1]?.method === "PATCH")![1].body as Record<
+          string,
+          unknown
+        >;
+
+      it("shows the message's pictures in the bar, each with a remove button", async () => {
+        stub(withPictures());
+        renderPage();
+        await startEdit();
+        expect(screen.getByRole("button", { name: "Remove picnic.jpg" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Remove cake.jpg" })).toBeInTheDocument();
+      });
+
+      it("takes a picture off and sends its id", async () => {
+        stub(withPictures());
+        renderPage();
+        await startEdit();
+        const save = screen.getByRole("button", { name: "Save changes" });
+        expect(save).toBeDisabled();
+
+        await userEvent.click(screen.getByRole("button", { name: "Remove picnic.jpg" }));
+        expect(screen.queryByRole("button", { name: "Remove picnic.jpg" })).not.toBeInTheDocument();
+        expect(save).toBeEnabled();
+
+        await userEvent.click(save);
+        await waitFor(() => expect(patchBody()).toBeDefined());
+        expect(patchBody()).toMatchObject({
+          body: "Hello",
+          removeAttachmentIds: ["a1"],
+          addAttachments: [],
+        });
+      });
+
+      it("sends a newly added picture", async () => {
+        pickerOverride.value = { attachments: [added], busy: false };
+        stub(withPictures());
+        renderPage();
+        await startEdit();
+        expect(screen.getByRole("button", { name: "Remove new.jpg" })).toBeInTheDocument();
+        const save = screen.getByRole("button", { name: "Save changes" });
+        expect(save).toBeEnabled();
+
+        await userEvent.click(save);
+        await waitFor(() => expect(patchBody()).toBeDefined());
+        expect(patchBody()).toMatchObject({ removeAttachmentIds: [], addAttachments: [added] });
+      });
+
+      it("can only be saved with words or at least one picture left", async () => {
+        stub(withPictures());
+        renderPage();
+        const bar = await startEdit();
+        await userEvent.click(screen.getByRole("button", { name: "Remove picnic.jpg" }));
+        await userEvent.click(screen.getByRole("button", { name: "Remove cake.jpg" }));
+        // Words are still there.
+        expect(screen.getByRole("button", { name: "Save changes" })).toBeEnabled();
+
+        await userEvent.clear(bar);
+        expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+      });
+
+      it("allows clearing the words while a picture stays", async () => {
+        stub(withPictures());
+        renderPage();
+        const bar = await startEdit();
+        await userEvent.clear(bar);
+        const save = screen.getByRole("button", { name: "Save changes" });
+        expect(save).toBeEnabled();
+
+        await userEvent.click(save);
+        await waitFor(() => expect(patchBody()).toBeDefined());
+        expect(patchBody()).toMatchObject({ body: "", removeAttachmentIds: [] });
+      });
+
+      it("waits for a picture still being prepared before saving", async () => {
+        pickerOverride.value = { attachments: [added], busy: true };
+        stub(withPictures());
+        renderPage();
+        await startEdit();
+        expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+      });
+
+      it("puts the pictures back, and the draft, when the edit is cancelled", async () => {
+        stub(withPictures());
+        renderPage();
+        await startEdit();
+        await userEvent.click(screen.getByRole("button", { name: "Remove picnic.jpg" }));
+        await userEvent.click(screen.getByRole("button", { name: "Cancel editing" }));
+        expect(apiMock).not.toHaveBeenCalledWith(
+          expect.stringContaining("/posts/p"),
+          expect.objectContaining({ method: "PATCH" })
+        );
+
+        // Editing it again starts from what was saved, not from the abandoned removal.
+        await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+        await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+        await screen.findByRole("textbox", { name: "Edit message" });
+        expect(screen.getByRole("button", { name: "Remove picnic.jpg" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Save changes" })).toBeDisabled();
+      });
+
+      it("stops offering more once the message is at its limit", async () => {
+        const many = Array.from({ length: GROUP_POST_MAX_ATTACHMENTS }, (_, i) =>
+          attachment({ id: `m${i}`, filename: `pic${i}.jpg` })
+        );
+        const open = vi.fn();
+        pickerOverride.value = { open };
+        stub(withPictures({ attachments: many }));
+        renderPage();
+        await startEdit();
+        await userEvent.click(screen.getByRole("button", { name: "Add to this message" }));
+        await userEvent.click(screen.getByRole("menuitem", { name: "Photo or file" }));
+        expect(open).not.toHaveBeenCalled();
+
+        // Taking one off makes room again.
+        await userEvent.click(screen.getByRole("button", { name: "Remove pic0.jpg" }));
+        await userEvent.click(screen.getByRole("button", { name: "Add to this message" }));
+        await userEvent.click(screen.getByRole("menuitem", { name: "Photo or file" }));
+        expect(open).toHaveBeenCalledTimes(1);
+      });
     });
 
     it("saves with Enter too", async () => {

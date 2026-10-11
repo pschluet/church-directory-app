@@ -445,6 +445,324 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(found.deletedAt).not.toBeNull();
     });
 
+    describe("a message with only attachments", () => {
+      const attachmentOnly = (suffix: string) => ({
+        photoKey: `photos/${orgId}/group-post/${creator.personId}/01TESTULID00000000000000${suffix}/`,
+        kind: "FILE",
+        filename: "handout.txt",
+        contentType: "text/plain",
+        byteSize: 42,
+      });
+
+      it("accepts an attachment with no text", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const res = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+          attachments: [attachmentOnly("11")],
+        });
+        expect(res.status).toBe(201);
+        expect(res.body.kind).toBe("MESSAGE");
+        expect(res.body.body).toBeNull();
+        expect(res.body.attachments).toHaveLength(1);
+
+        const feed = await as(creator).call("GET", `/api/groups/${groupId}/posts`);
+        const found = feed.body.posts.find((p: { id: string }) => p.id === res.body.id);
+        expect(found.body).toBeNull();
+        expect(found.attachments).toHaveLength(1);
+        expect(found.deletedAt).toBeNull();
+      });
+
+      it("treats whitespace-only text as no text", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const res = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+          body: "   ",
+          attachments: [attachmentOnly("12")],
+        });
+        expect(res.status).toBe(201);
+        expect(res.body.body).toBeNull();
+      });
+
+      it("still refuses a message with neither text nor an attachment", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const none = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {});
+        expect(none.status).toBe(400);
+        const blank = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+          body: "  ",
+          attachments: [],
+        });
+        expect(blank.status).toBe(400);
+      });
+
+      it("accepts one as a reply in a thread", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const root = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+          body: "Pictures please",
+        });
+        const reply = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+          parentPostId: root.body.id,
+          attachments: [attachmentOnly("13")],
+        });
+        expect(reply.status).toBe(201);
+        expect(reply.body.parentPostId).toBe(root.body.id);
+        expect(reply.body.body).toBeNull();
+      });
+
+      it("can be reported, naming what was attached since there is no text to quote", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+          personId: member.personId,
+        });
+        const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+          attachments: [attachmentOnly("14")],
+        });
+
+        const report = await as(member).call(
+          "POST",
+          `/api/groups/${groupId}/posts/${post.body.id}/report`,
+          { reason: "Not appropriate" }
+        );
+        expect(report.status).toBe(204);
+
+        const queue = await as(creator).call("GET", `/api/groups/${groupId}/reports`);
+        expect(queue.body.reports).toHaveLength(1);
+        expect(queue.body.reports[0].postExcerpt).toBe("[Attachment] handout.txt");
+      });
+
+      it("quotes the text, not the attachment, when there is text", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+          personId: member.personId,
+        });
+        const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+          body: "Look at this",
+          attachments: [attachmentOnly("15")],
+        });
+        await as(member).call("POST", `/api/groups/${groupId}/posts/${post.body.id}/report`, {});
+        const queue = await as(creator).call("GET", `/api/groups/${groupId}/reports`);
+        expect(queue.body.reports[0].postExcerpt).toBe("Look at this");
+      });
+
+      it("can have text added to it by editing", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+          attachments: [attachmentOnly("16")],
+        });
+        const edit = await as(creator).call(
+          "PATCH",
+          `/api/groups/${groupId}/posts/${post.body.id}`,
+          { body: "From the picnic" }
+        );
+        expect(edit.status).toBe(200);
+        expect(edit.body.body).toBe("From the picnic");
+        expect(edit.body.attachments).toHaveLength(1);
+      });
+
+      it("still never stores text on an event", async () => {
+        const { rows } = await db().query(
+          "select conname from pg_constraint where conname = 'group_posts_event_has_no_body'"
+        );
+        expect(rows).toHaveLength(1);
+        const groupId = await createGroup(creator, "PUBLIC");
+        await expect(
+          db().query(
+            `insert into group_posts (group_id, author_person_id, kind, body)
+             values ($1, $2, 'EVENT', 'text')`,
+            [groupId, creator.personId]
+          )
+        ).rejects.toThrow(/group_posts_event_has_no_body/);
+      });
+    });
+
+    describe("editing a message's attachments", () => {
+      const file = (suffix: string, filename = `file${suffix}.txt`, owner = creator) => ({
+        photoKey: `photos/${orgId}/group-post/${owner.personId}/01TESTULID00000000000000${suffix}/`,
+        kind: "FILE",
+        filename,
+        contentType: "text/plain",
+        byteSize: 42,
+      });
+
+      const patch = (groupId: string, postId: string, body: unknown) =>
+        as(creator).call("PATCH", `/api/groups/${groupId}/posts/${postId}`, body);
+
+      const filenames = (post: { attachments: { filename: string }[] }) =>
+        post.attachments.map((a) => a.filename);
+
+      async function postWith(groupId: string, count: number, body: string | null = "Hi") {
+        const res = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+          body: body ?? undefined,
+          attachments: Array.from({ length: count }, (_, i) => file(`2${i}`, `orig${i}.txt`)),
+        });
+        expect(res.status).toBe(201);
+        return res.body;
+      }
+
+      it("removes one attachment, keeps the other, and marks the post edited", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await postWith(groupId, 2);
+        expect(post.editedAt).toBeNull();
+
+        const res = await patch(groupId, post.id, {
+          body: "Hi",
+          removeAttachmentIds: [post.attachments[0].id],
+        });
+        expect(res.status).toBe(200);
+        expect(filenames(res.body)).toEqual(["orig1.txt"]);
+        expect(res.body.editedAt).not.toBeNull();
+      });
+
+      it("deletes the removed attachment's row", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await postWith(groupId, 2);
+        await patch(groupId, post.id, { removeAttachmentIds: [post.attachments[0].id] });
+
+        const { rows } = await db().query(
+          "select id from group_post_attachments where post_id = $1",
+          [post.id]
+        );
+        expect((rows as { id: string }[]).map((r) => r.id)).toEqual([post.attachments[1].id]);
+      });
+
+      it("adds attachments after the ones it already has, in order", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await postWith(groupId, 2);
+        const res = await patch(groupId, post.id, {
+          body: "Hi",
+          addAttachments: [file("31", "added1.txt"), file("32", "added2.txt")],
+        });
+        expect(res.status).toBe(200);
+        expect(filenames(res.body)).toEqual(["orig0.txt", "orig1.txt", "added1.txt", "added2.txt"]);
+        expect(res.body.editedAt).not.toBeNull();
+      });
+
+      it("removes and adds in one edit, the new one landing last", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await postWith(groupId, 2);
+        const res = await patch(groupId, post.id, {
+          removeAttachmentIds: [post.attachments[0].id],
+          addAttachments: [file("33", "added.txt")],
+        });
+        expect(filenames(res.body)).toEqual(["orig1.txt", "added.txt"]);
+      });
+
+      it("can take every attachment off a message that keeps its text", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await postWith(groupId, 2);
+        const res = await patch(groupId, post.id, {
+          body: "Hi",
+          removeAttachmentIds: post.attachments.map((a: { id: string }) => a.id),
+        });
+        expect(res.status).toBe(200);
+        expect(res.body.attachments).toEqual([]);
+        expect(res.body.body).toBe("Hi");
+      });
+
+      it("can clear the text while an attachment stays", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await postWith(groupId, 1);
+        const res = await patch(groupId, post.id, { body: "   " });
+        expect(res.status).toBe(200);
+        expect(res.body.body).toBeNull();
+        expect(res.body.attachments).toHaveLength(1);
+      });
+
+      it("refuses to leave a message with no text and no attachments", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await postWith(groupId, 1);
+        const bothGone = await patch(groupId, post.id, {
+          body: "",
+          removeAttachmentIds: [post.attachments[0].id],
+        });
+        expect(bothGone.status).toBe(400);
+
+        // An attachment-only message cannot lose its only attachment, either.
+        const onlyPicture = await postWith(groupId, 1, null);
+        expect(onlyPicture.body).toBeNull();
+        const stripped = await patch(groupId, onlyPicture.id, {
+          removeAttachmentIds: [onlyPicture.attachments[0].id],
+        });
+        expect(stripped.status).toBe(400);
+
+        const feed = await as(creator).call("GET", `/api/groups/${groupId}/posts`);
+        const unchanged = feed.body.posts.find((p: { id: string }) => p.id === post.id);
+        expect(unchanged.attachments).toHaveLength(1);
+      });
+
+      it("refuses more than the limit in total", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await postWith(groupId, 9);
+        const res = await patch(groupId, post.id, {
+          addAttachments: [file("41", "a.txt"), file("42", "b.txt")],
+        });
+        expect(res.status).toBe(400);
+
+        const ok = await patch(groupId, post.id, { addAttachments: [file("41", "a.txt")] });
+        expect(ok.status).toBe(200);
+        expect(ok.body.attachments).toHaveLength(10);
+      });
+
+      it("counts what an edit removes towards the limit", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await postWith(groupId, 10);
+        const res = await patch(groupId, post.id, {
+          removeAttachmentIds: [post.attachments[0].id],
+          addAttachments: [file("43", "swap.txt")],
+        });
+        expect(res.status).toBe(200);
+        expect(res.body.attachments).toHaveLength(10);
+      });
+
+      it("refuses to remove an attachment that is on another post", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const mine = await postWith(groupId, 1);
+        const other = await postWith(groupId, 1);
+        const res = await patch(groupId, mine.id, { removeAttachmentIds: [other.attachments[0].id] });
+        expect(res.status).toBe(400);
+
+        const feed = await as(creator).call("GET", `/api/groups/${groupId}/posts`);
+        const untouched = feed.body.posts.find((p: { id: string }) => p.id === other.id);
+        expect(untouched.attachments).toHaveLength(1);
+      });
+
+      it("refuses an attachment somebody else uploaded", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await postWith(groupId, 1);
+        const res = await patch(groupId, post.id, {
+          addAttachments: [file("44", "theirs.txt", member)],
+        });
+        expect(res.status).toBe(400);
+      });
+
+      it("refuses attachment changes on an event", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+          kind: "EVENT",
+          event: { eventTitle: "Potluck", eventDate: "2030-01-01" },
+        });
+        const res = await patch(groupId, event.body.id, { addAttachments: [file("45")] });
+        expect(res.status).toBe(400);
+      });
+
+      it("leaves attachments alone when an edit changes only the text", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        const post = await postWith(groupId, 2);
+        const res = await patch(groupId, post.id, { body: "Reworded" });
+        expect(res.status).toBe(200);
+        expect(filenames(res.body)).toEqual(["orig0.txt", "orig1.txt"]);
+      });
+
+      it("will not let someone else change a message's attachments", async () => {
+        const groupId = await createGroup(creator, "PUBLIC");
+        await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+          personId: member.personId,
+        });
+        const post = await postWith(groupId, 1);
+        const res = await as(member).call("PATCH", `/api/groups/${groupId}/posts/${post.id}`, {
+          removeAttachmentIds: [post.attachments[0].id],
+        });
+        expect(res.status).toBe(403);
+      });
+    });
+
     it("purges a post's attachments, not just its visible content, on delete", async () => {
       const groupId = await createGroup(creator, "PUBLIC");
       const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {

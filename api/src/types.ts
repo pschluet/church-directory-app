@@ -1046,11 +1046,12 @@ export const groupPostCreateSchema = z
     event: groupEventFieldsSchema.optional(),
   })
   .superRefine((value, ctx) => {
-    if (value.kind === "MESSAGE" && !value.body) {
+    // Words, or at least a picture or file to show: an attachment alone is a message.
+    if (value.kind === "MESSAGE" && !value.body && value.attachments.length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ["body"],
-        message: "Say something",
+        message: "Say something, or attach a picture or file",
       });
     }
     if (value.kind === "EVENT" && !value.event) {
@@ -1071,7 +1072,12 @@ export const groupPostCreateSchema = z
 export type GroupPostCreate = z.infer<typeof groupPostCreateSchema>;
 
 export const groupPostUpdateSchema = z.object({
-  body: z.string().trim().min(1, "Say something").max(GROUP_POST_BODY_MAX).optional(),
+  /** Absent leaves the text alone; blank clears it, which only a message that keeps an attachment may do. */
+  body: trimmedOptional(GROUP_POST_BODY_MAX),
+  /** Ids of this message's existing attachments to take off it. */
+  removeAttachmentIds: z.array(uuidSchema).max(GROUP_POST_MAX_ATTACHMENTS).optional(),
+  /** Newly uploaded attachments to add after the ones it already has. */
+  addAttachments: z.array(groupPostAttachmentSchema).max(GROUP_POST_MAX_ATTACHMENTS).optional(),
   /** Absent leaves mentions alone, so an event-only edit cannot wipe them. */
   mentionedAppUserIds: z.array(uuidSchema).max(50).optional(),
   event: groupEventFieldsSchema.optional(),

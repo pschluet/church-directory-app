@@ -19,6 +19,7 @@ import {
   GROUP_NOTIFICATION_PREFS,
   GROUP_NOTIFICATION_PREF_LABELS,
   GROUP_POST_BODY_MAX,
+  GROUP_POST_MAX_ATTACHMENTS,
   GROUP_REPORT_REASON_MAX,
   GROUP_TITLE_MAX,
   GROUP_VISIBILITIES,
@@ -1611,13 +1612,23 @@ function AttachmentStrip({
   attachments: GroupPostDto["attachments"];
   onMediaLoad?: (() => void) | undefined;
 }) {
+  const [zoomed, setZoomed] = useState<GroupPostDto["attachments"][number] | null>(null);
   if (attachments.length === 0) return null;
   return (
     <ul className="mt-2 flex flex-wrap gap-2">
+      {zoomed?.fullUrl && (
+        <PhotoLightbox src={zoomed.fullUrl} alt={zoomed.filename} onClose={() => setZoomed(null)} />
+      )}
       {attachments.map((attachment) =>
         attachment.kind === "IMAGE" ? (
           <li key={attachment.id}>
-            <a href={attachment.fullUrl ?? undefined} target="_blank" rel="noreferrer">
+            <button
+              type="button"
+              onClick={() => setZoomed(attachment)}
+              disabled={!attachment.fullUrl}
+              aria-label={`Show ${attachment.filename} full screen`}
+              className="block rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+            >
               <img
                 src={attachment.thumbUrl ?? undefined}
                 alt={attachment.filename}
@@ -1627,7 +1638,7 @@ function AttachmentStrip({
                 className="h-24 w-24 rounded-md border border-line object-cover"
                 loading="lazy"
               />
-            </a>
+            </button>
           </li>
         ) : (
           <li key={attachment.id}>
@@ -2232,6 +2243,8 @@ function ChatComposer({
   const [error, setError] = useState<string | null>(null);
   const picker = useGroupAttachmentPicker();
   const mentionable = useMentionable(members);
+  // While editing: ids of the message's existing attachments taken off it so far.
+  const [removedIds, setRemovedIds] = useState<string[]>([]);
 
   /*
    * "I am typing", at most once per interval and only from the main bar -- a
@@ -2247,6 +2260,9 @@ function ChatComposer({
   const draft = useRef<string | null>(null);
   const editingId = editing?.id;
   useEffect(() => {
+    // Attachment changes belong to one edit; neither starting nor ending one carries them over.
+    setRemovedIds([]);
+    picker.reset();
     if (editing) {
       draft.current ??= body;
       setBody(editing.body ?? "");
@@ -2269,10 +2285,22 @@ function ChatComposer({
     void Promise.resolve(api(`/groups/${groupId}/typing`, { method: "POST" })).catch(() => {});
   }
 
-  const unchanged = editing !== null && body.trim() === (editing.body ?? "").trim();
+  // What an edited message keeps of its own attachments, and so what it will have in all.
+  const keptAttachments = (editing?.attachments ?? []).filter((a) => !removedIds.includes(a.id));
+  const attachmentCount = keptAttachments.length + picker.attachments.length;
+  const attachmentsFull = attachmentCount >= GROUP_POST_MAX_ATTACHMENTS;
+
+  const unchanged =
+    editing !== null &&
+    body.trim() === (editing.body ?? "").trim() &&
+    removedIds.length === 0 &&
+    picker.attachments.length === 0;
+  // Words, or at least one picture or file left on it.
+  const editHasContent = body.trim() !== "" || attachmentCount > 0;
+  const canSaveEdit = !busy && !picker.busy && editHasContent && !unchanged;
 
   async function saveEdit(): Promise<void> {
-    if (!editing || busy || body.trim() === "" || unchanged) return;
+    if (!editing || !canSaveEdit) return;
     setBusy(true);
     setError(null);
     try {
@@ -2280,8 +2308,14 @@ function ChatComposer({
       // adds or removes the mention -- and only the newly added are notified.
       await api(`/groups/${groupId}/posts/${editing.id}`, {
         method: "PATCH",
-        body: { body, mentionedAppUserIds: findMentionedAppUserIds(body, mentionable) },
+        body: {
+          body,
+          mentionedAppUserIds: findMentionedAppUserIds(body, mentionable),
+          removeAttachmentIds: removedIds,
+          addAttachments: picker.attachments,
+        },
       });
+      picker.reset();
       onEditDone?.();
       await onPosted();
     } catch (err) {
@@ -2291,9 +2325,12 @@ function ChatComposer({
     }
   }
 
+  // Words, or a picture or file with no words. Not while one is still uploading.
+  const canSend = body.trim() !== "" || (picker.attachments.length > 0 && !picker.busy);
+
   async function submit(): Promise<void> {
     if (editing) return void saveEdit();
-    if (busy || body.trim() === "") return;
+    if (busy || !canSend) return;
     setBusy(true);
     setError(null);
     try {
@@ -2334,8 +2371,31 @@ function ChatComposer({
           Editing message
         </p>
       )}
-      {picker.attachments.length > 0 && !editing && (
+      {(picker.attachments.length > 0 || keptAttachments.length > 0) && (
         <ul className="flex flex-wrap gap-2">
+          {keptAttachments.map((attachment) => (
+            <li key={attachment.id} className="relative">
+              {attachment.kind === "IMAGE" ? (
+                <img
+                  src={attachment.thumbUrl ?? undefined}
+                  alt={attachment.filename}
+                  className="h-16 w-16 rounded-md border border-line object-cover"
+                />
+              ) : (
+                <span className="flex h-16 items-center rounded-md border border-line bg-surface-muted px-2 text-xs">
+                  {attachment.filename}
+                </span>
+              )}
+              <button
+                type="button"
+                aria-label={`Remove ${attachment.filename}`}
+                onClick={() => setRemovedIds((previous) => [...previous, attachment.id])}
+                className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full border border-line bg-surface text-sm leading-none text-ink-muted shadow-sm hover:text-primary"
+              >
+                ×
+              </button>
+            </li>
+          ))}
           {picker.attachments.map((attachment) => (
             <li key={attachment.photoKey} className="relative">
               {attachment.kind === "IMAGE" ? (
@@ -2367,25 +2427,25 @@ function ChatComposer({
           editing ? "border-accent" : "border-line"
         }`}
       >
-        {/* Attachments cannot be changed on a message already sent. */}
-        {!editing && (
-          <MenuButton
-            portal
-            align="left"
-            label="Add to this message"
-            trigger={<PlusIcon />}
-            className="shrink-0"
+        {/* An edit can add pictures and files, but a message cannot become an event. */}
+        <MenuButton
+          portal
+          align="left"
+          label="Add to this message"
+          trigger={<PlusIcon />}
+          className="shrink-0"
+        >
+          <MenuItem
+            onSelect={() => {
+              if (!picker.busy && !attachmentsFull) picker.open();
+            }}
           >
-            <MenuItem
-              onSelect={() => {
-                if (!picker.busy && !picker.full) picker.open();
-              }}
-            >
-              Photo or file
-            </MenuItem>
-            {canStartEvent && <MenuItem onSelect={() => setEventOpen(true)}>Event…</MenuItem>}
-          </MenuButton>
-        )}
+            Photo or file
+          </MenuItem>
+          {canStartEvent && !editing && (
+            <MenuItem onSelect={() => setEventOpen(true)}>Event…</MenuItem>
+          )}
+        </MenuButton>
 
         <MentionTextarea
           bare
@@ -2417,7 +2477,7 @@ function ChatComposer({
             <button
               type="button"
               aria-label="Save changes"
-              disabled={busy || body.trim() === "" || unchanged}
+              disabled={!canSaveEdit}
               onClick={() => void saveEdit()}
               className="tap-target inline-flex items-center justify-center rounded-full text-green-600 transition hover:bg-green-50 disabled:cursor-not-allowed disabled:text-ink-muted disabled:opacity-60"
             >
@@ -2428,7 +2488,7 @@ function ChatComposer({
           <button
             type="button"
             aria-label="Send"
-            disabled={busy || body.trim() === ""}
+            disabled={busy || !canSend}
             onClick={() => void submit()}
             className="tap-target inline-flex shrink-0 items-center justify-center rounded-md text-primary transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:text-ink-muted disabled:opacity-60"
           >
@@ -2928,6 +2988,7 @@ function RsvpListModal({
 
 function FilesTab({ groupId }: { groupId: string }) {
   const { organizationId } = useMe();
+  const [zoomed, setZoomed] = useState<{ src: string; alt: string } | null>(null);
   const filesQuery = useQuery({
     queryKey: qk.groupFiles(organizationId, groupId),
     queryFn: ({ signal }) =>
@@ -2947,6 +3008,9 @@ function FilesTab({ groupId }: { groupId: string }) {
 
   return (
     <ul className="divide-y divide-line rounded-lg border border-line bg-surface">
+      {zoomed && (
+        <PhotoLightbox src={zoomed.src} alt={zoomed.alt} onClose={() => setZoomed(null)} />
+      )}
       {files.map((file) => (
         <li key={file.attachment.id} className="flex items-start justify-between gap-3 p-3">
           <div className="flex min-w-0 items-start gap-3">
@@ -2976,15 +3040,27 @@ function FilesTab({ groupId }: { groupId: string }) {
               </p>
             </div>
           </div>
-          <a
-            href={file.attachment.fullUrl ?? file.attachment.downloadUrl ?? undefined}
-            target={file.attachment.fullUrl ? "_blank" : undefined}
-            download={file.attachment.downloadUrl ? file.attachment.filename : undefined}
-            rel="noreferrer"
-            className="shrink-0 font-bold text-accent hover:underline"
-          >
-            Open
-          </a>
+          {file.attachment.kind === "IMAGE" && file.attachment.fullUrl ? (
+            <button
+              type="button"
+              onClick={() =>
+                setZoomed({ src: file.attachment.fullUrl ?? "", alt: file.attachment.filename })
+              }
+              className="shrink-0 font-bold text-accent hover:underline"
+            >
+              Open
+            </button>
+          ) : (
+            <a
+              href={file.attachment.fullUrl ?? file.attachment.downloadUrl ?? undefined}
+              target={file.attachment.fullUrl ? "_blank" : undefined}
+              download={file.attachment.downloadUrl ? file.attachment.filename : undefined}
+              rel="noreferrer"
+              className="shrink-0 font-bold text-accent hover:underline"
+            >
+              Open
+            </a>
+          )}
         </li>
       ))}
     </ul>

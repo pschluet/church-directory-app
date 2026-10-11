@@ -64,6 +64,7 @@ import {
   groupSettingsSchema,
   groupUpdateSchema,
   groupVisibilityChangeSchema,
+  GROUP_POST_MAX_ATTACHMENTS,
   fullName,
   photoAttachSchema,
   uuidSchema,
@@ -72,6 +73,7 @@ import {
   type GroupJoinRequestDto,
   type GroupLiveDto,
   type GroupMemberRole,
+  type GroupPostAttachment,
   type GroupPostDto,
   type GroupPostReportDto,
   type GroupSummaryDto,
@@ -1119,6 +1121,44 @@ routes.get("/:id/events", async (c) => {
   return c.json({ events });
 });
 
+/** Appends attachments to a post, numbering them from `startPosition`. */
+async function insertAttachments(
+  tx: Queryable,
+  postId: string,
+  attachments: GroupPostAttachment[],
+  startPosition: number
+): Promise<void> {
+  if (attachments.length === 0) return;
+  await tx.query(
+    `insert into group_post_attachments
+       (post_id, photo_key, kind, filename, content_type, byte_size, width, height, position)
+     select $1, key, kind, filename, content_type, byte_size, width, height, position - 1 + $9
+       from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::int[], $8::int[])
+            with ordinality as t(key, kind, filename, content_type, byte_size, width, height, position)`,
+    [
+      postId,
+      attachments.map((a) => a.photoKey),
+      attachments.map((a) => a.kind),
+      attachments.map((a) => a.filename),
+      attachments.map((a) => a.contentType),
+      attachments.map((a) => a.byteSize),
+      attachments.map((a) => a.width ?? null),
+      attachments.map((a) => a.height ?? null),
+      startPosition,
+    ]
+  );
+}
+
+/** Removes the stored files behind attachment rows that have already been deleted. */
+async function purgeAttachmentFiles(
+  attachments: { photo_key: string; kind: "IMAGE" | "FILE" }[]
+): Promise<void> {
+  for (const attachment of attachments) {
+    if (attachment.kind === "IMAGE") await deletePhoto(attachment.photo_key);
+    else await deleteGroupAttachmentFile(attachment.photo_key);
+  }
+}
+
 /** Every attached key must be one this caller uploaded via POST /uploads/group-attachment. */
 function assertAttachmentsBelongToCaller(
   organizationId: string,
@@ -1185,25 +1225,7 @@ routes.post("/:id/posts", async (c) => {
       );
     }
 
-    if (payload.attachments.length > 0) {
-      await tx.query(
-        `insert into group_post_attachments
-           (post_id, photo_key, kind, filename, content_type, byte_size, width, height, position)
-         select $1, key, kind, filename, content_type, byte_size, width, height, position - 1
-           from unnest($2::text[], $3::text[], $4::text[], $5::text[], $6::int[], $7::int[], $8::int[])
-                with ordinality as t(key, kind, filename, content_type, byte_size, width, height, position)`,
-        [
-          created.id,
-          payload.attachments.map((a) => a.photoKey),
-          payload.attachments.map((a) => a.kind),
-          payload.attachments.map((a) => a.filename),
-          payload.attachments.map((a) => a.contentType),
-          payload.attachments.map((a) => a.byteSize),
-          payload.attachments.map((a) => a.width ?? null),
-          payload.attachments.map((a) => a.height ?? null),
-        ]
-      );
-    }
+    await insertAttachments(tx, created.id, payload.attachments, 0);
 
     if (payload.mentionedAppUserIds.length > 0) {
       await tx.query(
@@ -1261,14 +1283,61 @@ routes.patch("/:id/posts/:postId", async (c) => {
     await assertMentionsAreMembers(db, id, payload.mentionedAppUserIds);
   }
 
+  const removeIds = payload.removeAttachmentIds ?? [];
+  const addAttachments = payload.addAttachments ?? [];
+  const changesAttachments = removeIds.length > 0 || addAttachments.length > 0;
+  let removedAttachments: { photo_key: string; kind: "IMAGE" | "FILE" }[] = [];
+
+  if (row.kind === "MESSAGE") {
+    const { rows: current } = await db.query<{ id: string }>(
+      "select id from group_post_attachments where post_id = $1",
+      [postId]
+    );
+    const currentIds = new Set(current.map((a) => a.id));
+    if (!removeIds.every((attachmentId) => currentIds.has(attachmentId))) {
+      throw new HTTPException(400, { message: "That attachment is not on this post" });
+    }
+    for (const attachment of addAttachments) {
+      assertAttachmentsBelongToCaller(organizationId, caller.personId, attachment.photoKey);
+    }
+    const remaining = currentIds.size - new Set(removeIds).size + addAttachments.length;
+    if (remaining > GROUP_POST_MAX_ATTACHMENTS) {
+      throw new HTTPException(400, {
+        message: `A message can have at most ${GROUP_POST_MAX_ATTACHMENTS} attachments`,
+      });
+    }
+    const resultingBody = payload.body !== undefined ? payload.body : row.body;
+    if (!resultingBody && remaining === 0) {
+      throw new HTTPException(400, { message: "Say something, or attach a picture or file" });
+    }
+  } else if (changesAttachments) {
+    throw new HTTPException(400, { message: "An event cannot have attachments" });
+  }
+
   let notifiedMention: string[] = [];
 
   await db.transaction(async (tx) => {
-    if (payload.body !== undefined) {
+    if (payload.body !== undefined || changesAttachments) {
       await tx.query("update group_posts set body = $2, edited_at = now() where id = $1", [
         postId,
-        payload.body,
+        payload.body !== undefined ? payload.body : row.body,
       ]);
+    }
+    if (removeIds.length > 0) {
+      const { rows } = await tx.query<{ photo_key: string; kind: "IMAGE" | "FILE" }>(
+        `delete from group_post_attachments
+          where post_id = $1 and id = any($2::uuid[])
+          returning photo_key, kind`,
+        [postId, removeIds]
+      );
+      removedAttachments = rows;
+    }
+    if (addAttachments.length > 0) {
+      const { rows } = await tx.query<{ next: number }>(
+        "select coalesce(max(position) + 1, 0) as next from group_post_attachments where post_id = $1",
+        [postId]
+      );
+      await insertAttachments(tx, postId, addAttachments, Number(rows[0]?.next ?? 0));
     }
     if (payload.event && row.kind === "EVENT") {
       await tx.query(
@@ -1337,6 +1406,8 @@ routes.patch("/:id/posts/:postId", async (c) => {
     }
   });
 
+  await purgeAttachmentFiles(removedAttachments);
+
   await pushGroupActivity(db, notifiedMention, group.title, id, "post");
 
   if (payload.event && row.kind === "EVENT") {
@@ -1386,10 +1457,7 @@ routes.delete("/:id/posts/:postId", async (c) => {
     [postId, caller.personId]
   );
   await db.query("delete from group_post_attachments where post_id = $1", [postId]);
-  for (const attachment of attachments) {
-    if (attachment.kind === "IMAGE") await deletePhoto(attachment.photo_key);
-    else await deleteGroupAttachmentFile(attachment.photo_key);
-  }
+  await purgeAttachmentFiles(attachments);
 
   if (!isMine) {
     await audit(db, caller, {
@@ -1519,8 +1587,20 @@ routes.post("/:id/posts/:postId/report", async (c) => {
     throw new HTTPException(400, { message: "You cannot report your own post" });
   }
 
-  const excerpt =
-    row.kind === "EVENT" ? `[Event] ${row.event_title ?? ""}` : (row.body ?? "").slice(0, 280);
+  // A message of only pictures or files has no text to quote, so name what was
+  // attached; an empty excerpt would leave the moderation queue showing nothing.
+  let excerpt: string;
+  if (row.kind === "EVENT") {
+    excerpt = `[Event] ${row.event_title ?? ""}`;
+  } else if (row.body) {
+    excerpt = row.body.slice(0, 280);
+  } else {
+    const { rows: attached } = await db.query<{ filename: string }>(
+      "select filename from group_post_attachments where post_id = $1 order by position",
+      [postId]
+    );
+    excerpt = `[Attachment] ${attached.map((a) => a.filename).join(", ")}`.slice(0, 280);
+  }
 
   const created = await one<{ id: string }>(
     db,
