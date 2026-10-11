@@ -307,7 +307,9 @@ function GroupCard({
       )}
 
       <div className="flex flex-1 flex-col gap-2 p-4">
-        <div className="flex items-start justify-between gap-2">
+        {/* With no photo the star button sits over the top-right of this row, so
+            the row stops short of it and a long name wraps instead of running under. */}
+        <div className={`flex items-start justify-between gap-2 ${photo ? "" : "pr-8"}`}>
           <h3 className="min-w-0 break-words text-lg font-bold leading-snug text-ink transition group-hover:text-accent">
             <Highlight text={group.title} ranges={highlightRanges(group.title, terms)} />
           </h3>
