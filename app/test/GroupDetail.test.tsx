@@ -112,6 +112,7 @@ function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
     canEdit: false,
     canDelete: false,
     canReport: false,
+    canRestore: false,
     ...overrides,
   };
 }
@@ -698,6 +699,62 @@ describe("GroupDetail", () => {
       ).not.toBeInTheDocument();
     });
 
+    it("lets the person who cancelled an event re-activate it from its menu", async () => {
+      const cancelled = {
+        ...event({}, "e-cancelled"),
+        deletedAt: "2026-10-09T12:00:00.000Z",
+        deletedBySelf: true,
+        canRestore: true,
+      };
+      stub({ pages: [{ posts: [cancelled], nextCursor: null }] });
+      renderPage();
+      await screen.findByText("Cancelled");
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Re-activate event" }));
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts/e-cancelled/restore", {
+          method: "POST",
+        })
+      );
+    });
+
+    it("lets them re-activate it with a long press on a phone", async () => {
+      const cancelled = {
+        ...event({}, "e-cancelled"),
+        deletedAt: "2026-10-09T12:00:00.000Z",
+        deletedBySelf: true,
+        canRestore: true,
+      };
+      stub({ pages: [{ posts: [cancelled], nextCursor: null }] });
+      renderPage();
+      const row = (await screen.findByText("Cancelled")).closest("li")!;
+      fireEvent.pointerDown(row, { pointerType: "touch", clientX: 5, clientY: 5 });
+      const drawer = await screen.findByRole("dialog", { name: "Message" });
+      await userEvent.click(within(drawer).getByRole("button", { name: "Re-activate event" }));
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts/e-cancelled/restore", {
+          method: "POST",
+        })
+      );
+    });
+
+    it("offers nothing to anyone who cannot re-activate a cancelled event", async () => {
+      const cancelled = {
+        ...event({}, "e-cancelled"),
+        deletedAt: "2026-10-09T12:00:00.000Z",
+        deletedBySelf: false,
+      };
+      stub({ pages: [{ posts: [cancelled], nextCursor: null }] });
+      renderPage();
+      const row = (await screen.findByText("Cancelled")).closest("li")!;
+      expect(
+        screen.queryByRole("button", { name: "Actions for this post" })
+      ).not.toBeInTheDocument();
+      fireEvent.pointerDown(row, { pointerType: "touch", clientX: 5, clientY: 5 });
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(screen.queryByRole("dialog", { name: "Message" })).not.toBeInTheDocument();
+    });
+
     it("marks an event that has gone as Past", async () => {
       stub({ pages: [{ posts: [event({ eventDate: "2020-01-01" })], nextCursor: null }] });
       renderPage();
@@ -758,6 +815,29 @@ describe("GroupDetail", () => {
       renderPage();
       await screen.findByRole("heading", { name: "Parish Potluck" });
       expect(screen.queryByRole("button", { name: "More guests" })).not.toBeInTheDocument();
+    });
+
+    it("lists a cancelled event on the Events tab, marked cancelled and without RSVP", async () => {
+      const cancelled = {
+        ...event({ title: "Called Off" }, "e-cancelled"),
+        deletedAt: "2026-10-09T12:00:00.000Z",
+        deletedBySelf: true,
+      };
+      const live = event({ title: "Still On" }, "e-live");
+      apiMock.mockImplementation((path: string) => {
+        if (path === "/groups/g1") return Promise.resolve(group());
+        if (path === "/groups/g1/live") return Promise.resolve({ activityAt: "x", typing: [] });
+        if (path === "/groups/g1/events") return Promise.resolve({ events: [cancelled, live] });
+        return Promise.resolve({ posts: [], nextCursor: null });
+      });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Events" }));
+      await screen.findByRole("heading", { name: "Still On" });
+
+      expect(screen.getByRole("heading", { name: "Called Off" })).toBeInTheDocument();
+      expect(screen.getByText("Cancelled")).toBeInTheDocument();
+      // RSVP controls only on the event that is still on.
+      expect(screen.getAllByRole("group", { name: "Your RSVP" })).toHaveLength(1);
     });
 
     it("lists upcoming events soonest first and past ones most recent first, as cards", async () => {

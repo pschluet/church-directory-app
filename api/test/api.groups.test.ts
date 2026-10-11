@@ -1185,10 +1185,106 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(post.canEdit).toBe(false);
     });
 
-    it("is left off the Events tab", async () => {
-      const { groupId } = await cancelledEvent();
+    it("is on the Events tab too, with its details and marked cancelled", async () => {
+      const { groupId, postId } = await cancelledEvent();
       const res = await as(member).call("GET", `/api/groups/${groupId}/events`);
-      expect(res.body.events).toEqual([]);
+      expect(res.body.events).toHaveLength(1);
+      expect(res.body.events[0]).toMatchObject({
+        id: postId,
+        deletedAt: expect.any(String),
+        event: { title: "Potluck", eventDate: "2030-01-01", location: "Parish Hall" },
+      });
+    });
+
+    it("can be re-activated by the person who posted and cancelled it, RSVPs intact", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Potluck", eventDate: "2030-01-01" },
+      });
+      const postId = event.body.id as string;
+      await as(member).call("PUT", `/api/groups/${groupId}/posts/${postId}/rsvp`, {
+        response: "YES",
+        guestCount: 2,
+      });
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${postId}`);
+
+      const cancelled = await as(creator).call("GET", `/api/groups/${groupId}/posts/${postId}`);
+      expect(cancelled.body.canRestore).toBe(true);
+      // Not for anyone else.
+      const other = await as(member).call("GET", `/api/groups/${groupId}/posts/${postId}`);
+      expect(other.body.canRestore).toBe(false);
+
+      const res = await as(creator).call("POST", `/api/groups/${groupId}/posts/${postId}/restore`);
+      expect(res.status).toBe(200);
+      expect(res.body.deletedAt).toBeNull();
+      expect(res.body.event.rsvpCounts.yes).toBe(1);
+      expect(res.body.canRestore).toBe(false);
+      expect(res.body.canEdit).toBe(true);
+
+      // RSVPs work again.
+      const rsvp = await as(member).call("PUT", `/api/groups/${groupId}/posts/${postId}/rsvp`, {
+        response: "MAYBE",
+        guestCount: 0,
+      });
+      expect(rsvp.status).toBe(200);
+    });
+
+    it("cannot be re-activated by somebody else, or when a group admin removed it", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const mine = await as(member).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Member's event", eventDate: "2030-01-01" },
+      });
+      const postId = mine.body.id as string;
+      // The group's admin (creator) removes it, not the member who posted it.
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${postId}`);
+
+      const author = await as(member).call("GET", `/api/groups/${groupId}/posts/${postId}`);
+      expect(author.body.canRestore).toBe(false);
+      expect(
+        (await as(member).call("POST", `/api/groups/${groupId}/posts/${postId}/restore`)).status
+      ).toBe(403);
+      // Nor can an admin who is not the author put it back.
+      expect(
+        (await as(creator).call("POST", `/api/groups/${groupId}/posts/${postId}/restore`)).status
+      ).toBe(403);
+    });
+
+    it("refuses to restore an event that is not cancelled, a message, or in an archived group", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const live = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "On", eventDate: "2030-01-01" },
+      });
+      expect(
+        (await as(creator).call("POST", `/api/groups/${groupId}/posts/${live.body.id}/restore`))
+          .status
+      ).toBe(409);
+
+      const message = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hi",
+      });
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${message.body.id}`);
+      expect(
+        (await as(creator).call("POST", `/api/groups/${groupId}/posts/${message.body.id}/restore`))
+          .status
+      ).toBe(404);
+      const gone = await as(creator).call("GET", `/api/groups/${groupId}/posts/${message.body.id}`);
+      expect(gone.body.canRestore).toBe(false);
+
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${live.body.id}`);
+      await as(creator).call("POST", `/api/groups/${groupId}/archive`);
+      expect(
+        (await as(creator).call("POST", `/api/groups/${groupId}/posts/${live.body.id}/restore`))
+          .status
+      ).toBe(409);
     });
 
     it("can no longer be RSVP'd to", async () => {

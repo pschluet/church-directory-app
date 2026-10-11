@@ -1249,6 +1249,8 @@ export interface GroupPostDto {
   canEdit: boolean;
   canDelete: boolean;
   canReport: boolean;
+  /** A cancelled event its own author cancelled can be re-activated by that author. */
+  canRestore: boolean;
 }
 
 export interface GroupPostReportDto {

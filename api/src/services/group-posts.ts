@@ -225,6 +225,7 @@ export function toGroupPostDto(
     canEdit: !isDeleted && isMine,
     canDelete: !isDeleted && (isMine || access.canModerate),
     canReport: !isDeleted && !isMine && access.canReadContent,
+    canRestore: isDeleted && row.kind === "EVENT" && isMine && row.deleted_by_self === true,
   };
 }
 

@@ -1265,6 +1265,13 @@ function ChatRow({
     },
   });
 
+  const restore = useMutation({
+    mutationFn: () => api(`/groups/${groupId}/posts/${post.id}/restore`, { method: "POST" }),
+    onSuccess: async () => {
+      await onChanged();
+    },
+  });
+
   const isDeleted = post.deletedAt !== null;
   // Replying lives in the actions menu rather than inline, so a row stays just
   // the message, and it opens the thread page -- where the reply bar is. Not for
@@ -1298,6 +1305,9 @@ function ChatRow({
     actions.push({ label: "Delete", danger: true, onSelect: () => setConfirmDelete(true) });
   if (!isDeleted && post.canReport)
     actions.push({ label: "Report", onSelect: () => onReport(post) });
+  // A cancelled event can be put back by the person who cancelled it.
+  if (post.canRestore)
+    actions.push({ label: "Re-activate event", onSelect: () => restore.mutate() });
 
   /*
    * Long press, for a touch screen: it opens a drawer with the actions, because
@@ -1312,7 +1322,8 @@ function ChatRow({
   const press = useRef<{ timer: number; x: number; y: number } | null>(null);
   /** The lift that ends a long press must not also click whatever is under the finger. */
   const swallowClick = useRef(false);
-  const sheetAvailable = !isDeleted && !editing && (actions.length > 0 || Boolean(post.body));
+  const sheetAvailable =
+    (!isDeleted || post.canRestore) && !editing && (actions.length > 0 || Boolean(post.body));
 
   function cancelPress(): void {
     if (press.current) window.clearTimeout(press.current.timer);
