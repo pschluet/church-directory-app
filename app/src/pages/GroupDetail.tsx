@@ -745,7 +745,7 @@ function MessagesTab({
   // The page does not scroll here -- the pane does, and the bar stays put.
   usePageScrollLock();
   const paneRef = useRef<HTMLDivElement>(null);
-  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 200 });
+  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 120, followPan: true });
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
   const setScroller = useCallback((node: HTMLDivElement | null) => {
@@ -808,6 +808,13 @@ function MessagesTab({
     const el = scrollRef.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
   }, []);
+
+  // The keyboard opening or closing resizes the pane; if the member was at the
+  // newest message, keep them there rather than leaving it behind the bar.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+  }, [paneHeight]);
 
   const sentinelRef = useInfiniteScroll(loadOlder, {
     enabled: Boolean(postsQuery.hasNextPage) && !postsQuery.isFetchingNextPage,
@@ -982,7 +989,7 @@ function ThreadView({
 
   usePageScrollLock();
   const paneRef = useRef<HTMLDivElement>(null);
-  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 200 });
+  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 120, followPan: true });
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const atBottom = useRef(true);
   const forceBottom = useRef(true);
@@ -1007,6 +1014,11 @@ function ThreadView({
     const el = scrollRef.current;
     if (el && atBottom.current) el.scrollTop = el.scrollHeight;
   }, []);
+
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+  }, [paneHeight]);
 
   if (rootQuery.isPending) return <Spinner label="Loading the thread" />;
   if (rootQuery.error || !root) {

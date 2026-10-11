@@ -23,7 +23,11 @@ import type { RefObject } from "react";
  */
 export function useFillViewport(
   ref: RefObject<HTMLElement | null>,
-  { gap = 24, min = 320 }: { gap?: number; min?: number } = {}
+  {
+    gap = 24,
+    min = 320,
+    followPan = false,
+  }: { gap?: number; min?: number; followPan?: boolean } = {}
 ): number | null {
   const [height, setHeight] = useState<number | null>(null);
 
@@ -40,6 +44,24 @@ export function useFillViewport(
     const viewport = window.visualViewport?.height ?? window.innerHeight;
 
     /*
+     * `followPan`: end at the bottom of what is *visible*, wherever the browser
+     * has moved the visual viewport. When iOS opens the keyboard it shrinks the
+     * visual viewport and pans it to reveal the focused field, so its top is no
+     * longer the layout viewport's top (`offsetTop` > 0). A box sized as if the
+     * window began at the top then ends below the keyboard -- which is how a
+     * message bar pinned to the bottom of the pane ended up scrolled out of
+     * view. Measured from the element's place in the layout viewport to the
+     * bottom of the visual one, it lands on top of the keyboard instead.
+     */
+    if (followPan) {
+      const pan = window.visualViewport?.offsetTop ?? 0;
+      setHeight(
+        Math.max(Math.round(pan + viewport - element.getBoundingClientRect().top - gap), min)
+      );
+      return;
+    }
+
+    /*
      * The element's distance down the *document*, not down the viewport, so the
      * answer does not change as the page is scrolled. `rect.top` alone would
      * shrink the map every time somebody scrolled and then grow it back.
@@ -47,7 +69,7 @@ export function useFillViewport(
     const top = element.getBoundingClientRect().top + window.scrollY;
 
     setHeight(Math.max(Math.round(viewport - top - gap), min));
-  }, [ref, gap, min]);
+  }, [ref, gap, min, followPan]);
 
   useEffect(() => {
     measure();
@@ -56,6 +78,8 @@ export function useFillViewport(
     // A phone rotating, or iOS' address bar sliding away, moves the visual
     // viewport without firing `resize` on the window.
     window.visualViewport?.addEventListener("resize", measure);
+    // Panning to reveal a field moves the visual viewport without resizing it.
+    if (followPan) window.visualViewport?.addEventListener("scroll", measure);
 
     /*
      * And the page itself can change height above the element without the
@@ -69,9 +93,10 @@ export function useFillViewport(
     return () => {
       window.removeEventListener("resize", measure);
       window.visualViewport?.removeEventListener("resize", measure);
+      window.visualViewport?.removeEventListener("scroll", measure);
       observer?.disconnect();
     };
-  }, [measure]);
+  }, [measure, followPan]);
 
   return height;
 }

@@ -13,9 +13,19 @@ import { useFillViewport } from "../src/components/useFillViewport";
  * two ways, and a page that changes height above the element.
  */
 
-function Probe({ top, gap, min }: { top: number; gap?: number; min?: number }) {
+function Probe({
+  top,
+  gap,
+  min,
+  followPan,
+}: {
+  top: number;
+  gap?: number;
+  min?: number;
+  followPan?: boolean;
+}) {
   const ref = useRef<HTMLDivElement>(null);
-  const height = useFillViewport(ref, { gap, min });
+  const height = useFillViewport(ref, { gap, min, followPan });
   return (
     <div
       ref={(node) => {
@@ -59,6 +69,53 @@ describe("useFillViewport", () => {
     });
     render(<Probe top={300} />);
     expect(measured()).toBe("376");
+  });
+
+  it("with followPan, ends at the bottom of the visible area after iOS pans for the keyboard", () => {
+    // Keyboard open: the visual viewport is 340px tall and has been panned 120px
+    // down the layout viewport to reveal the focused field. The box starts 150px
+    // down the layout viewport; the visible bottom is 120 + 340 = 460 down it.
+    vi.stubGlobal("innerHeight", 900);
+    vi.stubGlobal("visualViewport", {
+      height: 340,
+      offsetTop: 120,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    render(<Probe top={150} gap={8} min={50} followPan />);
+    expect(measured()).toBe(String(120 + 340 - 150 - 8));
+  });
+
+  it("without followPan the pan is ignored, as the map has always measured", () => {
+    vi.stubGlobal("innerHeight", 900);
+    vi.stubGlobal("visualViewport", {
+      height: 340,
+      offsetTop: 120,
+      addEventListener: () => {},
+      removeEventListener: () => {},
+    });
+    render(<Probe top={150} gap={8} min={50} />);
+    expect(measured()).toBe(String(340 - 150 - 8));
+  });
+
+  it("re-measures when the visual viewport is panned, not only when it is resized", () => {
+    const listeners: Record<string, () => void> = {};
+    const viewport = {
+      height: 700,
+      offsetTop: 0,
+      addEventListener: (type: string, fn: () => void) => {
+        listeners[type] = fn;
+      },
+      removeEventListener: () => {},
+    };
+    vi.stubGlobal("innerHeight", 900);
+    vi.stubGlobal("visualViewport", viewport);
+    render(<Probe top={100} gap={0} min={50} followPan />);
+    expect(measured()).toBe("600");
+
+    viewport.offsetTop = 200;
+    act(() => listeners.scroll?.());
+    expect(measured()).toBe("800");
   });
 
   it("never collapses below a usable height", () => {
