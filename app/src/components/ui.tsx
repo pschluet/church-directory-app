@@ -221,7 +221,35 @@ export function usePageScrollLock(enabled = true): void {
     const root = document.documentElement;
     const overscroll = root.style.overscrollBehavior;
     root.style.overscrollBehavior = "none";
+
+    /*
+     * On iOS, focusing the message field pans the page up to clear the
+     * keyboard. With the body locked there is nothing to scroll it back, so
+     * when the keyboard goes away the pan can stay and the header is stranded
+     * above the top edge. Scroll back as the field lets go, so the glide shares
+     * the keyboard's own closing animation instead of following it as a second
+     * one. A check once the keyboard is gone snaps it only if that was not
+     * enough.
+     */
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    const offTop = () => window.scrollY > 1 || (window.visualViewport?.offsetTop ?? 0) > 1;
+    function backToTop(event: FocusEvent): void {
+      // Focus moving to another field keeps the keyboard up.
+      const next = event.relatedTarget;
+      if (next instanceof HTMLTextAreaElement || next instanceof HTMLInputElement) return;
+      clearTimeout(settle);
+      if (!offTop()) return;
+      const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
+      window.scrollTo({ top: 0, behavior: reduceMotion ? "auto" : "smooth" });
+      settle = setTimeout(() => {
+        if (offTop()) window.scrollTo(0, 0);
+      }, 600);
+    }
+    document.addEventListener("focusout", backToTop);
+
     return () => {
+      document.removeEventListener("focusout", backToTop);
+      clearTimeout(settle);
       release();
       root.style.overscrollBehavior = overscroll;
     };

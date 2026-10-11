@@ -745,7 +745,12 @@ function MessagesTab({
   // The page does not scroll here -- the pane does, and the bar stays put.
   usePageScrollLock();
   const paneRef = useRef<HTMLDivElement>(null);
-  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 120, holdWhileTyping: true });
+  const paneHeight = useFillViewport(paneRef, {
+    gap: 12,
+    min: 120,
+    holdWhileTyping: true,
+    clearHomeIndicator: true,
+  });
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
   const setScroller = useCallback((node: HTMLDivElement | null) => {
@@ -989,7 +994,12 @@ function ThreadView({
 
   usePageScrollLock();
   const paneRef = useRef<HTMLDivElement>(null);
-  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 120, holdWhileTyping: true });
+  const paneHeight = useFillViewport(paneRef, {
+    gap: 12,
+    min: 120,
+    holdWhileTyping: true,
+    clearHomeIndicator: true,
+  });
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const atBottom = useRef(true);
   const forceBottom = useRef(true);
@@ -1935,7 +1945,7 @@ function MentionTextarea({
         aria-label={ariaLabel}
         className={
           bare
-            ? "block max-h-40 w-full resize-none overflow-y-auto bg-transparent px-1 py-1.5 text-ink outline-none placeholder:text-ink-muted"
+            ? "block max-h-40 w-full resize-none overflow-y-auto bg-transparent px-1 py-2.5 text-ink outline-none placeholder:text-ink-muted"
             : `${inputClass} ${minHeightClass}`
         }
         value={value}
@@ -2353,7 +2363,7 @@ function ChatComposer({
       )}
 
       <div
-        className={`flex items-end gap-1 rounded-lg border bg-surface px-1 py-1 focus-within:border-accent ${
+        className={`flex items-end gap-1 rounded-3xl border bg-surface px-2 py-1 focus-within:border-accent ${
           editing ? "border-accent" : "border-line"
         }`}
       >

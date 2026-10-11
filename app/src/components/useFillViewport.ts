@@ -36,13 +36,35 @@ function isTouchScreen(): boolean {
   return window.matchMedia?.("(hover: none) and (pointer: coarse)").matches ?? false;
 }
 
+/**
+ * The home-indicator strip at the bottom of a notched iPhone, in pixels. Read by
+ * letting CSS resolve `env()` on a probe, since JavaScript has no direct access.
+ * Zero anywhere there is no inset, and in jsdom, which does not parse `env()`.
+ */
+function safeAreaBottom(): number {
+  const probe = document.createElement("div");
+  probe.style.cssText =
+    "position:fixed;visibility:hidden;pointer-events:none;padding-bottom:env(safe-area-inset-bottom)";
+  document.body.appendChild(probe);
+  const inset = parseFloat(getComputedStyle(probe).paddingBottom);
+  probe.remove();
+  return Number.isFinite(inset) ? inset : 0;
+}
+
 export function useFillViewport(
   ref: RefObject<HTMLElement | null>,
   {
     gap = 24,
     min = 320,
     holdWhileTyping = false,
-  }: { gap?: number; min?: number; holdWhileTyping?: boolean } = {}
+    clearHomeIndicator = false,
+  }: {
+    gap?: number;
+    min?: number;
+    holdWhileTyping?: boolean;
+    /** Also leave room for the home-indicator strip, so a bottom bar clears the bezel. */
+    clearHomeIndicator?: boolean;
+  } = {}
 ): number | null {
   const [height, setHeight] = useState<number | null>(null);
 
@@ -80,8 +102,9 @@ export function useFillViewport(
      */
     const top = element.getBoundingClientRect().top + window.scrollY;
 
-    setHeight(Math.max(Math.round(viewport - top - gap), min));
-  }, [ref, gap, min, holdWhileTyping]);
+    const bottomGap = gap + (clearHomeIndicator ? safeAreaBottom() : 0);
+    setHeight(Math.max(Math.round(viewport - top - bottomGap), min));
+  }, [ref, gap, min, holdWhileTyping, clearHomeIndicator]);
 
   useEffect(() => {
     measure();
