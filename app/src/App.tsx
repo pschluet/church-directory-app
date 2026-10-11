@@ -56,6 +56,9 @@ export const router = createBrowserRouter([
       { path: "prayer-requests", element: <PrayerRequests /> },
       { path: "groups", element: <Groups /> },
       { path: "groups/:id", element: <GroupDetail /> },
+      // A message's thread, on a page of its own. The same component: it shares
+      // the group, the live poll and the modals with the feed.
+      { path: "groups/:id/threads/:postId", element: <GroupDetail /> },
       { path: "families", element: <Families /> },
       { path: "families/:id", element: <FamilyDetail /> },
       {

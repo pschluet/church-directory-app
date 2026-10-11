@@ -66,6 +66,30 @@ describe("Groups", () => {
     expect(document.querySelector("mark")).toBeNull();
   });
 
+  it("keeps a long name clear of the star when the card has no photo, and not when it has one", async () => {
+    apiMock.mockImplementation((path: string) =>
+      path === "/groups"
+        ? Promise.resolve({
+            groups: [
+              group({ id: "g1", title: "A very long group name without a picture" }),
+              group({
+                id: "g2",
+                title: "A very long group name with a picture",
+                cardUrl: "/card.webp",
+              }),
+            ],
+          })
+        : Promise.resolve({ reports: [] })
+    );
+    renderWithProviders(<Groups />);
+    const plain = (await screen.findByText("A very long group name without a picture")).closest(
+      "div.flex"
+    );
+    const pictured = screen.getByText("A very long group name with a picture").closest("div.flex");
+    expect(plain?.className).toContain("pr-8");
+    expect(pictured?.className).not.toContain("pr-8");
+  });
+
   it("toggles a star from the card", async () => {
     renderWithProviders(<Groups />);
     const pinned = await screen.findByRole("button", { name: "Unstar Choir" });

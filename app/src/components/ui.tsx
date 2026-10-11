@@ -75,6 +75,12 @@ export function PageHeading({
    * open by wasting some.
    */
   compactActions = false,
+  /**
+   * Less room below, for a page whose content wants every pixel it can get --
+   * a conversation, where the gap under the title is height the messages could
+   * have had. Every other page keeps the generous default.
+   */
+  tight = false,
 }: {
   title: string;
   subtitle?: ReactNode;
@@ -82,12 +88,13 @@ export function PageHeading({
   filters?: ReactNode;
   titleAction?: ReactNode;
   compactActions?: boolean;
+  tight?: boolean;
 }) {
   // Anything sharing the heading's row needs a second column to sit in.
   const besideTitle = compactActions || titleAction !== undefined;
 
   return (
-    <header className="mb-6 md:mb-8">
+    <header className={tight ? "mb-2" : "mb-6 md:mb-8"}>
       <div
         className={`grid gap-3 md:flex md:flex-wrap md:items-end ${
           besideTitle ? "grid-cols-[minmax(0,1fr)_auto] items-start" : "grid-cols-1"
@@ -192,6 +199,33 @@ function lockBodyScroll(): () => void {
     bodyScrollLockCount--;
     if (bodyScrollLockCount === 0) document.body.style.overflow = bodyOverflowBeforeLock;
   };
+}
+
+/**
+ * Keeps the page itself from scrolling while something with its own scroll area
+ * fills the screen -- a conversation, whose messages scroll inside a pane and
+ * whose message bar must stay put at the bottom. The shell's footer and the
+ * padding under `main` would otherwise make the page a little taller than the
+ * window and let the whole thing slide, bar and all.
+ *
+ * Goes to the top first: locking mid-scroll would freeze the header off screen.
+ * Shares the reference-counted lock with the dialogs, so a modal opened over a
+ * conversation does not unlock it on close.
+ */
+export function usePageScrollLock(enabled = true): void {
+  useEffect(() => {
+    if (!enabled) return;
+    window.scrollTo(0, 0);
+    const release = lockBodyScroll();
+    // No rubber-band either, on a touch screen, where "locked" still bounces.
+    const root = document.documentElement;
+    const overscroll = root.style.overscrollBehavior;
+    root.style.overscrollBehavior = "none";
+    return () => {
+      release();
+      root.style.overscrollBehavior = overscroll;
+    };
+  }, [enabled]);
 }
 
 /**
@@ -529,11 +563,19 @@ export function Modal({
   children,
   /** For a dialog that needs the width, such as the photo cropper. */
   wide = false,
+  noSelect = false,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   wide?: boolean;
+  /**
+   * No text selection or touch callout anywhere in it. For a sheet opened by a
+   * long press: the OS is still treating that press as "select", and without
+   * this it highlights whatever is under the finger in the sheet that has just
+   * appeared there.
+   */
+  noSelect?: boolean;
 }) {
   useDismissable(onClose);
 
@@ -551,7 +593,9 @@ export function Modal({
    */
   return createPortal(
     <div
-      className="fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 md:items-center md:p-6"
+      className={`fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 md:items-center md:p-6 ${
+        noSelect ? "select-none [-webkit-touch-callout:none]" : ""
+      }`}
       role="dialog"
       aria-modal="true"
       aria-label={title}

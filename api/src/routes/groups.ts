@@ -986,6 +986,27 @@ routes.post("/:id/typing", async (c) => {
   return c.body(null, 204);
 });
 
+/**
+ * One post, for the thread page. Any post in the group -- a reply too, so the
+ * page can send somebody who followed a link to a reply on to its thread.
+ */
+routes.get("/:id/posts/:postId", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const postId = uuidSchema.parse(c.req.param("postId"));
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroup(access);
+  assertCanReadGroupContent(access);
+
+  const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  if (!row) throw new HTTPException(404, { message: "Post not found" });
+  return c.json(toGroupPostDto(row, access, caller.personId));
+});
+
 routes.get("/:id/posts/:postId/replies", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
@@ -1086,7 +1107,9 @@ routes.get("/:id/events", async (c) => {
 
   const { rows } = await db.query<GroupPostRow>(
     `${GROUP_POST_SELECT}
-      where p.group_id = $2 and p.kind = 'EVENT' and p.deleted_at is null
+      -- Cancelled events are listed too: the page shows what was cancelled,
+      -- with its RSVP side removed (see the client's EventBlock).
+      where p.group_id = $2 and p.kind = 'EVENT'
       order by (select ge2.event_date from group_events ge2 where ge2.post_id = p.id) desc
       limit 200`,
     [caller.appUserId, id]
@@ -1380,6 +1403,46 @@ routes.delete("/:id/posts/:postId", async (c) => {
   return c.body(null, 204);
 });
 
+/**
+ * Un-cancel an event. Only by the person who posted it, and only if they were
+ * the one who cancelled it: an admin who removed it for moderation reasons is a
+ * decision its author cannot quietly undo. Everything the event had -- its
+ * details and its RSVPs -- was kept while it was cancelled (see
+ * toGroupPostDto), so this only clears the cancellation. Not audited: it is the
+ * author's own event, like cancelling it is.
+ */
+routes.post("/:id/posts/:postId/restore", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const postId = uuidSchema.parse(c.req.param("postId"));
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroup(access);
+  assertCanReadGroupContent(access);
+  // An archived group is read-only, and that includes un-cancelling.
+  if (group.archived_at) throw new HTTPException(409, { message: "This group is archived" });
+
+  const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  if (row?.kind !== "EVENT") throw new HTTPException(404, { message: "Event not found" });
+  if (!row.deleted_at) throw new HTTPException(409, { message: "That event is not cancelled" });
+  if (row.author_person_id !== caller.personId || row.deleted_by_self !== true) {
+    throw new HTTPException(403, {
+      message: "Only the person who cancelled this event can restore it",
+    });
+  }
+
+  await db.query(
+    "update group_posts set deleted_at = null, deleted_by_person_id = null where id = $1",
+    [postId]
+  );
+
+  const updated = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  return c.json(toGroupPostDto(updated!, access, caller.personId));
+});
+
 routes.put("/:id/posts/:postId/rsvp", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
@@ -1394,6 +1457,9 @@ routes.put("/:id/posts/:postId/rsvp", async (c) => {
 
   const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
   if (row?.kind !== "EVENT") throw new HTTPException(404, { message: "Event not found" });
+  // A cancelled event keeps its details so people can see what was cancelled,
+  // but nobody can RSVP to it any more.
+  if (row.deleted_at) throw new HTTPException(409, { message: "That event was cancelled" });
 
   await db.query(
     `insert into group_event_rsvps (post_id, app_user_id, response, guest_count)

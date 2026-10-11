@@ -1083,4 +1083,217 @@ describe.skipIf(!hasDb)("groups", () => {
       expect((await live(creator, groupId)).typing).toEqual(["Mo Member", "Ozzy Outsider"]);
     });
   });
+
+  describe("a single post, for the thread page", () => {
+    it("returns the post with its reply count and when the newest reply landed", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const root = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Root" });
+      expect(root.body.lastReplyAt).toBeNull();
+
+      const reply = await as(member).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Reply",
+        parentPostId: root.body.id,
+      });
+      const res = await as(member).call("GET", `/api/groups/${groupId}/posts/${root.body.id}`);
+      expect(res.status).toBe(200);
+      expect(res.body.body).toBe("Root");
+      expect(res.body.replyCount).toBe(1);
+      expect(res.body.lastReplyAt).toBe(reply.body.createdAt);
+    });
+
+    it("can fetch a reply too, which says what it belongs to", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const root = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Root" });
+      const reply = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Reply",
+        parentPostId: root.body.id,
+      });
+      const res = await as(creator).call("GET", `/api/groups/${groupId}/posts/${reply.body.id}`);
+      expect(res.body.parentPostId).toBe(root.body.id);
+    });
+
+    it("still returns a deleted root, as its tombstone", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const root = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Root" });
+      await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Reply",
+        parentPostId: root.body.id,
+      });
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${root.body.id}`);
+      const res = await as(creator).call("GET", `/api/groups/${groupId}/posts/${root.body.id}`);
+      expect(res.status).toBe(200);
+      expect(res.body.deletedAt).not.toBeNull();
+      expect(res.body.body).toBeNull();
+      expect(res.body.replyCount).toBe(1);
+    });
+
+    it("404s for a post in another group", async () => {
+      const a = await createGroup(creator, "PUBLIC");
+      const b = await createGroup(creator, "PUBLIC");
+      const post = await as(creator).call("POST", `/api/groups/${a}/posts`, { body: "Mine" });
+      const res = await as(creator).call("GET", `/api/groups/${b}/posts/${post.body.id}`);
+      expect(res.status).toBe(404);
+    });
+
+    it("keeps a private group's posts from non-members, and hides a secret group", async () => {
+      const priv = await createGroup(creator, "PRIVATE");
+      const p1 = await as(creator).call("POST", `/api/groups/${priv}/posts`, { body: "Hi" });
+      expect(
+        (await as(outsider).call("GET", `/api/groups/${priv}/posts/${p1.body.id}`)).status
+      ).toBe(403);
+      const secret = await createGroup(creator, "SECRET");
+      const p2 = await as(creator).call("POST", `/api/groups/${secret}/posts`, { body: "Hi" });
+      expect(
+        (await as(outsider).call("GET", `/api/groups/${secret}/posts/${p2.body.id}`)).status
+      ).toBe(404);
+    });
+  });
+
+  describe("a cancelled event", () => {
+    async function cancelledEvent(): Promise<{ groupId: string; postId: string }> {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: {
+          eventTitle: "Potluck",
+          eventDate: "2030-01-01",
+          startTime: "18:00",
+          location: "Parish Hall",
+        },
+      });
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${event.body.id}`);
+      return { groupId, postId: event.body.id as string };
+    }
+
+    it("keeps its details in the conversation, so people can see what was cancelled", async () => {
+      const { groupId, postId } = await cancelledEvent();
+      const feed = await as(member).call("GET", `/api/groups/${groupId}/posts`);
+      const post = feed.body.posts.find((p: { id: string }) => p.id === postId);
+      expect(post.deletedAt).not.toBeNull();
+      expect(post.event).toMatchObject({
+        title: "Potluck",
+        eventDate: "2030-01-01",
+        startTime: "18:00",
+        location: "Parish Hall",
+      });
+      expect(post.canEdit).toBe(false);
+    });
+
+    it("is on the Events tab too, with its details and marked cancelled", async () => {
+      const { groupId, postId } = await cancelledEvent();
+      const res = await as(member).call("GET", `/api/groups/${groupId}/events`);
+      expect(res.body.events).toHaveLength(1);
+      expect(res.body.events[0]).toMatchObject({
+        id: postId,
+        deletedAt: expect.any(String),
+        event: { title: "Potluck", eventDate: "2030-01-01", location: "Parish Hall" },
+      });
+    });
+
+    it("can be re-activated by the person who posted and cancelled it, RSVPs intact", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Potluck", eventDate: "2030-01-01" },
+      });
+      const postId = event.body.id as string;
+      await as(member).call("PUT", `/api/groups/${groupId}/posts/${postId}/rsvp`, {
+        response: "YES",
+        guestCount: 2,
+      });
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${postId}`);
+
+      const cancelled = await as(creator).call("GET", `/api/groups/${groupId}/posts/${postId}`);
+      expect(cancelled.body.canRestore).toBe(true);
+      // Not for anyone else.
+      const other = await as(member).call("GET", `/api/groups/${groupId}/posts/${postId}`);
+      expect(other.body.canRestore).toBe(false);
+
+      const res = await as(creator).call("POST", `/api/groups/${groupId}/posts/${postId}/restore`);
+      expect(res.status).toBe(200);
+      expect(res.body.deletedAt).toBeNull();
+      expect(res.body.event.rsvpCounts.yes).toBe(1);
+      expect(res.body.canRestore).toBe(false);
+      expect(res.body.canEdit).toBe(true);
+
+      // RSVPs work again.
+      const rsvp = await as(member).call("PUT", `/api/groups/${groupId}/posts/${postId}/rsvp`, {
+        response: "MAYBE",
+        guestCount: 0,
+      });
+      expect(rsvp.status).toBe(200);
+    });
+
+    it("cannot be re-activated by somebody else, or when a group admin removed it", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const mine = await as(member).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Member's event", eventDate: "2030-01-01" },
+      });
+      const postId = mine.body.id as string;
+      // The group's admin (creator) removes it, not the member who posted it.
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${postId}`);
+
+      const author = await as(member).call("GET", `/api/groups/${groupId}/posts/${postId}`);
+      expect(author.body.canRestore).toBe(false);
+      expect(
+        (await as(member).call("POST", `/api/groups/${groupId}/posts/${postId}/restore`)).status
+      ).toBe(403);
+      // Nor can an admin who is not the author put it back.
+      expect(
+        (await as(creator).call("POST", `/api/groups/${groupId}/posts/${postId}/restore`)).status
+      ).toBe(403);
+    });
+
+    it("refuses to restore an event that is not cancelled, a message, or in an archived group", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const live = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "On", eventDate: "2030-01-01" },
+      });
+      expect(
+        (await as(creator).call("POST", `/api/groups/${groupId}/posts/${live.body.id}/restore`))
+          .status
+      ).toBe(409);
+
+      const message = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hi",
+      });
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${message.body.id}`);
+      expect(
+        (await as(creator).call("POST", `/api/groups/${groupId}/posts/${message.body.id}/restore`))
+          .status
+      ).toBe(404);
+      const gone = await as(creator).call("GET", `/api/groups/${groupId}/posts/${message.body.id}`);
+      expect(gone.body.canRestore).toBe(false);
+
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${live.body.id}`);
+      await as(creator).call("POST", `/api/groups/${groupId}/archive`);
+      expect(
+        (await as(creator).call("POST", `/api/groups/${groupId}/posts/${live.body.id}/restore`))
+          .status
+      ).toBe(409);
+    });
+
+    it("can no longer be RSVP'd to", async () => {
+      const { groupId, postId } = await cancelledEvent();
+      const res = await as(member).call("PUT", `/api/groups/${groupId}/posts/${postId}/rsvp`, {
+        response: "YES",
+        guestCount: 0,
+      });
+      expect(res.status).toBe(409);
+    });
+  });
 });

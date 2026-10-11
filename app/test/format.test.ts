@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   displayPhone,
   formatChatDay,
+  formatEventTimes,
+  formatTime12,
   localDayIso,
   formatMonthDay,
   formatMonthDayShort,
@@ -274,5 +276,24 @@ describe("chat days", () => {
   it("localDayIso uses the local date, not UTC", () => {
     expect(localDayIso(new Date(2026, 0, 1, 0, 5))).toBe("2026-01-01");
     expect(localDayIso(new Date(2026, 11, 31, 23, 55))).toBe("2026-12-31");
+  });
+});
+
+describe("event times", () => {
+  it("reads 24-hour times as 12-hour", () => {
+    expect(formatTime12("18:30")).toBe("6:30 PM");
+    expect(formatTime12("00:05")).toBe("12:05 AM");
+    expect(formatTime12("12:00")).toBe("12:00 PM");
+    expect(formatTime12("nonsense")).toBe("nonsense");
+  });
+
+  it("shares the AM/PM when both ends are in the same half of the day", () => {
+    expect(formatEventTimes("18:30", "20:00")).toBe("6:30 – 8:00 PM");
+    expect(formatEventTimes("11:00", "13:00")).toBe("11:00 AM – 1:00 PM");
+  });
+
+  it("handles a start with no end, and no times at all", () => {
+    expect(formatEventTimes("09:00", null)).toBe("9:00 AM");
+    expect(formatEventTimes(null, null)).toBeNull();
   });
 });

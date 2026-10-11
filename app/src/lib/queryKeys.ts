@@ -147,6 +147,9 @@ export const qk = {
   groups: (orgId: string | null) => [...qk.org(orgId), "groups"] as const,
   group: (orgId: string | null, id: string) => [...qk.groups(orgId), id] as const,
   groupPosts: (orgId: string | null, id: string) => [...qk.group(orgId, id), "posts"] as const,
+  /** One post, for its thread page. The replies key below nests under it, so one invalidate sweeps both. */
+  groupPost: (orgId: string | null, id: string, postId: string) =>
+    [...qk.groupPosts(orgId, id), postId] as const,
   groupReplies: (orgId: string | null, id: string, postId: string) =>
     [...qk.group(orgId, id), "posts", postId, "replies"] as const,
   groupPostRsvps: (orgId: string | null, id: string, postId: string) =>
