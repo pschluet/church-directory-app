@@ -957,7 +957,9 @@ describe("GroupDetail", () => {
     it("opens a picture in the lightbox instead of navigating to the bare image", async () => {
       feedWithPicture();
       renderPage();
-      await userEvent.click(await screen.findByRole("button", { name: "Show picnic.jpg full screen" }));
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Show picnic.jpg full screen" })
+      );
 
       const dialog = await screen.findByRole("dialog", { name: "picnic.jpg" });
       expect(within(dialog).getByRole("img")).toHaveAttribute("src", "/picnic-full.webp");
@@ -968,7 +970,9 @@ describe("GroupDetail", () => {
     it("closes with the X", async () => {
       feedWithPicture();
       renderPage();
-      await userEvent.click(await screen.findByRole("button", { name: "Show picnic.jpg full screen" }));
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Show picnic.jpg full screen" })
+      );
       await userEvent.click(await screen.findByRole("button", { name: "Close" }));
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
@@ -976,28 +980,30 @@ describe("GroupDetail", () => {
     it("closes with Escape", async () => {
       feedWithPicture();
       renderPage();
-      await userEvent.click(await screen.findByRole("button", { name: "Show picnic.jpg full screen" }));
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Show picnic.jpg full screen" })
+      );
       await screen.findByRole("dialog");
       await userEvent.keyboard("{Escape}");
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     });
 
     it("opens the one that was tapped when a message has several", async () => {
-      feedWithPicture([
-        attachment({ id: "a2", filename: "cake.jpg", fullUrl: "/cake-full.webp" }),
-      ]);
+      feedWithPicture([attachment({ id: "a2", filename: "cake.jpg", fullUrl: "/cake-full.webp" })]);
       renderPage();
-      await userEvent.click(await screen.findByRole("button", { name: "Show cake.jpg full screen" }));
+      await userEvent.click(
+        await screen.findByRole("button", { name: "Show cake.jpg full screen" })
+      );
       const dialog = await screen.findByRole("dialog", { name: "cake.jpg" });
       expect(within(dialog).getByRole("img")).toHaveAttribute("src", "/cake-full.webp");
     });
 
     it("does not offer a lightbox for a picture with no full-size rendition", async () => {
-      feedWithPicture([
-        attachment({ id: "a3", filename: "pending.jpg", fullUrl: null }),
-      ]);
+      feedWithPicture([attachment({ id: "a3", filename: "pending.jpg", fullUrl: null })]);
       renderPage();
-      expect(await screen.findByRole("button", { name: "Show pending.jpg full screen" })).toBeDisabled();
+      expect(
+        await screen.findByRole("button", { name: "Show pending.jpg full screen" })
+      ).toBeDisabled();
     });
 
     it("still downloads a document", async () => {

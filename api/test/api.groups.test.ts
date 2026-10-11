@@ -715,7 +715,9 @@ describe.skipIf(!hasDb)("groups", () => {
         const groupId = await createGroup(creator, "PUBLIC");
         const mine = await postWith(groupId, 1);
         const other = await postWith(groupId, 1);
-        const res = await patch(groupId, mine.id, { removeAttachmentIds: [other.attachments[0].id] });
+        const res = await patch(groupId, mine.id, {
+          removeAttachmentIds: [other.attachments[0].id],
+        });
         expect(res.status).toBe(400);
 
         const feed = await as(creator).call("GET", `/api/groups/${groupId}/posts`);
