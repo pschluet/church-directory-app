@@ -17,15 +17,15 @@ function Probe({
   top,
   gap,
   min,
-  followPan,
+  holdWhileTyping,
 }: {
   top: number;
   gap?: number;
   min?: number;
-  followPan?: boolean;
+  holdWhileTyping?: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
-  const height = useFillViewport(ref, { gap, min, followPan });
+  const height = useFillViewport(ref, { gap, min, holdWhileTyping });
   return (
     <div
       ref={(node) => {
@@ -71,90 +71,76 @@ describe("useFillViewport", () => {
     expect(measured()).toBe("376");
   });
 
-  it("with followPan, ends at the bottom of the visible area after iOS pans for the keyboard", () => {
-    // Keyboard open: the visual viewport is 340px tall and has been panned 120px
-    // down the layout viewport to reveal the focused field. The box starts 150px
-    // down the layout viewport; the visible bottom is 120 + 340 = 460 down it.
-    vi.stubGlobal("innerHeight", 900);
-    vi.stubGlobal("visualViewport", {
-      height: 340,
-      offsetTop: 120,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    });
-    render(<Probe top={150} gap={8} min={50} followPan />);
-    expect(measured()).toBe(String(120 + 340 - 150 - 8));
-  });
+  describe("holdWhileTyping, for a phone's keyboard", () => {
+    function Typing({ top }: { top: number }) {
+      return (
+        <>
+          <Probe top={top} gap={0} min={50} holdWhileTyping />
+          <textarea aria-label="message" />
+        </>
+      );
+    }
 
-  it("without followPan the pan is ignored, as the map has always measured", () => {
-    vi.stubGlobal("innerHeight", 900);
-    vi.stubGlobal("visualViewport", {
-      height: 340,
-      offsetTop: 120,
-      addEventListener: () => {},
-      removeEventListener: () => {},
-    });
-    render(<Probe top={150} gap={8} min={50} />);
-    expect(measured()).toBe(String(340 - 150 - 8));
-  });
-
-  it("re-measures when the visual viewport is panned, not only when it is resized", () => {
-    const listeners: Record<string, () => void> = {};
-    const viewport = {
-      height: 700,
-      offsetTop: 0,
-      addEventListener: (type: string, fn: () => void) => {
-        listeners[type] = fn;
-      },
-      removeEventListener: () => {},
-    };
-    vi.stubGlobal("innerHeight", 900);
-    vi.stubGlobal("visualViewport", viewport);
-    render(<Probe top={100} gap={0} min={50} followPan />);
-    expect(measured()).toBe("600");
-
-    viewport.offsetTop = 200;
-    act(() => listeners.scroll?.());
-    expect(measured()).toBe("800");
-  });
-
-  it("keeps looking while a field has focus, because iOS reports the keyboard late", async () => {
-    vi.useFakeTimers();
-    try {
+    function stubViewport(touch: boolean) {
       const viewport = {
         height: 700,
-        offsetTop: 0,
         addEventListener: () => {},
         removeEventListener: () => {},
       };
       vi.stubGlobal("innerHeight", 900);
       vi.stubGlobal("visualViewport", viewport);
-      render(<Probe top={100} gap={0} min={50} followPan />);
-      expect(measured()).toBe("600");
-
-      act(() => {
-        document.dispatchEvent(new Event("focusin"));
-      });
-      // The keyboard arrives and the pan lands -- with no event of any kind.
-      viewport.height = 340;
-      viewport.offsetTop = 120;
-      await act(() => vi.advanceTimersByTimeAsync(150));
-      expect(measured()).toBe(String(120 + 340 - 100));
-
-      // After the field loses focus it settles, then stops looking.
-      act(() => {
-        document.dispatchEvent(new Event("focusout"));
-      });
-      viewport.height = 700;
-      viewport.offsetTop = 0;
-      await act(() => vi.advanceTimersByTimeAsync(1000));
-      expect(measured()).toBe("600");
-      viewport.height = 400;
-      await act(() => vi.advanceTimersByTimeAsync(500));
-      expect(measured()).toBe("600");
-    } finally {
-      vi.useRealTimers();
+      vi.stubGlobal(
+        "matchMedia",
+        vi.fn(() => ({ matches: touch, addEventListener() {}, removeEventListener() {} }))
+      );
+      return viewport;
     }
+
+    it("leaves the height alone while a field has focus on a touch screen", () => {
+      const viewport = stubViewport(true);
+      render(<Typing top={100} />);
+      expect(measured()).toBe("600");
+
+      screen.getByLabelText("message").focus();
+      // The keyboard shrinks the visual viewport.
+      viewport.height = 340;
+      act(() => window.dispatchEvent(new Event("resize")));
+      expect(measured()).toBe("600");
+    });
+
+    it("catches up once the field lets go and the keyboard has gone", async () => {
+      vi.useFakeTimers();
+      try {
+        const viewport = stubViewport(true);
+        render(<Typing top={100} />);
+        screen.getByLabelText("message").focus();
+        viewport.height = 340;
+        act(() => window.dispatchEvent(new Event("resize")));
+        expect(measured()).toBe("600");
+
+        viewport.height = 700;
+        act(() => {
+          screen.getByLabelText("message").blur();
+        });
+        await act(() => vi.advanceTimersByTimeAsync(500));
+        expect(measured()).toBe("600");
+
+        viewport.height = 500;
+        act(() => window.dispatchEvent(new Event("resize")));
+        expect(measured()).toBe("400");
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it("keeps following the window on a laptop, where focus says nothing about it", () => {
+      const viewport = stubViewport(false);
+      render(<Typing top={100} />);
+      screen.getByLabelText("message").focus();
+      viewport.height = 500;
+      act(() => window.dispatchEvent(new Event("resize")));
+      expect(measured()).toBe("400");
+    });
   });
 
   it("never collapses below a usable height", () => {

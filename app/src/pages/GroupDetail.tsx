@@ -745,7 +745,7 @@ function MessagesTab({
   // The page does not scroll here -- the pane does, and the bar stays put.
   usePageScrollLock();
   const paneRef = useRef<HTMLDivElement>(null);
-  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 120, followPan: true });
+  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 120, holdWhileTyping: true });
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
   const setScroller = useCallback((node: HTMLDivElement | null) => {
@@ -989,7 +989,7 @@ function ThreadView({
 
   usePageScrollLock();
   const paneRef = useRef<HTMLDivElement>(null);
-  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 120, followPan: true });
+  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 120, holdWhileTyping: true });
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const atBottom = useRef(true);
   const forceBottom = useRef(true);

@@ -21,19 +21,49 @@ import type { RefObject } from "react";
  * measure -- callers keep a viewport-relative class as the fallback so a map
  * still appears either way.
  */
+/** A field that takes typed text has focus, so a software keyboard may be up. */
+function isTyping(): boolean {
+  const active = document.activeElement;
+  return (
+    active instanceof HTMLTextAreaElement ||
+    active instanceof HTMLInputElement ||
+    (active instanceof HTMLElement && active.isContentEditable)
+  );
+}
+
+/** A finger rather than a mouse -- the case where a keyboard takes half the screen. */
+function isTouchScreen(): boolean {
+  return window.matchMedia?.("(hover: none) and (pointer: coarse)").matches ?? false;
+}
+
 export function useFillViewport(
   ref: RefObject<HTMLElement | null>,
   {
     gap = 24,
     min = 320,
-    followPan = false,
-  }: { gap?: number; min?: number; followPan?: boolean } = {}
+    holdWhileTyping = false,
+  }: { gap?: number; min?: number; holdWhileTyping?: boolean } = {}
 ): number | null {
   const [height, setHeight] = useState<number | null>(null);
 
   const measure = useCallback(() => {
     const element = ref.current;
     if (!element) return;
+
+    /*
+     * `holdWhileTyping`: on a phone, leave the height alone while a field has
+     * focus. Opening the keyboard shrinks the visual viewport and, separately,
+     * the browser pans it down to bring the field into view -- by an amount
+     * worked out for the layout as it stood. Shrinking the box to the smaller
+     * viewport at the same moment moves the field *up* by roughly what the pan
+     * moved the window down, and it ends up above the top of what is visible.
+     * (And answering the pan by growing the box again, or by looking more
+     * often, only made the two chase each other.) Held still, the browser's own
+     * reveal lands the field right above the keyboard, as it does on any page.
+     * Only for a touch screen: on a laptop a field having focus says nothing
+     * about the window, and it should keep following it.
+     */
+    if (holdWhileTyping && isTouchScreen() && isTyping()) return;
 
     /*
      * `visualViewport` first. On iOS `innerHeight` counts the strip the address
@@ -44,24 +74,6 @@ export function useFillViewport(
     const viewport = window.visualViewport?.height ?? window.innerHeight;
 
     /*
-     * `followPan`: end at the bottom of what is *visible*, wherever the browser
-     * has moved the visual viewport. When iOS opens the keyboard it shrinks the
-     * visual viewport and pans it to reveal the focused field, so its top is no
-     * longer the layout viewport's top (`offsetTop` > 0). A box sized as if the
-     * window began at the top then ends below the keyboard -- which is how a
-     * message bar pinned to the bottom of the pane ended up scrolled out of
-     * view. Measured from the element's place in the layout viewport to the
-     * bottom of the visual one, it lands on top of the keyboard instead.
-     */
-    if (followPan) {
-      const pan = window.visualViewport?.offsetTop ?? 0;
-      setHeight(
-        Math.max(Math.round(pan + viewport - element.getBoundingClientRect().top - gap), min)
-      );
-      return;
-    }
-
-    /*
      * The element's distance down the *document*, not down the viewport, so the
      * answer does not change as the page is scrolled. `rect.top` alone would
      * shrink the map every time somebody scrolled and then grow it back.
@@ -69,7 +81,7 @@ export function useFillViewport(
     const top = element.getBoundingClientRect().top + window.scrollY;
 
     setHeight(Math.max(Math.round(viewport - top - gap), min));
-  }, [ref, gap, min, followPan]);
+  }, [ref, gap, min, holdWhileTyping]);
 
   useEffect(() => {
     measure();
@@ -78,8 +90,6 @@ export function useFillViewport(
     // A phone rotating, or iOS' address bar sliding away, moves the visual
     // viewport without firing `resize` on the window.
     window.visualViewport?.addEventListener("resize", measure);
-    // Panning to reveal a field moves the visual viewport without resizing it.
-    if (followPan) window.visualViewport?.addEventListener("scroll", measure);
 
     /*
      * And the page itself can change height above the element without the
@@ -91,46 +101,25 @@ export function useFillViewport(
     observer?.observe(document.documentElement);
 
     /*
-     * `followPan` again. iOS reports the keyboard late and in pieces: the
-     * visual viewport's resize event fires as the keyboard starts to rise, with
-     * the height it has *then*, and the pan to reveal the field can land after
-     * it with no event the first time round -- which left the message bar under
-     * the keyboard until the next keystroke made it move. So while a field has
-     * focus, and for a moment after it loses it, look again every so often
-     * rather than trusting that every change announces itself. Cheap: a
-     * `getBoundingClientRect` and a state set that is skipped when unchanged.
+     * Measuring was skipped while a field had focus, so catch up once it lets
+     * go -- after a moment, so the keyboard has finished going away and the
+     * viewport has its full height back before it is read.
      */
-    let poll: ReturnType<typeof setInterval> | undefined;
     let settle: ReturnType<typeof setTimeout> | undefined;
-    function startPolling(): void {
+    function catchUp(): void {
       clearTimeout(settle);
-      poll ??= setInterval(measure, 100);
+      settle = setTimeout(measure, 400);
     }
-    function stopPollingSoon(): void {
-      clearTimeout(settle);
-      // Long enough for the keyboard to finish going away and the page to settle.
-      settle = setTimeout(() => {
-        clearInterval(poll);
-        poll = undefined;
-        measure();
-      }, 900);
-    }
-    if (followPan) {
-      document.addEventListener("focusin", startPolling);
-      document.addEventListener("focusout", stopPollingSoon);
-    }
+    if (holdWhileTyping) document.addEventListener("focusout", catchUp);
 
     return () => {
+      document.removeEventListener("focusout", catchUp);
+      clearTimeout(settle);
       window.removeEventListener("resize", measure);
       window.visualViewport?.removeEventListener("resize", measure);
-      window.visualViewport?.removeEventListener("scroll", measure);
-      document.removeEventListener("focusin", startPolling);
-      document.removeEventListener("focusout", stopPollingSoon);
-      clearInterval(poll);
-      clearTimeout(settle);
       observer?.disconnect();
     };
-  }, [measure, followPan]);
+  }, [measure, holdWhileTyping]);
 
   return height;
 }
