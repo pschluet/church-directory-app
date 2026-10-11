@@ -1083,4 +1083,72 @@ describe.skipIf(!hasDb)("groups", () => {
       expect((await live(creator, groupId)).typing).toEqual(["Mo Member", "Ozzy Outsider"]);
     });
   });
+
+  describe("a single post, for the thread page", () => {
+    it("returns the post with its reply count and when the newest reply landed", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const root = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Root" });
+      expect(root.body.lastReplyAt).toBeNull();
+
+      const reply = await as(member).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Reply",
+        parentPostId: root.body.id,
+      });
+      const res = await as(member).call("GET", `/api/groups/${groupId}/posts/${root.body.id}`);
+      expect(res.status).toBe(200);
+      expect(res.body.body).toBe("Root");
+      expect(res.body.replyCount).toBe(1);
+      expect(res.body.lastReplyAt).toBe(reply.body.createdAt);
+    });
+
+    it("can fetch a reply too, which says what it belongs to", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const root = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Root" });
+      const reply = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Reply",
+        parentPostId: root.body.id,
+      });
+      const res = await as(creator).call("GET", `/api/groups/${groupId}/posts/${reply.body.id}`);
+      expect(res.body.parentPostId).toBe(root.body.id);
+    });
+
+    it("still returns a deleted root, as its tombstone", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const root = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Root" });
+      await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Reply",
+        parentPostId: root.body.id,
+      });
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${root.body.id}`);
+      const res = await as(creator).call("GET", `/api/groups/${groupId}/posts/${root.body.id}`);
+      expect(res.status).toBe(200);
+      expect(res.body.deletedAt).not.toBeNull();
+      expect(res.body.body).toBeNull();
+      expect(res.body.replyCount).toBe(1);
+    });
+
+    it("404s for a post in another group", async () => {
+      const a = await createGroup(creator, "PUBLIC");
+      const b = await createGroup(creator, "PUBLIC");
+      const post = await as(creator).call("POST", `/api/groups/${a}/posts`, { body: "Mine" });
+      const res = await as(creator).call("GET", `/api/groups/${b}/posts/${post.body.id}`);
+      expect(res.status).toBe(404);
+    });
+
+    it("keeps a private group's posts from non-members, and hides a secret group", async () => {
+      const priv = await createGroup(creator, "PRIVATE");
+      const p1 = await as(creator).call("POST", `/api/groups/${priv}/posts`, { body: "Hi" });
+      expect(
+        (await as(outsider).call("GET", `/api/groups/${priv}/posts/${p1.body.id}`)).status
+      ).toBe(403);
+      const secret = await createGroup(creator, "SECRET");
+      const p2 = await as(creator).call("POST", `/api/groups/${secret}/posts`, { body: "Hi" });
+      expect(
+        (await as(outsider).call("GET", `/api/groups/${secret}/posts/${p2.body.id}`)).status
+      ).toBe(404);
+    });
+  });
 });

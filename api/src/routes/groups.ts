@@ -986,6 +986,27 @@ routes.post("/:id/typing", async (c) => {
   return c.body(null, 204);
 });
 
+/**
+ * One post, for the thread page. Any post in the group -- a reply too, so the
+ * page can send somebody who followed a link to a reply on to its thread.
+ */
+routes.get("/:id/posts/:postId", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const postId = uuidSchema.parse(c.req.param("postId"));
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroup(access);
+  assertCanReadGroupContent(access);
+
+  const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  if (!row) throw new HTTPException(404, { message: "Post not found" });
+  return c.json(toGroupPostDto(row, access, caller.personId));
+});
+
 routes.get("/:id/posts/:postId/replies", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");

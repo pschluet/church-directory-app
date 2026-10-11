@@ -44,6 +44,7 @@ export const GROUP_POST_SELECT = `
          ge.end_time,
          ge.location as event_location,
          (select count(*)::int from group_posts r where r.parent_post_id = p.id) as reply_count,
+         (select max(r.created_at) from group_posts r where r.parent_post_id = p.id) as last_reply_at,
          (
            select coalesce(
                     json_agg(
@@ -134,6 +135,7 @@ export interface GroupPostRow {
   end_time: string | null;
   event_location: string | null;
   reply_count: number;
+  last_reply_at: Date | string | null;
   attachments: AttachmentRow[];
   mentions: MentionRow[];
   rsvp_yes: number;
@@ -219,6 +221,7 @@ export function toGroupPostDto(
           }
         : null,
     replyCount: row.reply_count,
+    lastReplyAt: row.last_reply_at ? new Date(row.last_reply_at).toISOString() : null,
     canEdit: !isDeleted && isMine,
     canDelete: !isDeleted && (isMine || access.canModerate),
     canReport: !isDeleted && !isMine && access.canReadContent,

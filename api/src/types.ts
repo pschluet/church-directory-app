@@ -1244,6 +1244,8 @@ export interface GroupPostDto {
   event: GroupEventDto | null;
   /** How many replies exist, whether or not this response included them. */
   replyCount: number;
+  /** When the newest reply was posted, or null with none -- what the feed's reply summary says. */
+  lastReplyAt: string | null;
   canEdit: boolean;
   canDelete: boolean;
   canReport: boolean;

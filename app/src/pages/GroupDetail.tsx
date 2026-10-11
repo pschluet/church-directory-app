@@ -10,7 +10,7 @@ import {
   type ReactNode,
   type SyntheticEvent,
 } from "react";
-import { useNavigate, useParams } from "react-router";
+import { Navigate, useLocation, useNavigate, useParams } from "react-router";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   GROUP_DESCRIPTION_MAX,
@@ -41,6 +41,7 @@ import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
 import { LocationAutocomplete } from "../components/AddressAutocomplete";
 import { Link } from "../components/nav";
+import { useNavStack } from "../components/NavStack";
 import { TYPING_SIGNAL_INTERVAL_MS, typingLabel, useGroupLive } from "../components/useGroupLive";
 import { useFillViewport } from "../components/useFillViewport";
 import { useInfiniteScroll } from "../components/useInfiniteScroll";
@@ -58,10 +59,10 @@ import {
   MenuButton,
   MenuItem,
   Modal,
-  PageHeading,
   Spinner,
   inputClass,
   useNow,
+  usePageScrollLock,
 } from "../components/ui";
 
 /**
@@ -79,10 +80,12 @@ interface PostsPage {
 }
 
 export function GroupDetail() {
-  const { id } = useParams<{ id: string }>();
+  const { id, postId } = useParams<{ id: string; postId?: string }>();
   const groupId = id!;
   const { me, isAdmin, organizationId } = useMe();
   const queryClient = useQueryClient();
+  const location = useLocation();
+  const { canGoBack, goBack } = useNavStack();
 
   const [tab, setTab] = useState<Tab>("messages");
   const [showMembers, setShowMembers] = useState(false);
@@ -216,44 +219,83 @@ export function GroupDetail() {
 
   return (
     <>
-      <PageHeading
-        title={group.title}
-        subtitle={
-          <button type="button" onClick={() => setShowMembers(true)} className="hover:underline">
-            {group.memberCount} {group.memberCount === 1 ? "member" : "members"} ·{" "}
-            {groupVisibilityLabel(group.visibility)}
-          </button>
-        }
-        // Always exactly one action here (Join, Ask to join, a "waiting"
-        // badge, or Leave) -- keep it beside the title on a phone rather than
-        // giving it a row of its own.
-        compactActions
-        actions={
-          <div className="flex flex-wrap items-center gap-2">
-            {!group.myRole && group.visibility === "PUBLIC" && (
-              <Button disabled={joinMutation.isPending} onClick={() => joinMutation.mutate()}>
-                {joinMutation.isPending ? "Joining…" : "Join"}
-              </Button>
-            )}
-            {!group.myRole && group.canRequestToJoin && !group.pendingJoinRequestId && (
-              <Button
-                disabled={requestToJoinMutation.isPending}
-                onClick={() => requestToJoinMutation.mutate()}
-              >
-                Ask to join
-              </Button>
-            )}
-            {!group.myRole && group.pendingJoinRequestId && (
-              <Badge tone="accent">Waiting for approval</Badge>
-            )}
-            {group.myRole && (
-              <Button variant="ghost" onClick={() => setConfirmLeave(true)}>
-                Leave
-              </Button>
-            )}
+      <header className="mb-2">
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h1 className="min-w-0 truncate text-2xl font-bold text-ink md:text-3xl">
+                {postId ? "Thread" : group.title}
+              </h1>
+            </div>
+            <p className="mt-0.5 text-ink-muted">
+              {postId ? (
+                // The way out of the thread, so it reads as one: a back chevron
+                // and the group's name in the accent colour.
+                <Link
+                  to={`/groups/${groupId}`}
+                  viewTransition
+                  // Reached from the feed: leaving is a back, not a second push, so
+                  // the next Back goes to where you were before the group rather
+                  // than bouncing through every feed-to-thread switch. Opened
+                  // directly (a link, a reload with no feed behind it) there is
+                  // nothing to pop, so it replaces the thread instead.
+                  replace
+                  onClick={(event) => {
+                    if (canGoBack && (location.state as { fromFeed?: boolean } | null)?.fromFeed) {
+                      event.preventDefault();
+                      goBack();
+                    }
+                  }}
+                  className="-ml-1 inline-flex items-center gap-0.5 rounded-md px-1 font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
+                >
+                  <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+                    <path d="M12.7 4.3a1 1 0 0 1 0 1.4L8.4 10l4.3 4.3a1 1 0 0 1-1.4 1.4l-5-5a1 1 0 0 1 0-1.4l5-5a1 1 0 0 1 1.4 0Z" />
+                  </svg>
+                  {group.title}
+                </Link>
+              ) : (
+                // Styled as a link, because it is the way into group settings
+                // (members, notifications, leaving) and plain muted text hid that.
+                <button
+                  type="button"
+                  onClick={() => setShowMembers(true)}
+                  className="inline-flex items-center gap-0.5 font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
+                >
+                  {group.memberCount} {group.memberCount === 1 ? "member" : "members"} ·{" "}
+                  {groupVisibilityLabel(group.visibility)}
+                  <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+                    <path d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" />
+                  </svg>
+                </button>
+              )}
+            </p>
           </div>
-        }
-      />
+
+          {/* Only for someone not in the group yet; Leave lives in group settings. */}
+          {!group.myRole && (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {group.visibility === "PUBLIC" && (
+                <Button disabled={joinMutation.isPending} onClick={() => joinMutation.mutate()}>
+                  {joinMutation.isPending ? "Joining…" : "Join"}
+                </Button>
+              )}
+              {group.canRequestToJoin && !group.pendingJoinRequestId && (
+                <Button
+                  disabled={requestToJoinMutation.isPending}
+                  onClick={() => requestToJoinMutation.mutate()}
+                >
+                  Ask to join
+                </Button>
+              )}
+              {group.pendingJoinRequestId && <Badge tone="accent">Waiting for approval</Badge>}
+            </div>
+          )}
+
+          {/* Three small icons at the right of the title row, not a row of text
+              tabs: the title line is then the only chrome above the conversation. */}
+          {!postId && <SectionIcons tab={tab} onChange={setTab} />}
+        </div>
+      </header>
 
       {actionError && (
         <div className="mb-4">
@@ -274,8 +316,6 @@ export function GroupDetail() {
         </div>
       )}
 
-      {group.description && <GroupDescription text={group.description} />}
-
       {group.pendingJoinRequests.length > 0 && (
         <JoinRequestsBanner
           groupId={groupId}
@@ -284,26 +324,17 @@ export function GroupDetail() {
         />
       )}
 
-      <div className="mb-4 flex items-center border-b border-line">
-        <nav className="flex gap-1" aria-label="Group sections">
-          {(["messages", "files", "events"] as const).map((t) => (
-            <button
-              key={t}
-              type="button"
-              onClick={() => setTab(t)}
-              className={`-mb-px border-b-2 px-3 py-2 font-bold capitalize transition ${
-                tab === t
-                  ? "border-primary text-primary"
-                  : "border-transparent text-ink-muted hover:text-ink"
-              }`}
-            >
-              {t}
-            </button>
-          ))}
-        </nav>
-      </div>
-
-      {tab === "messages" && (
+      {postId && (
+        <ThreadView
+          group={group}
+          groupId={groupId}
+          postId={postId}
+          now={now}
+          onReport={setReporting}
+          onChanged={refresh}
+        />
+      )}
+      {!postId && tab === "messages" && (
         <MessagesTab
           group={group}
           groupId={groupId}
@@ -313,8 +344,8 @@ export function GroupDetail() {
           onChanged={refresh}
         />
       )}
-      {tab === "files" && <FilesTab groupId={groupId} />}
-      {tab === "events" && (
+      {!postId && tab === "files" && <FilesTab groupId={groupId} />}
+      {!postId && tab === "events" && (
         <EventsTab
           groupId={groupId}
           members={group.members}
@@ -331,6 +362,10 @@ export function GroupDetail() {
           isAdmin={isAdmin}
           onClose={() => setShowMembers(false)}
           onChanged={refresh}
+          onLeave={() => {
+            setShowMembers(false);
+            setConfirmLeave(true);
+          }}
         />
       )}
 
@@ -364,6 +399,66 @@ export function GroupDetail() {
   );
 }
 
+const SECTIONS: { tab: Tab; label: string; icon: ReactNode }[] = [
+  {
+    tab: "messages",
+    label: "Messages",
+    icon: (
+      <path d="M4 3h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-5.2l-3.6 3.2A.8.8 0 0 1 5.8 16.6V14H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />
+    ),
+  },
+  {
+    tab: "files",
+    label: "Files",
+    // A paperclip: files here are attachments to messages.
+    icon: (
+      <path d="M13.6 3.3a3.4 3.4 0 0 1 4.8 4.8l-7.4 7.4a2.2 2.2 0 0 1-3.1-3.1l6.4-6.4a.8.8 0 1 1 1.1 1.1l-6.4 6.4a.6.6 0 0 0 .9.9l7.4-7.4a1.8 1.8 0 1 0-2.6-2.6L6.4 11.8a3.8 3.8 0 0 0 5.4 5.4l.9-.9a.8.8 0 1 1 1.1 1.1l-.9.9a5.4 5.4 0 0 1-7.6-7.6l7.3-7.4Z" />
+    ),
+  },
+  {
+    tab: "events",
+    label: "Events",
+    icon: (
+      <path d="M6 1.8a.8.8 0 0 1 .8.8V4h6.4V2.6a.8.8 0 0 1 1.6 0V4H16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1.2V2.6a.8.8 0 0 1 .8-.8ZM3.6 8v7a.4.4 0 0 0 .4.4h12a.4.4 0 0 0 .4-.4V8H3.6Z" />
+    ),
+  },
+];
+
+/**
+ * Messages, Files and Events as three small icons beside the group's title.
+ * Icon-only to save the row that text tabs took; each keeps its name for
+ * screen readers (`aria-label`) and for a mouse (`title`), and the current one
+ * is marked with `aria-current` and a tinted background.
+ */
+function SectionIcons({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => void }) {
+  return (
+    <nav aria-label="Group sections" className="flex shrink-0 items-center gap-0.5">
+      {SECTIONS.map((section) => {
+        const current = tab === section.tab;
+        return (
+          <button
+            key={section.tab}
+            type="button"
+            aria-label={section.label}
+            title={section.label}
+            aria-current={current ? "page" : undefined}
+            onClick={() => onChange(section.tab)}
+            className={`tap-target inline-flex items-center justify-center rounded-lg transition ${
+              current
+                ? "bg-accent-light/40 text-primary"
+                : "text-ink-muted hover:bg-surface-muted hover:text-ink"
+            }`}
+          >
+            <svg aria-hidden="true" viewBox="0 0 20 20" className="h-5 w-5 fill-current">
+              {section.icon}
+            </svg>
+          </button>
+        );
+      })}
+    </nav>
+  );
+}
+
 /** Past this many characters or lines the description is previewed, not shown whole. */
 const DESCRIPTION_PREVIEW_CHARS = 200;
 const DESCRIPTION_PREVIEW_LINES = 3;
@@ -380,7 +475,7 @@ function GroupDescription({ text }: { text: string }) {
     text.length > DESCRIPTION_PREVIEW_CHARS || text.split("\n").length > DESCRIPTION_PREVIEW_LINES;
 
   return (
-    <div className="mb-4 text-ink-muted">
+    <div className="text-ink-muted">
       <p className={`whitespace-pre-line break-words ${long && !expanded ? "line-clamp-3" : ""}`}>
         {text}
       </p>
@@ -515,6 +610,26 @@ function JoinRequestsBanner({
 // Messages tab
 // ---------------------------------------------------------------------------
 
+/**
+ * Where each group's feed was scrolled to when it was last left, so coming
+ * Back from a thread lands on the message you were reading rather than at the
+ * bottom. "bottom" means it was pinned there, so new messages keep it so.
+ * Module-level on purpose: the feed unmounts while a thread is open.
+ */
+const feedScroll = new Map<string, number | "bottom">();
+
+/**
+ * No text selection and no callout on a touch screen, where a long press is how
+ * the message actions open. Left to itself the OS reads that same press as "I
+ * want to select this" and highlights words (and, on iOS, offers a callout for
+ * a link or image). Applied to the whole scrolling pane as well as each row, so
+ * a press in a gap or on a divider does not start a selection either; fields
+ * keep it, because a textarea you cannot select in is a textarea you cannot use
+ * -- and on iOS one with selection off will not even take typing.
+ */
+const TOUCH_NO_SELECT =
+  "[@media(hover:none)]:select-none [@media(hover:none)]:[-webkit-touch-callout:none] [@media(hover:none)]:[&_textarea]:select-text [@media(hover:none)]:[&_input]:select-text";
+
 /** How long a finger must stay down on a message before its drawer opens. */
 const LONG_PRESS_MS = 450;
 
@@ -573,6 +688,8 @@ function MessagesTab({
   onChanged: () => Promise<unknown>;
 }) {
   const { organizationId } = useMe();
+  // The message being edited in the bar below, if any.
+  const [editing, setEditing] = useState<GroupPostDto | null>(null);
 
   const canSeeContent =
     group.visibility === "PUBLIC" || group.myRole !== null || group.viewingAsAdmin;
@@ -615,8 +732,10 @@ function MessagesTab({
    * Measured rather than a fixed vh for the reason `useFillViewport` gives; the
    * class is the fallback where nothing can be measured.
    */
+  // The page does not scroll here -- the pane does, and the bar stays put.
+  usePageScrollLock();
   const paneRef = useRef<HTMLDivElement>(null);
-  const paneHeight = useFillViewport(paneRef, { gap: 16, min: 360 });
+  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 200 });
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
   const setScroller = useCallback((node: HTMLDivElement | null) => {
@@ -629,10 +748,14 @@ function MessagesTab({
   const atBottom = useRef(true);
   /** Set for the first load and after the member's own post: go to the newest. */
   const forceBottom = useRef(true);
+  /** The saved position is applied once, on the first load -- never again after. */
+  const restoredScroll = useRef(false);
 
   function trackBottom(): void {
     const el = scrollRef.current;
-    if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    if (!el) return;
+    atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    feedScroll.set(groupId, atBottom.current ? "bottom" : el.scrollTop);
   }
 
   function loadOlder(): void {
@@ -654,11 +777,21 @@ function MessagesTab({
       anchor.current = null;
       return;
     }
+    if (!restoredScroll.current) {
+      restoredScroll.current = true;
+      const saved = feedScroll.get(groupId);
+      if (typeof saved === "number") {
+        el.scrollTop = saved;
+        atBottom.current = false;
+        forceBottom.current = false;
+        return;
+      }
+    }
     if (forceBottom.current || atBottom.current) {
       el.scrollTop = el.scrollHeight;
       forceBottom.current = false;
     }
-  }, [posts, scrollEl]);
+  }, [posts, scrollEl, groupId]);
 
   /** An image finishing loading makes its row taller; stay pinned if that is where we were. */
   const onMediaLoad = useCallback(() => {
@@ -700,7 +833,7 @@ function MessagesTab({
             onScroll={trackBottom}
             role="log"
             aria-label="Messages"
-            className="min-h-0 flex-1 overflow-y-auto overscroll-contain"
+            className={`min-h-0 flex-1 overflow-y-auto overscroll-contain ${TOUCH_NO_SELECT}`}
           >
             {/* The sentinel loads on its own; the button is for anyone who cannot scroll to it. */}
             <div ref={sentinelRef} aria-hidden="true" />
@@ -748,6 +881,8 @@ function MessagesTab({
                     onChanged={onChanged}
                     onMediaLoad={onMediaLoad}
                     canReply={group.canReply}
+                    onEdit={setEditing}
+                    editingId={editing?.id ?? null}
                   />
                 )
               )}
@@ -762,13 +897,15 @@ function MessagesTab({
             {typingLabel(typing)}
           </p>
           <div className="shrink-0 border-t border-line pt-3">
-            {group.canPost ? (
+            {group.canPost || editing ? (
               <ChatComposer
                 groupId={groupId}
                 members={group.members}
                 placeholder={`Message ${group.title}`}
                 canStartEvent
-                onPosted={posted}
+                editing={editing}
+                onEditDone={() => setEditing(null)}
+                onPosted={editing ? async () => void (await onChanged()) : posted}
               />
             ) : group.canReply ? (
               <p className="text-sm text-ink-muted">
@@ -782,8 +919,217 @@ function MessagesTab({
   );
 }
 
+/**
+ * A message's thread, on a page of its own: the message at the top as a card,
+ * its replies beneath, and the same message bar as the main page at the foot.
+ *
+ * Laid out like the feed -- the replies scroll inside a fixed-height pane and
+ * the bar is docked under it -- so the two pages feel like one conversation at
+ * two depths. A new reply arrives by the same live poll as everything else: the
+ * message and its replies are keyed under `groupPosts`, which that poll
+ * invalidates.
+ */
+function ThreadView({
+  group,
+  groupId,
+  postId,
+  now,
+  onReport,
+  onChanged,
+}: {
+  group: GroupDto;
+  groupId: string;
+  postId: string;
+  now: Date;
+  onReport: (post: GroupPostDto) => void;
+  onChanged: () => Promise<unknown>;
+}) {
+  const { organizationId } = useMe();
+  const location = useLocation();
+  // Set by "Reply" in a message's menu; a plain tap on the reply count leaves it
+  // off, so a phone's keyboard does not open unasked.
+  const [editing, setEditing] = useState<GroupPostDto | null>(null);
+  const focusComposer = Boolean(
+    (location.state as { focusComposer?: boolean } | null)?.focusComposer
+  );
+
+  const rootQuery = useQuery({
+    queryKey: qk.groupPost(organizationId, groupId, postId),
+    queryFn: ({ signal }) => api<GroupPostDto>(`/groups/${groupId}/posts/${postId}`, { signal }),
+    refetchOnWindowFocus: true,
+  });
+  const root = rootQuery.data;
+
+  const repliesQuery = useQuery({
+    queryKey: qk.groupReplies(organizationId, groupId, postId),
+    queryFn: ({ signal }) =>
+      api<{ replies: GroupPostDto[] }>(`/groups/${groupId}/posts/${postId}/replies`, { signal }),
+    enabled: Boolean(root) && root?.parentPostId === null,
+    refetchOnWindowFocus: true,
+  });
+  const replies = repliesQuery.data?.replies;
+  const items = useMemo(() => buildChatItems(replies ?? [], now), [replies, now]);
+
+  usePageScrollLock();
+  const paneRef = useRef<HTMLDivElement>(null);
+  const paneHeight = useFillViewport(paneRef, { gap: 8, min: 200 });
+  const scrollRef = useRef<HTMLDivElement | null>(null);
+  const atBottom = useRef(true);
+  const forceBottom = useRef(true);
+
+  function trackBottom(): void {
+    const el = scrollRef.current;
+    if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  }
+
+  // Same rule as the feed: first load, the member's own reply, or already near
+  // the bottom pins to the newest; anything else leaves the view alone.
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !replies) return;
+    if (forceBottom.current || atBottom.current) {
+      el.scrollTop = el.scrollHeight;
+      forceBottom.current = false;
+    }
+  }, [replies]);
+
+  const onMediaLoad = useCallback(() => {
+    const el = scrollRef.current;
+    if (el && atBottom.current) el.scrollTop = el.scrollHeight;
+  }, []);
+
+  if (rootQuery.isPending) return <Spinner label="Loading the thread" />;
+  if (rootQuery.error || !root) {
+    return (
+      <div className="space-y-3">
+        <ErrorNotice
+          message={
+            rootQuery.error instanceof ApiError && rootQuery.error.status === 404
+              ? "That message was not found."
+              : (rootQuery.error?.message ?? "Could not load that message")
+          }
+        />
+        <Link to={`/groups/${groupId}`} className="font-bold text-accent hover:underline">
+          Back to {group.title}
+        </Link>
+      </div>
+    );
+  }
+  // A link to a reply leads to the thread it belongs to.
+  if (root.parentPostId) {
+    return <Navigate to={threadPath(groupId, root.parentPostId)} replace state={location.state} />;
+  }
+
+  const count = replies?.length ?? root.replyCount;
+
+  return (
+    <div
+      ref={paneRef}
+      className="flex h-[70vh] flex-col"
+      style={paneHeight ? { height: paneHeight } : undefined}
+    >
+      <div
+        ref={scrollRef}
+        onScroll={trackBottom}
+        role="log"
+        aria-label="Thread"
+        className={`min-h-0 flex-1 overflow-y-auto overscroll-contain ${TOUCH_NO_SELECT}`}
+      >
+        <ol>
+          <ChatRow
+            variant="root"
+            post={root}
+            showHeader
+            groupId={groupId}
+            members={group.members}
+            now={now}
+            onReport={onReport}
+            onChanged={onChanged}
+            onMediaLoad={onMediaLoad}
+            onEdit={setEditing}
+            editingId={editing?.id ?? null}
+          />
+        </ol>
+
+        <div className="my-4 flex items-center gap-3 text-xs font-bold uppercase tracking-wide text-ink-muted">
+          <span className="h-px flex-1 bg-line" />
+          {count === 0 ? "No replies yet" : `${count} ${count === 1 ? "reply" : "replies"}`}
+          <span className="h-px flex-1 bg-line" />
+        </div>
+
+        {repliesQuery.isPending ? (
+          <Spinner label="Loading replies" />
+        ) : repliesQuery.error ? (
+          <ErrorNotice
+            message={repliesQuery.error.message}
+            onRetry={() => void repliesQuery.refetch()}
+          />
+        ) : (
+          <>
+            {count === 0 && (
+              <p className="px-2 pb-3 text-center text-sm text-ink-muted">
+                {group.canReply ? "Be the first to reply." : "Nobody has replied yet."}
+              </p>
+            )}
+            <ol>
+              {items.map((item) =>
+                item.type === "divider" ? (
+                  <li
+                    key={item.key}
+                    data-day-divider=""
+                    className="my-3 flex items-center gap-3 text-xs font-bold uppercase tracking-wide text-ink-muted"
+                  >
+                    <span className="h-px flex-1 bg-line" />
+                    {item.label}
+                    <span className="h-px flex-1 bg-line" />
+                  </li>
+                ) : (
+                  <ChatRow
+                    key={item.key}
+                    post={item.post}
+                    showHeader={item.showHeader}
+                    groupId={groupId}
+                    members={group.members}
+                    now={now}
+                    onReport={onReport}
+                    onChanged={onChanged}
+                    onMediaLoad={onMediaLoad}
+                    onEdit={setEditing}
+                    editingId={editing?.id ?? null}
+                    isReply
+                  />
+                )
+              )}
+            </ol>
+          </>
+        )}
+      </div>
+
+      <div className="shrink-0 border-t border-line pt-3">
+        {group.canReply || editing ? (
+          <ChatComposer
+            groupId={groupId}
+            members={group.members}
+            parentPostId={postId}
+            placeholder="Reply…"
+            autoFocus={focusComposer}
+            editing={editing}
+            onEditDone={() => setEditing(null)}
+            onPosted={async () => {
+              if (!editing) forceBottom.current = true;
+              await onChanged();
+            }}
+          />
+        ) : (
+          <p className="text-sm text-ink-muted">You cannot reply in this group.</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
 /** The avatar, linking to the person's page. The name beside it carries the accessible name. */
-function AuthorAvatar({ post }: { post: GroupPostDto }) {
+function AuthorAvatar({ post, size = "sm" }: { post: GroupPostDto; size?: "sm" | "md" }) {
   return (
     <Link
       to={`/people/${post.authorPersonId}`}
@@ -794,7 +1140,7 @@ function AuthorAvatar({ post }: { post: GroupPostDto }) {
       <Avatar
         thumbUrl={post.authorThumbUrl}
         person={{ firstName: post.authorName, lastName: null }}
-        size="sm"
+        size={size}
       />
     </Link>
   );
@@ -807,6 +1153,48 @@ function AuthorName({ post }: { post: GroupPostDto }) {
       className="font-bold text-ink transition hover:text-accent hover:underline"
     >
       {post.authorName}
+    </Link>
+  );
+}
+
+/** Where a message's thread lives. */
+function threadPath(groupId: string, postId: string): string {
+  return `/groups/${groupId}/threads/${postId}`;
+}
+
+function ChatBubbleIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20" className={`${className} fill-current`}>
+      <path d="M4 3h12a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-5.2l-3.6 3.2A.8.8 0 0 1 5.8 16.6V14H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2Z" />
+    </svg>
+  );
+}
+
+/**
+ * Under a message that has replies: how many, and how long ago the last one
+ * was, as a link into the thread. Styled as the tappable thing it is -- a
+ * quiet accent pill that tints on hover -- rather than as plain text.
+ */
+function ReplySummary({ post, groupId, now }: { post: GroupPostDto; groupId: string; now: Date }) {
+  return (
+    <Link
+      to={threadPath(groupId, post.id)}
+      // Remembered so the thread's way out can pop this entry rather than push another.
+      state={{ fromFeed: true }}
+      className="-ml-2 mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-sm font-bold text-accent transition hover:bg-accent-light/30 focus-visible:outline-2 focus-visible:outline-accent"
+    >
+      <ChatBubbleIcon />
+      <span>
+        {post.replyCount} {post.replyCount === 1 ? "reply" : "replies"}
+      </span>
+      {post.lastReplyAt && (
+        <span className="truncate font-normal text-ink-muted">
+          · last reply {formatPostedAt(post.lastReplyAt, now)}
+        </span>
+      )}
+      <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 shrink-0 fill-current">
+        <path d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" />
+      </svg>
     </Link>
   );
 }
@@ -827,11 +1215,20 @@ function ChatRow({
   onMediaLoad,
   canReply = false,
   isReply = false,
+  variant = "row",
+  onEdit,
+  editingId = null,
 }: {
   post: GroupPostDto;
   showHeader: boolean;
   /** Whether the caller may reply here; offers "Reply" in the actions menu. */
   canReply?: boolean;
+  /** `root` is the message a thread page is about: a card, with no thread controls of its own. */
+  variant?: "row" | "root";
+  /** Edit a message in the page's message bar. Without it a message edits inline. */
+  onEdit?: (post: GroupPostDto) => void;
+  /** The message currently being edited in the bar, which this row marks. */
+  editingId?: string | null;
   groupId: string;
   members: GroupMemberDto[];
   now: Date;
@@ -840,18 +1237,10 @@ function ChatRow({
   onMediaLoad?: () => void;
   isReply?: boolean;
 }) {
-  const { organizationId } = useMe();
+  const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [showReplies, setShowReplies] = useState(false);
-  const [replying, setReplying] = useState(false);
-
-  const repliesQuery = useQuery({
-    queryKey: qk.groupReplies(organizationId, groupId, post.id),
-    queryFn: ({ signal }) =>
-      api<{ replies: GroupPostDto[] }>(`/groups/${groupId}/posts/${post.id}/replies`, { signal }),
-    enabled: showReplies,
-  });
+  const isRoot = variant === "root";
 
   const remove = useMutation({
     mutationFn: () => api(`/groups/${groupId}/posts/${post.id}`, { method: "DELETE" }),
@@ -863,9 +1252,11 @@ function ChatRow({
 
   const isDeleted = post.deletedAt !== null;
   // Replying lives in the actions menu rather than inline, so a row stays just
-  // the message. Not for a reply (one level of threading) or a deleted post.
-  const showReplyAction = canReply && !isReply && !isDeleted;
-  const header = showHeader || isReply;
+  // the message, and it opens the thread page -- where the reply bar is. Not for
+  // a reply (one level of threading), a deleted post, or the thread's own root
+  // (the bar is right there).
+  const showReplyAction = canReply && !isReply && !isDeleted && !isRoot;
+  const header = showHeader || isRoot;
 
   /*
    * What a message offers, in one list, so the hover menu on a desktop and the
@@ -874,8 +1265,20 @@ function ChatRow({
    * so this is how you get the text out.
    */
   const actions: { label: string; danger?: boolean; onSelect: () => void }[] = [];
-  if (showReplyAction) actions.push({ label: "Reply", onSelect: () => setReplying(true) });
-  if (!isDeleted && post.canEdit) actions.push({ label: "Edit", onSelect: () => setEditing(true) });
+  if (showReplyAction)
+    actions.push({
+      label: "Reply",
+      onSelect: () =>
+        void navigate(threadPath(groupId, post.id), {
+          viewTransition: true,
+          state: { focusComposer: true, fromFeed: true },
+        }),
+    });
+  if (!isDeleted && post.canEdit)
+    actions.push({
+      label: "Edit",
+      onSelect: () => (onEdit && post.kind === "MESSAGE" ? onEdit(post) : setEditing(true)),
+    });
   if (!isDeleted && post.canDelete)
     actions.push({ label: "Delete", danger: true, onSelect: () => setConfirmDelete(true) });
   if (!isDeleted && post.canReport)
@@ -918,7 +1321,14 @@ function ChatRow({
           swallowClick.current = false;
         }, 400);
         navigator.vibrate?.(10);
+        // The OS may have begun a selection during the hold; drop it.
+        window.getSelection()?.removeAllRanges();
         setSheetOpen(true);
+        // The OS can begin the selection a beat after the hold, once the sheet is
+        // already up; clear again on the next frames.
+        for (const delay of [50, 250]) {
+          window.setTimeout(() => window.getSelection()?.removeAllRanges(), delay);
+        }
       }, LONG_PRESS_MS),
     };
   }
@@ -947,22 +1357,28 @@ function ChatRow({
       onContextMenu={(event) => {
         if (sheetAvailable && window.matchMedia?.("(hover: none)").matches) event.preventDefault();
       }}
-      className={`group/row relative flex gap-3 rounded-md px-2 ${
-        // A byline starts a new run and gets some air above it; a continuation
-        // sits close under the line before it, as in a chat.
-        header ? "pb-0.5 pt-2" : "py-px"
+      className={`group/row relative flex gap-3 ${
+        isRoot
+          ? // The message a thread is about: a card, so it reads as the anchor
+            // the replies hang from rather than as one more line.
+            "gap-4 rounded-xl p-4 ring-1 ring-line"
+          : // A byline starts a new run and gets some air above it; a continuation
+            // sits close under the line before it, as in a chat.
+            `rounded-md px-2 ${header ? "pb-0.5 pt-2" : "py-px"}`
       } ${
         // The message the drawer is about stays marked while it is open, and
         // starts to show during the hold, so a long press is never a guess.
-        sheetOpen || pressing
+        sheetOpen || pressing || editingId === post.id
           ? "bg-accent-light/30 ring-1 ring-accent/50"
-          : "focus-within:bg-surface-muted/60 hover:bg-surface-muted/60"
-      } [@media(hover:none)]:select-none [@media(hover:none)]:[-webkit-touch-callout:none]`}
+          : isRoot
+            ? "bg-surface-muted/60"
+            : "focus-within:bg-surface-muted/60 hover:bg-surface-muted/60"
+      } ${TOUCH_NO_SELECT}`}
     >
       {/* The same-width gutter on every row keeps a run of messages lined up under its byline. */}
-      <div className="w-10 shrink-0">
+      <div className={`shrink-0 ${isRoot ? "w-14" : "w-10"}`}>
         {header ? (
-          <AuthorAvatar post={post} />
+          <AuthorAvatar post={post} size={isRoot ? "md" : "sm"} />
         ) : (
           <time
             dateTime={post.createdAt}
@@ -1028,66 +1444,10 @@ function ChatRow({
           A deleted post keeps its reply thread reachable -- "a placeholder
           stays in its place so any replies keep their context"
           (requirements/groups.md) means the thread, not just the tombstone
-          text. Only starting a *new* reply is cut off once there is nothing
-          left to reply to.
+          text -- so the summary shows whenever there are replies.
         */}
-        {!isReply && post.replyCount > 0 && (
-          <div className="mt-1 flex items-center gap-4 text-sm">
-            <button
-              type="button"
-              className="font-bold text-accent hover:underline"
-              onClick={() => setShowReplies((v) => !v)}
-            >
-              {showReplies
-                ? "Hide replies"
-                : `${post.replyCount} ${post.replyCount === 1 ? "reply" : "replies"}`}
-            </button>
-          </div>
-        )}
-
-        {showReplies && (
-          <ul className="mt-2 border-l-2 border-line pl-2">
-            {repliesQuery.isPending ? (
-              <li>
-                <Spinner label="Loading replies" />
-              </li>
-            ) : (
-              (repliesQuery.data?.replies ?? []).map((reply) => (
-                <ChatRow
-                  key={reply.id}
-                  post={reply}
-                  showHeader
-                  groupId={groupId}
-                  members={members}
-                  now={now}
-                  onReport={onReport}
-                  onChanged={async () => {
-                    await onChanged();
-                    await repliesQuery.refetch();
-                  }}
-                  isReply
-                />
-              ))
-            )}
-          </ul>
-        )}
-
-        {replying && (
-          <div className="mt-2">
-            <ChatComposer
-              groupId={groupId}
-              members={members}
-              parentPostId={post.id}
-              placeholder="Write a reply…"
-              onCancel={() => setReplying(false)}
-              onPosted={async () => {
-                setReplying(false);
-                setShowReplies(true);
-                await repliesQuery.refetch();
-                await onChanged();
-              }}
-            />
-          </div>
+        {!isReply && !isRoot && post.replyCount > 0 && (
+          <ReplySummary post={post} groupId={groupId} now={now} />
         )}
       </div>
 
@@ -1111,7 +1471,7 @@ function ChatRow({
       )}
 
       {sheetOpen && (
-        <Modal title="Message" onClose={() => setSheetOpen(false)}>
+        <Modal noSelect title="Message" onClose={() => setSheetOpen(false)}>
           {/* Which message this is for: its author and the start of what it says. */}
           <p className="mb-2 line-clamp-2 break-words rounded-md border-l-4 border-accent bg-accent-light/30 px-3 py-2 text-sm text-ink">
             <span className="font-bold">{post.authorName}</span>
@@ -1381,6 +1741,8 @@ function MentionTextarea({
   ariaLabel,
   dropUp = false,
   bare = false,
+  autoFocus = false,
+  focusToken,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -1398,12 +1760,22 @@ function MentionTextarea({
   dropUp?: boolean;
   /** No border or background of its own; a parent draws the box. */
   bare?: boolean;
+  autoFocus?: boolean;
+  /** Focus (caret at the end) whenever this changes -- for text put in the box from outside. */
+  focusToken?: unknown;
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [query, setQuery] = useState<{ atIndex: number; text: string } | null>(null);
   const [highlighted, setHighlighted] = useState(0);
   const [caret, setCaret] = useState<{ top: number; left: number; height: number } | null>(null);
   const [pendingCursor, setPendingCursor] = useState<number | null>(null);
+
+  useEffect(() => {
+    const el = textareaRef.current;
+    if (focusToken === undefined || !el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, [focusToken]);
 
   useLayoutEffect(() => {
     const el = textareaRef.current;
@@ -1492,6 +1864,7 @@ function MentionTextarea({
       <textarea
         ref={textareaRef}
         rows={rows}
+        autoFocus={autoFocus}
         aria-label={ariaLabel}
         className={
           bare
@@ -1537,6 +1910,11 @@ function MentionTextarea({
   );
 }
 
+/**
+ * Editing a post in place. Only an event is edited inline: a message is edited
+ * in the message bar at the foot of the page (see `ChatComposer`'s `editing`),
+ * the same box every message is written in.
+ */
 function EditForm({
   post,
   groupId,
@@ -1550,7 +1928,8 @@ function EditForm({
   onClose: () => void;
   onSaved: () => Promise<unknown>;
 }) {
-  return post.kind === "EVENT" && post.event ? (
+  if (post.kind !== "EVENT" || !post.event) return null;
+  return (
     <EventEditForm
       post={post}
       event={post.event}
@@ -1559,74 +1938,6 @@ function EditForm({
       onClose={onClose}
       onSaved={onSaved}
     />
-  ) : (
-    <MessageEditForm
-      post={post}
-      groupId={groupId}
-      members={members}
-      onClose={onClose}
-      onSaved={onSaved}
-    />
-  );
-}
-
-function MessageEditForm({
-  post,
-  groupId,
-  members,
-  onClose,
-  onSaved,
-}: {
-  post: GroupPostDto;
-  groupId: string;
-  members: GroupMemberDto[];
-  onClose: () => void;
-  onSaved: () => Promise<unknown>;
-}) {
-  const [body, setBody] = useState(post.body ?? "");
-  const mentionable = useMentionable(members);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  async function save(): Promise<void> {
-    setBusy(true);
-    setError(null);
-    try {
-      // Mentions are re-read from the text, so adding or deleting an @Name here
-      // adds or removes the mention -- and only the newly added are notified.
-      await api(`/groups/${groupId}/posts/${post.id}`, {
-        method: "PATCH",
-        body: { body, mentionedAppUserIds: findMentionedAppUserIds(body, mentionable) },
-      });
-      onClose();
-      await onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Could not save that change");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <div className="mt-2 space-y-2">
-      <MentionTextarea
-        value={body}
-        onChange={setBody}
-        members={mentionable}
-        placeholder=""
-        minHeightClass="min-h-24"
-        maxLength={GROUP_POST_BODY_MAX}
-      />
-      {error && <p className="text-sm font-bold text-primary">{error}</p>}
-      <div className="flex gap-2">
-        <Button disabled={busy || body.trim() === ""} onClick={() => void save()}>
-          {busy ? "Saving…" : "Save"}
-        </Button>
-        <Button variant="ghost" onClick={onClose} disabled={busy}>
-          Cancel
-        </Button>
-      </div>
-    </div>
   );
 }
 
@@ -1765,6 +2076,33 @@ function PlusIcon() {
   );
 }
 
+/** A check or an x in a circle, in the colour of whatever wraps it. */
+function CircleIcon({ tone }: { tone: "check" | "x" }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 24 24" className="h-7 w-7">
+      <circle cx="12" cy="12" r="10" fill="none" stroke="currentColor" strokeWidth="2" />
+      {tone === "check" ? (
+        <path
+          d="m7.5 12.5 3 3 6-6.5"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+        />
+      ) : (
+        <path
+          d="m8.5 8.5 7 7m0-7-7 7"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2.2"
+          strokeLinecap="round"
+        />
+      )}
+    </svg>
+  );
+}
+
 function SendIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20" className="h-5 w-5 fill-current">
@@ -1788,7 +2126,9 @@ function ChatComposer({
   parentPostId,
   placeholder,
   canStartEvent = false,
-  onCancel,
+  autoFocus = false,
+  editing = null,
+  onEditDone,
   onPosted,
 }: {
   groupId: string;
@@ -1797,8 +2137,16 @@ function ChatComposer({
   placeholder: string;
   /** Offer "Event…" in the + menu. Never for a reply: a reply cannot be an event. */
   canStartEvent?: boolean;
-  /** Offered as "Cancel" (and Escape) -- for a reply, which is opened on purpose and can be abandoned. */
-  onCancel?: () => void;
+  /** Focus the bar on arrival -- for a reply started from a message's menu. */
+  autoFocus?: boolean;
+  /**
+   * A message being edited. The bar takes its text, shows "Editing message", and
+   * swaps the send button for accept and cancel -- the same box for writing and
+   * for editing, rather than a second input appearing inside the conversation.
+   */
+  editing?: GroupPostDto | null;
+  /** Editing ended, by saving or cancelling. */
+  onEditDone?: () => void;
   onPosted: () => Promise<unknown>;
 }) {
   const [body, setBody] = useState("");
@@ -1814,17 +2162,60 @@ function ChatComposer({
    * server forgets it after a few seconds, so there is no "stopped" to send; a
    * failure is not worth telling anyone about.
    */
+  /*
+   * Entering edit mode puts the message's text in the bar; whatever was half
+   * typed there is set aside and comes back when editing ends, so starting an
+   * edit does not cost anyone their draft.
+   */
+  const draft = useRef<string | null>(null);
+  const editingId = editing?.id;
+  useEffect(() => {
+    if (editing) {
+      draft.current ??= body;
+      setBody(editing.body ?? "");
+      setError(null);
+    } else if (draft.current !== null) {
+      setBody(draft.current);
+      draft.current = null;
+    }
+    // Only when the message being edited changes, not on every keystroke.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editingId]);
+
   const lastSignal = useRef(0);
   function onBodyChange(next: string): void {
     setBody(next);
-    if (parentPostId || next.trim() === "") return;
+    if (editing || parentPostId || next.trim() === "") return;
     const at = Date.now();
     if (at - lastSignal.current < TYPING_SIGNAL_INTERVAL_MS) return;
     lastSignal.current = at;
     void Promise.resolve(api(`/groups/${groupId}/typing`, { method: "POST" })).catch(() => {});
   }
 
+  const unchanged = editing !== null && body.trim() === (editing.body ?? "").trim();
+
+  async function saveEdit(): Promise<void> {
+    if (!editing || busy || body.trim() === "" || unchanged) return;
+    setBusy(true);
+    setError(null);
+    try {
+      // Mentions are re-read from the text, so adding or deleting an @Name here
+      // adds or removes the mention -- and only the newly added are notified.
+      await api(`/groups/${groupId}/posts/${editing.id}`, {
+        method: "PATCH",
+        body: { body, mentionedAppUserIds: findMentionedAppUserIds(body, mentionable) },
+      });
+      onEditDone?.();
+      await onPosted();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not save that change");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function submit(): Promise<void> {
+    if (editing) return void saveEdit();
     if (busy || body.trim() === "") return;
     setBusy(true);
     setError(null);
@@ -1850,15 +2241,23 @@ function ChatComposer({
   }
 
   return (
-    // Escape abandons a reply. The mention list stops its own Escape from
-    // reaching here, so closing the list does not also close the reply.
+    // Escape abandons an edit. The mention list stops its own Escape from
+    // reaching here, so closing the list does not also cancel the edit.
     <div
       className="space-y-2"
       onKeyDown={(event) => {
-        if (onCancel && event.key === "Escape") onCancel();
+        if (editing && event.key === "Escape") onEditDone?.();
       }}
     >
-      {picker.attachments.length > 0 && (
+      {editing && (
+        <p className="flex items-center gap-1.5 px-1 text-sm font-bold text-accent">
+          <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+            <path d="M13.6 2.6a2 2 0 0 1 2.8 0l1 1a2 2 0 0 1 0 2.8L7.6 16.2a1 1 0 0 1-.5.3l-3.4.8a.8.8 0 0 1-1-1l.8-3.4a1 1 0 0 1 .3-.5l9.8-9.8Z" />
+          </svg>
+          Editing message
+        </p>
+      )}
+      {picker.attachments.length > 0 && !editing && (
         <ul className="flex flex-wrap gap-2">
           {picker.attachments.map((attachment) => (
             <li key={attachment.photoKey} className="relative">
@@ -1886,23 +2285,30 @@ function ChatComposer({
         </ul>
       )}
 
-      <div className="flex items-end gap-1 rounded-lg border border-line bg-surface px-1 py-1 focus-within:border-accent">
-        <MenuButton
-          portal
-          align="left"
-          label="Add to this message"
-          trigger={<PlusIcon />}
-          className="shrink-0"
-        >
-          <MenuItem
-            onSelect={() => {
-              if (!picker.busy && !picker.full) picker.open();
-            }}
+      <div
+        className={`flex items-end gap-1 rounded-lg border bg-surface px-1 py-1 focus-within:border-accent ${
+          editing ? "border-accent" : "border-line"
+        }`}
+      >
+        {/* Attachments cannot be changed on a message already sent. */}
+        {!editing && (
+          <MenuButton
+            portal
+            align="left"
+            label="Add to this message"
+            trigger={<PlusIcon />}
+            className="shrink-0"
           >
-            Photo or file
-          </MenuItem>
-          {canStartEvent && <MenuItem onSelect={() => setEventOpen(true)}>Event…</MenuItem>}
-        </MenuButton>
+            <MenuItem
+              onSelect={() => {
+                if (!picker.busy && !picker.full) picker.open();
+              }}
+            >
+              Photo or file
+            </MenuItem>
+            {canStartEvent && <MenuItem onSelect={() => setEventOpen(true)}>Event…</MenuItem>}
+          </MenuButton>
+        )}
 
         <MentionTextarea
           bare
@@ -1913,29 +2319,46 @@ function ChatComposer({
           onChange={onBodyChange}
           members={mentionable}
           placeholder={placeholder}
-          ariaLabel={parentPostId ? "Reply" : "Message"}
+          autoFocus={autoFocus}
+          focusToken={editingId}
+          ariaLabel={editing ? "Edit message" : parentPostId ? "Reply" : "Message"}
           maxLength={GROUP_POST_BODY_MAX}
           onSubmit={() => void submit()}
         />
 
-        <button
-          type="button"
-          aria-label="Send"
-          disabled={busy || body.trim() === ""}
-          onClick={() => void submit()}
-          className="tap-target inline-flex shrink-0 items-center justify-center rounded-md text-primary transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:text-ink-muted disabled:opacity-60"
-        >
-          <SendIcon />
-        </button>
+        {editing ? (
+          <div className="flex shrink-0 items-center gap-1">
+            <button
+              type="button"
+              aria-label="Cancel editing"
+              disabled={busy}
+              onClick={() => onEditDone?.()}
+              className="tap-target inline-flex items-center justify-center rounded-full text-red-600 transition hover:bg-red-50 disabled:opacity-60"
+            >
+              <CircleIcon tone="x" />
+            </button>
+            <button
+              type="button"
+              aria-label="Save changes"
+              disabled={busy || body.trim() === "" || unchanged}
+              onClick={() => void saveEdit()}
+              className="tap-target inline-flex items-center justify-center rounded-full text-green-600 transition hover:bg-green-50 disabled:cursor-not-allowed disabled:text-ink-muted disabled:opacity-60"
+            >
+              <CircleIcon tone="check" />
+            </button>
+          </div>
+        ) : (
+          <button
+            type="button"
+            aria-label="Send"
+            disabled={busy || body.trim() === ""}
+            onClick={() => void submit()}
+            className="tap-target inline-flex shrink-0 items-center justify-center rounded-md text-primary transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:text-ink-muted disabled:opacity-60"
+          >
+            <SendIcon />
+          </button>
+        )}
       </div>
-
-      {onCancel && (
-        <div className="flex justify-end">
-          <Button variant="ghost" onClick={onCancel} disabled={busy}>
-            Cancel
-          </Button>
-        </div>
-      )}
 
       {picker.elements}
       {(picker.error || error) && (
@@ -2445,12 +2868,15 @@ function MembersModal({
   isAdmin,
   onClose,
   onChanged,
+  onLeave,
 }: {
   group: GroupDto;
   groupId: string;
   isAdmin: boolean;
   onClose: () => void;
   onChanged: () => Promise<unknown>;
+  /** Close this and ask to leave the group. */
+  onLeave: () => void;
 }) {
   const [search, setSearch] = useState("");
   const [adding, setAdding] = useState(false);
@@ -2460,6 +2886,14 @@ function MembersModal({
   return (
     <Modal title={group.title} onClose={onClose} wide={group.canModerate}>
       <div className="space-y-6">
+        {/* Not on the group's own page: it only took room from the messages. */}
+        {group.description && (
+          <div>
+            <p className="mb-1 font-bold text-ink">About</p>
+            <GroupDescription text={group.description} />
+          </div>
+        )}
+
         <div>
           <p className="mb-1 font-bold text-ink">Admins</p>
           <p className="text-sm text-ink-muted">{admins.map((a) => a.name).join(", ") || "None"}</p>
@@ -2504,6 +2938,14 @@ function MembersModal({
             isAdmin={isAdmin}
             onChanged={onChanged}
           />
+        )}
+
+        {group.myRole && (
+          <div className="border-t border-line pt-4">
+            <Button variant="danger" onClick={onLeave}>
+              Leave group
+            </Button>
+          </div>
         )}
 
         {adding && (

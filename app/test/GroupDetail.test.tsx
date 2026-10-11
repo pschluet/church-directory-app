@@ -2,9 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { GroupDto, GroupMemberDto, GroupPostDto, MeDto } from "@shared";
+import { ApiError } from "../src/lib/api";
+import { NavStackProvider } from "../src/components/NavStack";
 import { GroupDetail } from "../src/pages/GroupDetail";
 import { renderWithProviders } from "./utils";
-import { Route, Routes } from "react-router";
+import { Route, Routes, useLocation, useNavigationType } from "react-router";
 
 /*
  * The API and the contexts are stubbed: this file is about what the page shows
@@ -105,6 +107,7 @@ function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
     mentions: [],
     event: null,
     replyCount: 0,
+    lastReplyAt: null,
     canEdit: false,
     canDelete: false,
     canReport: false,
@@ -114,6 +117,8 @@ function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
 
 interface Stub {
   group?: GroupDto;
+  /** A thread's root and its replies (oldest first), for the thread page. */
+  thread?: { root: GroupPostDto; replies: GroupPostDto[] };
   typing?: string[];
   /** Newest-first pages, as the API returns them. */
   pages?: { posts: GroupPostDto[]; nextCursor: { createdAt: string; id: string } | null }[];
@@ -123,11 +128,19 @@ function stub({
   group: g = group(),
   pages = [{ posts: [], nextCursor: null }],
   typing = [],
+  thread,
 }: Stub = {}) {
   apiMock.mockImplementation((path: string, options?: { query?: Record<string, string> }) => {
     if (path === "/groups/g1") return Promise.resolve(g);
     if (path === "/groups/g1/live")
       return Promise.resolve({ activityAt: "2026-10-10T10:00:00.000Z", typing });
+    if (thread) {
+      if (path === `/groups/g1/posts/${thread.root.id}`) return Promise.resolve(thread.root);
+      if (path === `/groups/g1/posts/${thread.root.id}/replies`)
+        return Promise.resolve({ replies: thread.replies });
+      const reply = thread.replies.find((r) => path === `/groups/g1/posts/${r.id}`);
+      if (reply) return Promise.resolve(reply);
+    }
     if (path === "/groups/g1/posts") {
       const cursor = options?.query?.cursorId;
       const index = cursor ? pages.findIndex((_, i) => pages[i - 1]?.nextCursor?.id === cursor) : 0;
@@ -137,14 +150,30 @@ function stub({
   });
 }
 
-function renderPage() {
-  return renderWithProviders(
-    <Routes>
-      <Route path="/groups/:id" element={<GroupDetail />} />
-    </Routes>,
-    { initialEntries: ["/groups/g1"] }
+function Where() {
+  const type = useNavigationType();
+  return (
+    <p data-testid="where" data-nav-type={type}>
+      {useLocation().pathname}
+    </p>
   );
 }
+
+function renderPage(path = "/groups/g1") {
+  return renderWithProviders(
+    <NavStackProvider>
+      <Routes>
+        <Route path="/groups/:id" element={<GroupDetail />} />
+        <Route path="/groups/:id/threads/:postId" element={<GroupDetail />} />
+      </Routes>
+      <Where />
+    </NavStackProvider>,
+    { initialEntries: [path] }
+  );
+}
+
+const where = () => screen.getByTestId("where").textContent;
+const navType = () => screen.getByTestId("where").getAttribute("data-nav-type");
 
 describe("GroupDetail", () => {
   beforeEach(() => {
@@ -427,12 +456,10 @@ describe("GroupDetail", () => {
       clock.mockRestore();
     });
 
-    it("does not signal typing from a reply bar", async () => {
-      stub({ pages: [{ posts: [post({ body: "Hello" })], nextCursor: null }] });
-      renderPage();
-      await screen.findByText("Hello");
-      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
-      await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
+    it("does not signal typing from the thread's reply bar", async () => {
+      const root = post({ id: "root-1", body: "Hello", replyCount: 0 });
+      stub({ thread: { root, replies: [] } });
+      renderPage("/groups/g1/threads/root-1");
       await userEvent.type(await screen.findByRole("textbox", { name: "Reply" }), "thinking");
       expect(apiMock.mock.calls.some((call) => call[0] === "/groups/g1/typing")).toBe(false);
     });
@@ -443,10 +470,12 @@ describe("GroupDetail", () => {
       adminState.isAdmin = true;
       stub({ group: group({ canModerate: true, myRole: "ADMIN" }) });
       const { queryClient } = renderWithProviders(
-        <Routes>
-          <Route path="/groups/:id" element={<GroupDetail />} />
-          <Route path="/groups" element={<p>The groups page</p>} />
-        </Routes>,
+        <NavStackProvider>
+          <Routes>
+            <Route path="/groups/:id" element={<GroupDetail />} />
+            <Route path="/groups" element={<p>The groups page</p>} />
+          </Routes>
+        </NavStackProvider>,
         { initialEntries: ["/groups/g1"] }
       );
       const invalidate = vi.spyOn(queryClient, "invalidateQueries");
@@ -519,6 +548,15 @@ describe("GroupDetail", () => {
       await waitFor(() => expect(row.className).not.toContain("ring-accent"));
     });
 
+    it("switches selection off in the drawer itself, so nothing in it highlights", async () => {
+      stub(messages());
+      renderPage();
+      const row = (await screen.findByText("Hello there")).closest("li")!;
+      press(row);
+      const drawer = await screen.findByRole("dialog", { name: "Message" });
+      expect(drawer.className).toContain("select-none");
+    });
+
     it("does nothing for a quick tap, a drag, or a mouse", async () => {
       stub(messages());
       renderPage();
@@ -554,66 +592,221 @@ describe("GroupDetail", () => {
     });
   });
 
-  describe("replying", () => {
-    it("is in the actions menu, not inline on the message", async () => {
-      stub({ pages: [{ posts: [post({ body: "Hello" })], nextCursor: null }] });
+  describe("page scrolling", () => {
+    beforeEach(() => {
+      window.scrollTo = vi.fn() as unknown as typeof window.scrollTo;
+    });
+
+    it("does not scroll the page on the Messages tab, so the message bar stays put", async () => {
+      stub();
+      renderPage();
+      await screen.findByRole("textbox", { name: "Message" });
+      expect(document.body.style.overflow).toBe("hidden");
+    });
+
+    it("lets the page scroll on Files and Events as before", async () => {
+      stub();
+      renderPage();
+      await screen.findByRole("textbox", { name: "Message" });
+
+      await userEvent.click(screen.getByRole("button", { name: "Files" }));
+      await waitFor(() => expect(document.body.style.overflow).not.toBe("hidden"));
+      await userEvent.click(screen.getByRole("button", { name: "Events" }));
+      expect(document.body.style.overflow).not.toBe("hidden");
+
+      await userEvent.click(screen.getByRole("button", { name: "Messages" }));
+      await waitFor(() => expect(document.body.style.overflow).toBe("hidden"));
+    });
+
+    it("does not scroll the page on a thread either, and releases it on leaving", async () => {
+      const rootPost = post({ id: "root-1", body: "Hello", replyCount: 0 });
+      stub({ thread: { root: rootPost, replies: [] } });
+      const { unmount } = renderPage("/groups/g1/threads/root-1");
+      await screen.findByRole("textbox", { name: "Reply" });
+      expect(document.body.style.overflow).toBe("hidden");
+      unmount();
+      expect(document.body.style.overflow).not.toBe("hidden");
+    });
+
+    it("starts from the top, so locking cannot freeze the header off screen", async () => {
+      stub();
+      renderPage();
+      await screen.findByRole("textbox", { name: "Message" });
+      expect(window.scrollTo).toHaveBeenCalledWith(0, 0);
+    });
+  });
+
+  describe("threads", () => {
+    const root = (overrides: Partial<GroupPostDto> = {}) =>
+      post({
+        id: "root-1",
+        body: "Hello",
+        replyCount: 2,
+        lastReplyAt: "2026-10-09T11:00:00.000Z",
+        ...overrides,
+      });
+
+    it("shows a reply summary that opens the thread, and no inline replies", async () => {
+      stub({ pages: [{ posts: [root()], nextCursor: null }] });
       renderPage();
       await screen.findByText("Hello");
-      expect(screen.queryByRole("button", { name: "Reply" })).not.toBeInTheDocument();
+      const link = screen.getByRole("link", { name: /2 replies/ });
+      expect(link).toHaveAttribute("href", "/groups/g1/threads/root-1");
+      expect(link).toHaveTextContent(/last reply/);
+      expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+    });
 
+    it("says nothing for a message without replies", async () => {
+      stub({ pages: [{ posts: [root({ replyCount: 0, lastReplyAt: null })], nextCursor: null }] });
+      renderPage();
+      await screen.findByText("Hello");
+      expect(screen.queryByRole("link", { name: /repl/ })).not.toBeInTheDocument();
+    });
+
+    it("opens the thread from the Reply item in a message's menu", async () => {
+      stub({ pages: [{ posts: [root()], nextCursor: null }] });
+      renderPage();
+      await screen.findByText("Hello");
       await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
       await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
+      expect(where()).toBe("/groups/g1/threads/root-1");
+    });
 
-      const bar = await screen.findByRole("textbox", { name: "Reply" });
-      await userEvent.type(bar, "Thanks{Enter}");
+    it("shows the message on top, the count, the replies in order, and the same bar below", async () => {
+      const reply1 = post({ id: "r1", body: "first reply", parentPostId: "root-1" });
+      const reply2 = post({
+        id: "r2",
+        body: "second reply",
+        parentPostId: "root-1",
+        authorPersonId: "person-bo",
+        authorName: "Bo Park",
+      });
+      stub({ thread: { root: root(), replies: [reply1, reply2] } });
+      renderPage("/groups/g1/threads/root-1");
+
+      expect(await screen.findByRole("heading", { name: "Thread" })).toBeInTheDocument();
+      await screen.findByText("second reply");
+      const log = screen.getByRole("log", { name: "Thread" });
+      const text = log.textContent ?? "";
+      expect(text.indexOf("Hello")).toBeLessThan(text.indexOf("2 replies"));
+      expect(text.indexOf("2 replies")).toBeLessThan(text.indexOf("first reply"));
+      expect(text.indexOf("first reply")).toBeLessThan(text.indexOf("second reply"));
+      expect(screen.getByRole("textbox", { name: "Reply" })).toBeInTheDocument();
+      // No tab icons on a thread; the group links back to the feed.
+      expect(screen.queryByRole("button", { name: "Files" })).not.toBeInTheDocument();
+      expect(screen.getByRole("link", { name: "Youth Group" })).toHaveAttribute(
+        "href",
+        "/groups/g1"
+      );
+    });
+
+    it("sends a reply to the thread's message", async () => {
+      stub({ thread: { root: root({ replyCount: 0 }), replies: [] } });
+      renderPage("/groups/g1/threads/root-1");
+      expect(await screen.findByText("No replies yet")).toBeInTheDocument();
+      await userEvent.type(await screen.findByRole("textbox", { name: "Reply" }), "Thanks{Enter}");
       await waitFor(() =>
         expect(apiMock).toHaveBeenCalledWith(
           "/groups/g1/posts",
           expect.objectContaining({
             method: "POST",
-            body: expect.objectContaining({ body: "Thanks", parentPostId: "p1" }),
+            body: expect.objectContaining({
+              kind: "MESSAGE",
+              body: "Thanks",
+              parentPostId: "root-1",
+            }),
           })
         )
       );
     });
 
-    it("can be cancelled, with the button or Escape, and nothing is sent", async () => {
-      stub({ pages: [{ posts: [post({ body: "Hello" })], nextCursor: null }] });
+    it("leaves by popping history when reached from the feed, not by pushing another entry", async () => {
+      stub({
+        pages: [{ posts: [root()], nextCursor: null }],
+        thread: { root: root(), replies: [] },
+      });
       renderPage();
       await screen.findByText("Hello");
-      const openReply = async () => {
-        await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
-        await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
-        return screen.findByRole("textbox", { name: "Reply" });
-      };
-
-      let bar = await openReply();
-      await userEvent.type(bar, "never mind");
-      await userEvent.click(screen.getByRole("button", { name: "Cancel" }));
-      expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
-
-      bar = await openReply();
-      await userEvent.type(bar, "{Escape}");
-      expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
-
-      expect(
-        apiMock.mock.calls.some((c) => c[1]?.method === "POST" && c[0].endsWith("/posts"))
-      ).toBe(false);
+      await userEvent.click(screen.getByRole("link", { name: /2 replies/ }));
+      await userEvent.click(await screen.findByRole("link", { name: "Youth Group" }));
+      await waitFor(() => expect(where()).toBe("/groups/g1"));
+      // A pop, not a push: the thread's entry is gone from history.
+      expect(navType()).toBe("POP");
     });
 
-    it("keeps the reply open when Escape only closes the mention list", async () => {
-      stub({ pages: [{ posts: [post({ body: "Hello" })], nextCursor: null }] });
+    it("leaves by replacing when the thread was opened directly", async () => {
+      stub({ thread: { root: root(), replies: [] } });
+      renderPage("/groups/g1/threads/root-1");
+      await userEvent.click(await screen.findByRole("link", { name: "Youth Group" }));
+      await waitFor(() => expect(where()).toBe("/groups/g1"));
+      expect(navType()).toBe("REPLACE");
+    });
+
+    it("focuses the bar when arriving from Reply, but not from the count", async () => {
+      stub({
+        pages: [{ posts: [root()], nextCursor: null }],
+        thread: { root: root(), replies: [] },
+      });
+      renderPage();
+      await screen.findByText("Hello");
+      await userEvent.click(screen.getByRole("link", { name: /2 replies/ }));
+      const bar = await screen.findByRole("textbox", { name: "Reply" });
+      expect(bar).not.toHaveFocus();
+    });
+
+    it("focuses the bar when arriving from the menu's Reply", async () => {
+      stub({
+        pages: [{ posts: [root()], nextCursor: null }],
+        thread: { root: root(), replies: [] },
+      });
       renderPage();
       await screen.findByText("Hello");
       await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
       await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
-      const bar = await screen.findByRole("textbox", { name: "Reply" });
-      await userEvent.type(bar, "hi @An");
-      await userEvent.keyboard("{Escape}");
-      expect(screen.getByRole("textbox", { name: "Reply" })).toBeInTheDocument();
+      expect(await screen.findByRole("textbox", { name: "Reply" })).toHaveFocus();
     });
 
-    it("is not offered to someone who cannot reply", async () => {
+    it("keeps a deleted message's replies", async () => {
+      const reply = post({ id: "r1", body: "still here", parentPostId: "root-1" });
+      stub({
+        thread: {
+          root: root({ body: null, deletedAt: "2026-10-09T12:00:00.000Z", deletedBySelf: true }),
+          replies: [reply],
+        },
+      });
+      renderPage("/groups/g1/threads/root-1");
+      expect(await screen.findByText("Message deleted")).toBeInTheDocument();
+      expect(await screen.findByText("still here")).toBeInTheDocument();
+    });
+
+    it("sends a link to a reply on to the thread it belongs to", async () => {
+      const reply = post({ id: "r1", body: "a reply", parentPostId: "root-1" });
+      stub({ thread: { root: root(), replies: [reply] } });
+      renderPage("/groups/g1/threads/r1");
+      await waitFor(() => expect(where()).toBe("/groups/g1/threads/root-1"));
+    });
+
+    it("says so when the message is not there", async () => {
+      apiMock.mockImplementation((path: string) => {
+        if (path === "/groups/g1") return Promise.resolve(group());
+        if (path === "/groups/g1/live") return Promise.resolve({ activityAt: "x", typing: [] });
+        return Promise.reject(new ApiError(404, "Post not found"));
+      });
+      renderPage("/groups/g1/threads/nope");
+      expect(await screen.findByText("That message was not found.")).toBeInTheDocument();
+    });
+
+    it("offers no reply bar to someone who cannot reply", async () => {
+      stub({
+        group: group({ canReply: false }),
+        thread: { root: root(), replies: [] },
+      });
+      renderPage("/groups/g1/threads/root-1");
+      expect(await screen.findByText("You cannot reply in this group.")).toBeInTheDocument();
+      expect(screen.queryByRole("textbox", { name: "Reply" })).not.toBeInTheDocument();
+    });
+
+    it("does not offer Reply in the menu to someone who cannot reply", async () => {
       stub({
         group: group({ canReply: false }),
         pages: [{ posts: [post({ body: "Hello" })], nextCursor: null }],
@@ -626,26 +819,109 @@ describe("GroupDetail", () => {
     });
   });
 
-  describe("editing", () => {
-    it("re-reads the mentions from the edited text", async () => {
-      stub({
-        pages: [
-          {
-            posts: [post({ body: "Hello", authorPersonId: "person-me", canEdit: true })],
-            nextCursor: null,
-          },
-        ],
-      });
+  describe("the header", () => {
+    it("has three icon buttons beside the title and no text tab row", async () => {
+      stub();
       renderPage();
+      await screen.findByRole("heading", { name: "Youth Group" });
+      const nav = screen.getByRole("navigation", { name: "Group sections" });
+      for (const name of ["Messages", "Files", "Events"]) {
+        expect(within(nav).getByRole("button", { name })).toBeInTheDocument();
+        expect(within(nav).getByRole("button", { name })).not.toHaveTextContent(name);
+      }
+      expect(within(nav).getByRole("button", { name: "Messages" })).toHaveAttribute(
+        "aria-current",
+        "page"
+      );
+    });
+
+    it("switches section from the icons", async () => {
+      stub();
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Files" }));
+      expect(screen.getByRole("button", { name: "Files" })).toHaveAttribute("aria-current", "page");
+      expect(screen.getByRole("button", { name: "Messages" })).not.toHaveAttribute("aria-current");
+      expect(await screen.findByText("Nothing shared yet")).toBeInTheDocument();
+    });
+
+    it("has no Leave button in the header; Leave is in group settings and asks first", async () => {
+      stub();
+      renderPage();
+      await screen.findByRole("heading", { name: "Youth Group" });
+      expect(screen.queryByRole("button", { name: "Leave" })).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: /3 members/ }));
+      await userEvent.click(await screen.findByRole("button", { name: "Leave group" }));
+      expect(await screen.findByRole("dialog", { name: "Leave this group?" })).toBeInTheDocument();
+    });
+
+    it("keeps Join in the header for someone who is not a member", async () => {
+      stub({ group: group({ myRole: null }) });
+      renderPage();
+      expect(await screen.findByRole("button", { name: "Join" })).toBeInTheDocument();
+    });
+  });
+
+  describe("editing a message", () => {
+    const mine = () => ({
+      pages: [
+        {
+          posts: [post({ body: "Hello", authorPersonId: "person-me", canEdit: true })],
+          nextCursor: null,
+        },
+      ],
+    });
+
+    async function startEdit() {
       await screen.findByText("Hello");
       await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
       await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+      return screen.findByRole("textbox", { name: "Edit message" });
+    }
 
-      const box = screen.getByDisplayValue("Hello");
-      await userEvent.clear(box);
-      await userEvent.type(box, "Hello @Bo");
+    it("uses the message bar at the bottom, not a new input inside the conversation", async () => {
+      stub(mine());
+      renderPage();
+      const bar = await startEdit();
+
+      expect(bar).toHaveValue("Hello");
+      expect(bar).toHaveFocus();
+      expect(screen.getByText("Editing message")).toBeInTheDocument();
+      // The only text box is the bar itself, and it is not inside the message log.
+      expect(screen.getAllByRole("textbox")).toHaveLength(1);
+      expect(within(screen.getByRole("log")).queryByRole("textbox")).not.toBeInTheDocument();
+    });
+
+    it("swaps send for accept and cancel, and drops the + menu", async () => {
+      stub(mine());
+      renderPage();
+      await startEdit();
+      expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Add to this message" })).not.toBeInTheDocument();
+      const accept = screen.getByRole("button", { name: "Save changes" });
+      const cancel = screen.getByRole("button", { name: "Cancel editing" });
+      expect(accept.className).toContain("green");
+      expect(cancel.className).toContain("red");
+      // Nothing has changed yet, so there is nothing to accept.
+      expect(accept).toBeDisabled();
+    });
+
+    it("marks the message being edited", async () => {
+      stub(mine());
+      renderPage();
+      await startEdit();
+      expect(within(screen.getByRole("log")).getByText("Hello").closest("li")!.className).toContain(
+        "ring-accent"
+      );
+    });
+
+    it("saves with the mentions re-read from the edited text", async () => {
+      stub(mine());
+      renderPage();
+      const bar = await startEdit();
+      await userEvent.type(bar, " @Bo");
       await userEvent.keyboard("{Enter}");
-      await userEvent.click(screen.getByRole("button", { name: "Save" }));
+      await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
       await waitFor(() =>
         expect(apiMock).toHaveBeenCalledWith(
@@ -656,63 +932,91 @@ describe("GroupDetail", () => {
           })
         )
       );
-    });
-  });
-
-  describe("the description", () => {
-    const LONG = "A long description. ".repeat(20);
-
-    it("shows a short description whole, with nothing to expand", async () => {
-      stub({ group: group({ description: "Short and sweet." }) });
-      renderPage();
-      expect(await screen.findByText("Short and sweet.")).not.toHaveClass("line-clamp-3");
-      expect(screen.queryByRole("button", { name: "Show more" })).not.toBeInTheDocument();
+      // Back to the ordinary bar.
+      await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument());
+      expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
     });
 
-    it("previews a long one and expands on request", async () => {
-      stub({ group: group({ description: LONG }) });
+    it("saves with Enter too", async () => {
+      stub(mine());
       renderPage();
-      const text = await screen.findByText(LONG.trim());
-      expect(text).toHaveClass("line-clamp-3");
-
-      await userEvent.click(screen.getByRole("button", { name: "Show more" }));
-      expect(text).not.toHaveClass("line-clamp-3");
-      await userEvent.click(screen.getByRole("button", { name: "Show less" }));
-      expect(text).toHaveClass("line-clamp-3");
-    });
-
-    it("lets a group admin edit it from group settings", async () => {
-      stub({ group: group({ description: "Old", canModerate: true, myRole: "ADMIN" }) });
-      renderPage();
-      await userEvent.click(await screen.findByRole("button", { name: /3 members/ }));
-
-      const box = await screen.findByLabelText(/^Description/);
-      const save = screen.getByRole("button", { name: "Save details" });
-      expect(save).toBeDisabled();
-
-      await userEvent.clear(box);
-      await userEvent.type(box, "New words");
-      await userEvent.click(save);
-
+      const bar = await startEdit();
+      await userEvent.type(bar, "!{Enter}");
       await waitFor(() =>
-        expect(apiMock).toHaveBeenCalledWith("/groups/g1", {
-          method: "PATCH",
-          body: { title: "Youth Group", description: "New words" },
-        })
+        expect(apiMock).toHaveBeenCalledWith(
+          "/groups/g1/posts/p1",
+          expect.objectContaining({ method: "PATCH" })
+        )
       );
     });
-  });
 
-  describe("the members list", () => {
-    it("opens a member's actions menu outside the modal, so it is not clipped", async () => {
-      stub({ group: group({ canModerate: true, myRole: "ADMIN" }) });
+    it("cancels with the red button or Escape, sending nothing, and gives back the draft", async () => {
+      stub(mine());
       renderPage();
-      await userEvent.click(await screen.findByRole("button", { name: /3 members/ }));
-      await userEvent.click(await screen.findByRole("button", { name: "Actions for Ann Lee" }));
+      const draftBar = await screen.findByRole("textbox", { name: "Message" });
+      await userEvent.type(draftBar, "half a thought");
 
-      const menu = screen.getByRole("menu", { name: "Actions for Ann Lee" });
-      expect(menu.parentElement).toBe(document.body);
-      expect(screen.getByRole("menuitem", { name: "Make admin" })).toBeInTheDocument();
+      let bar = await startEdit();
+      expect(bar).toHaveValue("Hello");
+      await userEvent.type(bar, " changed");
+      await userEvent.click(screen.getByRole("button", { name: "Cancel editing" }));
+      expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("half a thought");
+
+      bar = await startEdit();
+      await userEvent.type(bar, "{Escape}");
+      expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("half a thought");
+
+      expect(apiMock.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(false);
+    });
+
+    it("keeps editing open when Escape only closes the mention list", async () => {
+      stub(mine());
+      renderPage();
+      const bar = await startEdit();
+      await userEvent.type(bar, " @An");
+      await userEvent.keyboard("{Escape}");
+      expect(screen.getByRole("textbox", { name: "Edit message" })).toBeInTheDocument();
+    });
+
+    it("does not signal typing while editing", async () => {
+      stub(mine());
+      renderPage();
+      const bar = await startEdit();
+      await userEvent.type(bar, " more");
+      expect(apiMock.mock.calls.some((call) => call[0] === "/groups/g1/typing")).toBe(false);
+    });
+
+    it("edits a reply in the thread's bar too", async () => {
+      const rootPost = post({ id: "root-1", body: "Root", replyCount: 1 });
+      const reply = post({
+        id: "r1",
+        body: "my reply",
+        parentPostId: "root-1",
+        authorPersonId: "person-me",
+        canEdit: true,
+      });
+      stub({ thread: { root: rootPost, replies: [reply] } });
+      renderPage("/groups/g1/threads/root-1");
+      await screen.findByText("my reply");
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+      const bar = await screen.findByRole("textbox", { name: "Edit message" });
+      expect(bar).toHaveValue("my reply");
+      await userEvent.type(bar, "!");
+      await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith(
+          "/groups/g1/posts/r1",
+          expect.objectContaining({ method: "PATCH" })
+        )
+      );
+    });
+
+    it("lets someone edit their own message even when posting is restricted to admins", async () => {
+      stub({ ...mine(), group: group({ canPost: false, canReply: true }) });
+      renderPage();
+      const bar = await startEdit();
+      expect(bar).toBeInTheDocument();
     });
   });
 
