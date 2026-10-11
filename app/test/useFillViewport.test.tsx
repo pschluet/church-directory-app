@@ -118,6 +118,45 @@ describe("useFillViewport", () => {
     expect(measured()).toBe("800");
   });
 
+  it("keeps looking while a field has focus, because iOS reports the keyboard late", async () => {
+    vi.useFakeTimers();
+    try {
+      const viewport = {
+        height: 700,
+        offsetTop: 0,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      };
+      vi.stubGlobal("innerHeight", 900);
+      vi.stubGlobal("visualViewport", viewport);
+      render(<Probe top={100} gap={0} min={50} followPan />);
+      expect(measured()).toBe("600");
+
+      act(() => {
+        document.dispatchEvent(new Event("focusin"));
+      });
+      // The keyboard arrives and the pan lands -- with no event of any kind.
+      viewport.height = 340;
+      viewport.offsetTop = 120;
+      await act(() => vi.advanceTimersByTimeAsync(150));
+      expect(measured()).toBe(String(120 + 340 - 100));
+
+      // After the field loses focus it settles, then stops looking.
+      act(() => {
+        document.dispatchEvent(new Event("focusout"));
+      });
+      viewport.height = 700;
+      viewport.offsetTop = 0;
+      await act(() => vi.advanceTimersByTimeAsync(1000));
+      expect(measured()).toBe("600");
+      viewport.height = 400;
+      await act(() => vi.advanceTimersByTimeAsync(500));
+      expect(measured()).toBe("600");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("never collapses below a usable height", () => {
     // A short window, or an element pushed a long way down, would otherwise
     // give a map a few pixels tall or a negative one.

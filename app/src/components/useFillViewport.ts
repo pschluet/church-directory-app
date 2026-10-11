@@ -90,10 +90,44 @@ export function useFillViewport(
     const observer = typeof ResizeObserver === "undefined" ? null : new ResizeObserver(measure);
     observer?.observe(document.documentElement);
 
+    /*
+     * `followPan` again. iOS reports the keyboard late and in pieces: the
+     * visual viewport's resize event fires as the keyboard starts to rise, with
+     * the height it has *then*, and the pan to reveal the field can land after
+     * it with no event the first time round -- which left the message bar under
+     * the keyboard until the next keystroke made it move. So while a field has
+     * focus, and for a moment after it loses it, look again every so often
+     * rather than trusting that every change announces itself. Cheap: a
+     * `getBoundingClientRect` and a state set that is skipped when unchanged.
+     */
+    let poll: ReturnType<typeof setInterval> | undefined;
+    let settle: ReturnType<typeof setTimeout> | undefined;
+    function startPolling(): void {
+      clearTimeout(settle);
+      poll ??= setInterval(measure, 100);
+    }
+    function stopPollingSoon(): void {
+      clearTimeout(settle);
+      // Long enough for the keyboard to finish going away and the page to settle.
+      settle = setTimeout(() => {
+        clearInterval(poll);
+        poll = undefined;
+        measure();
+      }, 900);
+    }
+    if (followPan) {
+      document.addEventListener("focusin", startPolling);
+      document.addEventListener("focusout", stopPollingSoon);
+    }
+
     return () => {
       window.removeEventListener("resize", measure);
       window.visualViewport?.removeEventListener("resize", measure);
       window.visualViewport?.removeEventListener("scroll", measure);
+      document.removeEventListener("focusin", startPolling);
+      document.removeEventListener("focusout", stopPollingSoon);
+      clearInterval(poll);
+      clearTimeout(settle);
       observer?.disconnect();
     };
   }, [measure, followPan]);
