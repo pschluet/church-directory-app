@@ -1175,8 +1175,8 @@ export interface GroupDto extends GroupSummaryDto {
   /**
    * True when the caller can see this group only because they are a parish
    * admin and not a member -- what the UI discloses (see
-   * requirements/groups.md, Membership & Admins). For Private and Secret
-   * groups the route also logs it as `group.adminView`.
+   * requirements/groups.md, Membership & Admins) and what the route logs as
+   * `group.adminView`. Always false for Public groups, which anyone can read.
    */
   viewingAsAdmin: boolean;
 }

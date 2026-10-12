@@ -100,7 +100,12 @@ export interface GroupAccess {
    * permission axes; nothing downstream re-derives it.
    */
   effectiveRole: GroupMemberRole | null;
-  /** True exactly when `effectiveRole` comes from parish authority, not membership. */
+  /**
+   * True when a parish admin reaches a Private or Secret group they are not a
+   * member of -- what the UI discloses and the route audits. False for Public
+   * groups, whose content every parishioner can already see, even though
+   * `effectiveRole` still comes from parish authority there.
+   */
   viewingAsAdmin: boolean;
   /** Whether the group's existence/metadata is visible to this caller at all. */
   canRead: boolean;
@@ -124,7 +129,7 @@ export function groupAccess(
   membership: MembershipRow | null
 ): GroupAccess {
   const isMember = membership !== null;
-  const viewingAsAdmin = !isMember && caller.isAdmin;
+  const viewingAsAdmin = !isMember && caller.isAdmin && group.visibility !== "PUBLIC";
   const effectiveRole: GroupMemberRole | null =
     membership?.role ?? (caller.isAdmin ? "ADMIN" : null);
   const isAdminRole = effectiveRole === "ADMIN";

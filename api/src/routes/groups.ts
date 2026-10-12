@@ -142,7 +142,7 @@ async function logAdminViewIfNeeded(
   group: GroupRow,
   access: GroupAccess
 ): Promise<void> {
-  if (!access.viewingAsAdmin || group.visibility === "PUBLIC") return;
+  if (!access.viewingAsAdmin) return;
   await audit(db, caller, {
     action: "group.adminView",
     entityType: "group",

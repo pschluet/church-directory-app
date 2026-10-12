@@ -143,10 +143,10 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(rows[0]!.n).toBe("1");
     });
 
-    it("does not log an admin view of a public group, though it still discloses it", async () => {
+    it("neither discloses nor logs an admin view of a public group", async () => {
       const groupId = await createGroup(creator, "PUBLIC");
       const detail = await as(parishAdmin).call("GET", `/api/groups/${groupId}`);
-      expect(detail.body.viewingAsAdmin).toBe(true);
+      expect(detail.body.viewingAsAdmin).toBe(false);
 
       const { rows } = await db().query<{ n: string }>(
         "select count(*)::text as n from audit_log where action = 'group.adminView' and entity_id = $1",
