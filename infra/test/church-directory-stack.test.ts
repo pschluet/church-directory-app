@@ -261,6 +261,14 @@ describe("ChurchDirectoryStack", () => {
   });
 
   describe("API Lambda", () => {
+    it("caps concurrency so containers cannot exhaust Postgres connections", () => {
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        Handler: "index.handler",
+        Environment: { Variables: Match.objectLike({ DB_AUTH: "iam" }) },
+        ReservedConcurrentExecutions: 40,
+      });
+    });
+
     it("runs in the VPC with IPv6 egress allowed", () => {
       template.hasResourceProperties("AWS::Lambda::Function", {
         Handler: "index.handler",

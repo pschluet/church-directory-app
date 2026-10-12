@@ -32,13 +32,15 @@ const SUBJECT = process.env.VAPID_SUBJECT ?? "";
 /**
  * How many sends are in flight at once.
  *
- * The fan-out is one HTTPS POST per device, and a parish is a few hundred of
- * them. Unbounded `Promise.all` would open every socket at the same moment --
- * from a Lambda with 512MB and a 20s timeout, against services that rate-limit.
- * Eight keeps the whole batch well inside the timeout while leaving the
- * function's memory and file descriptors alone.
+ * The fan-out is one HTTPS POST per device, and it runs inside the request
+ * that triggered it, under the API Lambda's 20s timeout. Unbounded
+ * `Promise.all` would open every socket at the same moment, against services
+ * that rate-limit. At ~300ms a send, 32 in flight clears roughly 2,000 devices
+ * inside the timeout (eight topped out near 500, which a large parish reaches),
+ * and 32 sockets is still nothing to a 512MB function's memory or its file
+ * descriptors.
  */
-const SEND_CONCURRENCY = 8;
+const SEND_CONCURRENCY = 32;
 
 /**
  * Whether push is configured at all. Read rather than asserted, because a

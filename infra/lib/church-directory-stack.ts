@@ -451,6 +451,14 @@ export class ChurchDirectoryStack extends Stack {
       architecture: lambda.Architecture.ARM_64,
       memorySize: 512,
       timeout: Duration.seconds(20),
+      // The Postgres connection budget. Each container holds one connection
+      // (api/src/db.ts), and a frozen warm container keeps it, so this caps
+      // the API at ~40 of db.t4g.micro's ~110 -- leaving the scheduled
+      // functions, migrations, the bastion and RDS's own reserved slots room.
+      // Without it, the burst after a prayer-request push (everyone tapping it
+      // at once) starts containers until Postgres refuses connections. Over the
+      // cap a request is throttled to a 5xx, which the client retries.
+      reservedConcurrentExecutions: 40,
       bundling: { minify: true, target: "node22" },
       vpc,
       vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
