@@ -131,6 +131,30 @@ describe.skipIf(!hasDb)("groups", () => {
       ).toBe(true);
     });
 
+    it("logs an admin view of a private group they are not in", async () => {
+      const groupId = await createGroup(creator, "PRIVATE");
+      const detail = await as(parishAdmin).call("GET", `/api/groups/${groupId}`);
+      expect(detail.body.viewingAsAdmin).toBe(true);
+
+      const { rows } = await db().query<{ n: string }>(
+        "select count(*)::text as n from audit_log where action = 'group.adminView' and entity_id = $1",
+        [groupId]
+      );
+      expect(rows[0]!.n).toBe("1");
+    });
+
+    it("does not log an admin view of a public group, though it still discloses it", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const detail = await as(parishAdmin).call("GET", `/api/groups/${groupId}`);
+      expect(detail.body.viewingAsAdmin).toBe(true);
+
+      const { rows } = await db().query<{ n: string }>(
+        "select count(*)::text as n from audit_log where action = 'group.adminView' and entity_id = $1",
+        [groupId]
+      );
+      expect(rows[0]!.n).toBe("0");
+    });
+
     it("lets a member see a secret group's content without being flagged as admin-viewing", async () => {
       const groupId = await createGroup(creator, "SECRET");
       const detail = await as(creator).call("GET", `/api/groups/${groupId}`);

@@ -131,8 +131,10 @@ function toGroupSummary(
 /**
  * Logs an admin looking at, or acting in, a group they do not belong to --
  * "disclosed in the UI and audited" (requirements/groups.md, Membership &
- * Admins). Fire-and-forget like every other audit write; a failure here must
- * not block the read.
+ * Admins). Only Private and Secret groups are logged: a Public group's content
+ * is open to every parishioner, so an admin opening one discloses nothing.
+ * Fire-and-forget like every other audit write; a failure here must not block
+ * the read.
  */
 async function logAdminViewIfNeeded(
   db: Queryable,
@@ -140,7 +142,7 @@ async function logAdminViewIfNeeded(
   group: GroupRow,
   access: GroupAccess
 ): Promise<void> {
-  if (!access.viewingAsAdmin) return;
+  if (!access.viewingAsAdmin || group.visibility === "PUBLIC") return;
   await audit(db, caller, {
     action: "group.adminView",
     entityType: "group",

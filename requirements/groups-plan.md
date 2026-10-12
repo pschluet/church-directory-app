@@ -30,7 +30,7 @@ intentionally leaves out.
 | Audit scope | Lifecycle, membership, and moderation. **Not** ordinary posts. |
 | Conversions | Any transition **except → Public**. Adds Public→Secret and Private→Secret to the draft's two. |
 | Event fields | Add **location**, **optional end time**, **RSVP Yes/Maybe/No**, **guest count (+N)**. |
-| Admin reach | Full access, **disclosed in the UI and audited** on every out-of-group view. |
+| Admin reach | Full access, **disclosed in the UI and audited** on every out-of-group view (audited for Private and Secret groups only). |
 | Join requests | Private groups get **"Request to join" → group admins approve/deny**, mirroring `family_join_requests`. |
 | Reporting | **Anyone who can read a post can report it**, to group admins *and* parish admins. |
 | Retention | **Posts expire 5 years after creation**, purged by a scheduled job along with their attachments. |
@@ -293,8 +293,8 @@ path doesn't already carry it, and assert the new rule in
 - Freshness: open two browser profiles on the same group, post from one, confirm the other
   updates within a couple of seconds, and shows "is typing…" while the other types.
 - Audit: confirm group actions land in `/audit-log` with group titles resolved, that an admin
-  opening a group they are not in writes `group.adminView`, and that ordinary posts do **not**
-  appear.
+  opening a Private or Secret group they are not in writes `group.adminView` (a Public one does
+  not), and that ordinary posts do **not** appear.
 - Reporting: report a post as a plain member, confirm the banner appears for the group admin
   *and* the parish admin but not for other members, that deleting the post closes the report
   without erasing it, and that the reporter cannot file a second open report on the same post.
