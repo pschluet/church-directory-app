@@ -23,7 +23,7 @@ import { closePool } from "./db";
  *                         COGNITO_MODE=local and PHOTO_STORAGE=local.
  *
  *   otherwise             Verifies a real ID token from the deployed user pool
- *                         with aws-jwt-verify. Email OTP arrives in your actual
+ *                         with aws-jwt-verify. The sign-in code arrives in your actual
  *                         inbox, so you are exercising the real sign-in flow.
  */
 

@@ -372,11 +372,11 @@ describe("ChurchDirectoryStack", () => {
     it("sends every email under the same name as Cognito", () => {
       /*
        * The property the single EMAIL_FROM_NAME constant exists to guarantee.
-       * The two messages a new member receives come from different places --
-       * Cognito sends the one-time code, the API sends the invitation itself --
-       * and they used to disagree: a named sender for one, a bare address for
-       * the other. Neither value was asserted anywhere, and the drift would only
-       * ever show up in somebody's inbox.
+       * The two messages a new member receives come from different functions
+       * -- the auth challenge Lambda sends the sign-in code, the API sends the
+       * invitation -- and they used to disagree: a named sender for one, a bare
+       * address for the other. Neither value was asserted anywhere, and the
+       * drift would only ever show up in somebody's inbox.
        */
       const pools = template.findResources("AWS::Cognito::UserPool");
       const from = Object.values(pools)[0]?.Properties?.EmailConfiguration?.From as string;
@@ -394,13 +394,14 @@ describe("ChurchDirectoryStack", () => {
           Environment: { Variables: Match.objectLike({ FROM_EMAIL: Match.anyValue() }) },
         },
       });
-      expect(Object.keys(functions)).toHaveLength(1);
-      const fromName = Object.values(functions)[0]?.Properties?.Environment?.Variables
-        ?.FROM_NAME as string;
-
-      expect(fromName).toBeTruthy();
-      // Cognito renders it as `Name <address>`, so the API's name must be its prefix.
-      expect(from.startsWith(`${fromName} <`)).toBe(true);
+      // The API and the auth challenge function.
+      expect(Object.keys(functions)).toHaveLength(2);
+      for (const fn of Object.values(functions)) {
+        const fromName = fn.Properties?.Environment?.Variables?.FROM_NAME as string;
+        expect(fromName).toBeTruthy();
+        // Cognito renders it as `Name <address>`, so each name must be its prefix.
+        expect(from.startsWith(`${fromName} <`)).toBe(true);
+      }
     });
 
     it("is granted rds-db:connect and nothing broader", () => {
@@ -437,6 +438,7 @@ describe("ChurchDirectoryStack", () => {
         "cognito-idp:AdminDeleteUser",
         "cognito-idp:AdminDisableUser",
         "cognito-idp:AdminEnableUser",
+        "cognito-idp:AdminSetUserPassword",
         "cognito-idp:AdminUpdateUserAttributes",
       ]);
       // No wildcard slipped in.
@@ -451,11 +453,40 @@ describe("ChurchDirectoryStack", () => {
       });
     });
 
-    it("allows email OTP as a first auth factor", () => {
+    it("signs in through the custom auth triggers, all on one function", () => {
+      const pools = template.findResources("AWS::Cognito::UserPool");
+      const config = Object.values(pools)[0]?.Properties?.LambdaConfig as Record<string, unknown>;
+      const define = config.DefineAuthChallenge;
+      expect(define).toBeDefined();
+      // One function for all three, so a sign-in pays at most one cold start.
+      expect(config.CreateAuthChallenge).toEqual(define);
+      expect(config.VerifyAuthChallengeResponse).toEqual(define);
+    });
+
+    it("no longer offers Cognito's 8-digit email OTP", () => {
       template.hasResourceProperties("AWS::Cognito::UserPool", {
-        Policies: Match.objectLike({
-          SignInPolicy: { AllowedFirstAuthFactors: Match.arrayWith(["EMAIL_OTP"]) },
-        }),
+        Policies: Match.objectLike({ SignInPolicy: { AllowedFirstAuthFactors: ["PASSWORD"] } }),
+      });
+    });
+
+    it("lets the SPA use the custom flow and nothing else", () => {
+      template.hasResourceProperties("AWS::Cognito::UserPoolClient", {
+        ExplicitAuthFlows: Match.arrayEquals(["ALLOW_CUSTOM_AUTH", "ALLOW_REFRESH_TOKEN_AUTH"]),
+        AuthSessionValidity: 10,
+      });
+    });
+
+    it("runs the auth challenge function outside the VPC", () => {
+      // The one Lambda a person waits on; it needs SES, not the database.
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        Handler: "index.handler",
+        Environment: {
+          Variables: Match.objectEquals({
+            FROM_EMAIL: Match.anyValue(),
+            FROM_NAME: Match.anyValue(),
+          }),
+        },
+        VpcConfig: Match.absent(),
       });
     });
 

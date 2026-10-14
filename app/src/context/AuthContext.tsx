@@ -15,10 +15,11 @@ import { registeredSubscription } from "../lib/push";
 /**
  * Passwordless sign-in.
  *
- * Cognito's USER_AUTH flow with a preferred challenge of EMAIL_OTP means there
- * is no password anywhere: you enter your address, Cognito emails a one-time
- * code through SES, and you enter that. Sign-up is disabled on the pool, so
- * only people an admin has invited can get in.
+ * Cognito's custom auth flow, with no password anywhere: you enter your
+ * address, our auth challenge Lambda emails a 6-digit code through SES, and you
+ * enter that (see api/src/auth-challenge.ts for why it is not Cognito's own
+ * EMAIL_OTP). Three wrong codes end the attempt. Sign-up is disabled on the
+ * pool, so only people an admin has invited can get in.
  *
  * When the local API server runs with DEV_AUTH_EMAIL there is no Cognito at
  * all, so this reports "signed in" straight away and the API client sends no
@@ -124,7 +125,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const trimmed = address.trim().toLowerCase();
         const { nextStep } = await signIn({
           username: trimmed,
-          options: { authFlowType: "USER_AUTH", preferredChallenge: "EMAIL_OTP" },
+          options: { authFlowType: "CUSTOM_WITHOUT_SRP" },
         });
         setEmail(trimmed);
 
@@ -147,10 +148,23 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setBusy(true);
       setError(null);
       try {
-        await confirmSignIn({ challengeResponse: code.trim() });
+        const { nextStep } = await confirmSignIn({ challengeResponse: code.trim() });
+        // A wrong code short of the limit is not an error to Cognito: it just
+        // asks again, for the same code (see api/src/auth-challenge.ts).
+        if (nextStep.signInStep === "CONFIRM_SIGN_IN_WITH_CUSTOM_CHALLENGE") {
+          setError("That code is not right. Try again.");
+          return;
+        }
         await refresh();
       } catch (err) {
-        setError(messageFor(err));
+        // Out of tries, or the code outlived its session. Either way the
+        // attempt is over in Cognito, so go back for a new code.
+        if (err instanceof Error && err.name === "NotAuthorizedException") {
+          setStatus("signedOut");
+          setError("That code did not work, or it has expired. Ask for a new one.");
+        } else {
+          setError(messageFor(err));
+        }
       } finally {
         setBusy(false);
       }

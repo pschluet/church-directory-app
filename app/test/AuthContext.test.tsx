@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
+import { confirmSignIn, signIn } from "aws-amplify/auth";
 import type { ReactNode } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { AuthProvider, useAuth } from "../src/context/AuthContext";
@@ -119,5 +120,66 @@ describe("signOut", () => {
 
     expect(apiMock).not.toHaveBeenCalled();
     expect(amplifySignOut).toHaveBeenCalled();
+  });
+});
+
+/**
+ * Sign-in is Cognito's custom auth flow with a 6-digit code. Short of the
+ * attempt limit, a wrong code is not an error: Cognito just issues the same
+ * challenge again, and only the last wrong code (or an expired session) fails.
+ */
+describe("sign-in", () => {
+  const signInMock = vi.mocked(signIn);
+  const confirmMock = vi.mocked(confirmSignIn);
+
+  beforeEach(() => {
+    signInMock.mockReset();
+    confirmMock.mockReset();
+    signInMock.mockResolvedValue({
+      isSignedIn: false,
+      nextStep: { signInStep: "CONFIRM_SIGN_IN_WITH_CUSTOM_CHALLENGE", additionalInfo: {} },
+    } as Awaited<ReturnType<typeof signIn>>);
+  });
+
+  async function awaitingCode() {
+    const view = mount();
+    await waitFor(() => expect(view.result.current.status).toBe("signedOut"));
+    await act(() => view.result.current.requestCode(" Someone@Example.com "));
+    return view;
+  }
+
+  it("asks for a code through the custom auth flow", async () => {
+    const { result } = await awaitingCode();
+
+    expect(signInMock).toHaveBeenCalledWith({
+      username: "someone@example.com",
+      options: { authFlowType: "CUSTOM_WITHOUT_SRP" },
+    });
+    expect(result.current.status).toBe("awaitingCode");
+  });
+
+  it("stays on the code step after a wrong code that has tries left", async () => {
+    confirmMock.mockResolvedValue({
+      isSignedIn: false,
+      nextStep: { signInStep: "CONFIRM_SIGN_IN_WITH_CUSTOM_CHALLENGE", additionalInfo: {} },
+    } as Awaited<ReturnType<typeof confirmSignIn>>);
+    const { result } = await awaitingCode();
+
+    await act(() => result.current.submitCode("123456"));
+
+    expect(result.current.status).toBe("awaitingCode");
+    expect(result.current.error).toBe("That code is not right. Try again.");
+  });
+
+  it("goes back for a new code once the attempt is over", async () => {
+    const err = new Error("Incorrect username or password.");
+    err.name = "NotAuthorizedException";
+    confirmMock.mockRejectedValue(err);
+    const { result } = await awaitingCode();
+
+    await act(() => result.current.submitCode("123456"));
+
+    expect(result.current.status).toBe("signedOut");
+    expect(result.current.error).toMatch(/Ask for a new one/);
   });
 });

@@ -25,7 +25,7 @@ export function Login() {
           {awaitingCode ? (
             <>
               <p className="mt-2 text-ink-muted">
-                We sent a one-time code to <span className="font-bold text-ink">{email}</span>.
+                We sent a 6-digit code to <span className="font-bold text-ink">{email}</span>.
               </p>
 
               <form
@@ -42,9 +42,11 @@ export function Login() {
                     autoComplete="one-time-code"
                     // Safe here: this is the only field on the step.
                     autoFocus
-                    maxLength={10}
+                    // No maxLength: the browser would cut a pasted "123 456" to
+                    // "123 45" before the spaces could be stripped below.
+                    pattern="[0-9]{6}"
                     value={code}
-                    onChange={(event) => setCode(event.target.value.replace(/\s/g, ""))}
+                    onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
                   />
                 </Field>
 
@@ -54,7 +56,7 @@ export function Login() {
                   </p>
                 )}
 
-                <Button type="submit" disabled={busy || code.length < 4} className="w-full">
+                <Button type="submit" disabled={busy || code.length !== 6} className="w-full">
                   {busy ? "Checking…" : "Sign in"}
                 </Button>
                 <Button variant="ghost" onClick={restart} disabled={busy} className="w-full">

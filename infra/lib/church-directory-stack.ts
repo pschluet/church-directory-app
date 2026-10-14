@@ -109,8 +109,9 @@ const APP_DB_ROLE = "directory_app";
 /**
  * The sender name on every message this app sends.
  *
- * Defined once and used twice -- Cognito's one-time sign-in code, and the
- * invitation the API sends itself through SES -- because the whole point is
+ * Defined once and passed to everything that sends mail -- the sign-in code
+ * (auth challenge Lambda), the invitation (API Lambda), and Cognito's own
+ * sender for anything it still sends -- because the whole point is
  * that a new member sees the same sender on both. They used to disagree: the
  * code came from "Parish Directory" and the invitation from a bare address with
  * no display name at all.
@@ -381,8 +382,40 @@ export class ChurchDirectoryStack extends Stack {
     });
 
     // -------------------------------------------------------------------
-    // Cognito -- passwordless email OTP for everyone, invite-only.
+    // Cognito -- passwordless, invite-only, a 6-digit emailed code.
+    //
+    // Cognito's built-in EMAIL_OTP sends an 8-digit code with no way to change
+    // the length, so sign-in is the custom auth flow instead. One function
+    // serves all three triggers: a sign-in calls them back to back, so it pays
+    // at most one cold start and the rest of the flow hits a warm container.
+    // Outside the VPC on purpose -- it never touches the database, and it is
+    // the one Lambda a person sits waiting on, so it gets plain egress to SES
+    // and none of the VPC's start-up cost. See api/src/auth-challenge.ts.
     // -------------------------------------------------------------------
+    const authChallengeFn = new NodejsFunction(this, "AuthChallengeFunction", {
+      entry: path.join(__dirname, "..", "..", "api", "src", "auth-challenge.ts"),
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 256,
+      timeout: Duration.seconds(10),
+      bundling: { minify: true, target: "node22" },
+      logGroup: new logs.LogGroup(this, "AuthChallengeLogGroup", {
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: RemovalPolicy.DESTROY,
+      }),
+      environment: {
+        FROM_EMAIL: `no-reply@${hostedZoneName}`,
+        FROM_NAME: EMAIL_FROM_NAME,
+      },
+    });
+    authChallengeFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ses:SendEmail"],
+        resources: [`arn:aws:ses:${this.region}:${this.account}:identity/${hostedZoneName}`],
+      })
+    );
+
     const userPool = new cognito.UserPool(this, "UserPool", {
       userPoolName: "church-directory",
       // Accounts only ever come from an admin invite (AdminCreateUser).
@@ -399,11 +432,16 @@ export class ChurchDirectoryStack extends Stack {
       featurePlan: cognito.FeaturePlan.ESSENTIALS, // required for passwordless
       signInPolicy: {
         allowedFirstAuthFactors: {
-          // Cognito requires password to stay allowed at the policy level, but
-          // invited users are never given one, so only email OTP is usable.
+          // Cognito requires password to stay allowed at the policy level. It
+          // is not usable: invitees' passwords are random and never sent (see
+          // api/src/cognito.ts), and the client enables no password flow.
           password: true,
-          emailOtp: true,
         },
+      },
+      lambdaTriggers: {
+        defineAuthChallenge: authChallengeFn,
+        createAuthChallenge: authChallengeFn,
+        verifyAuthChallengeResponse: authChallengeFn,
       },
       email: cognito.UserPoolEmail.withSES({
         fromEmail: `no-reply@${hostedZoneName}`,
@@ -414,7 +452,10 @@ export class ChurchDirectoryStack extends Stack {
     });
 
     const userPoolClient = userPool.addClient("SpaClient", {
-      authFlows: { user: true }, // enables USER_AUTH (choice-based / passwordless)
+      authFlows: { custom: true }, // CUSTOM_AUTH only: the emailed 6-digit code
+      // How long a code is good for. Must match the "expires in" line in
+      // api/src/email.ts.
+      authSessionValidity: Duration.minutes(10),
       disableOAuth: true, // the SPA calls the Auth SDK directly; no Hosted UI
       generateSecret: false,
       preventUserExistenceErrors: true,
@@ -641,6 +682,7 @@ export class ChurchDirectoryStack extends Stack {
           "cognito-idp:AdminDisableUser",
           "cognito-idp:AdminEnableUser",
           "cognito-idp:AdminDeleteUser",
+          "cognito-idp:AdminSetUserPassword",
         ],
         resources: [userPool.userPoolArn],
       })

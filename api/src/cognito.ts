@@ -1,8 +1,10 @@
+import { randomBytes } from "node:crypto";
 import {
   AdminCreateUserCommand,
   AdminDeleteUserCommand,
   AdminDisableUserCommand,
   AdminEnableUserCommand,
+  AdminSetUserPasswordCommand,
   AdminUpdateUserAttributesCommand,
   CognitoIdentityProviderClient,
   UsernameExistsException,
@@ -59,7 +61,7 @@ export async function createInvitedUser(params: {
         MessageAction: "SUPPRESS",
         UserAttributes: [
           { Name: "email", Value: params.email },
-          // Sign-in is email OTP, which proves control of the mailbox on every
+          // Sign-in is an emailed code, which proves control of the mailbox on every
           // sign-in; marking it verified here avoids a pointless second
           // confirmation step.
           { Name: "email_verified", Value: "true" },
@@ -71,6 +73,7 @@ export async function createInvitedUser(params: {
 
     const sub = result.User?.Attributes?.find((a) => a.Name === "sub")?.Value;
     if (!sub) throw new Error("Cognito did not return a sub for the new user");
+    await confirmWithoutPassword(params.email);
     return { sub };
   } catch (err) {
     if (err instanceof UsernameExistsException) {
@@ -80,6 +83,28 @@ export async function createInvitedUser(params: {
     }
     throw err;
   }
+}
+
+/**
+ * AdminCreateUser leaves the account in FORCE_CHANGE_PASSWORD, and Cognito
+ * answers a custom-auth sign-in from that state with NEW_PASSWORD_REQUIRED
+ * instead of tokens. Setting a permanent password moves it to CONFIRMED.
+ *
+ * The password is random, never stored and never sent anywhere, and the app
+ * client has no password flow enabled, so it cannot be used to sign in. It
+ * exists only because Cognito will not confirm an account without one.
+ */
+async function confirmWithoutPassword(username: string): Promise<void> {
+  // Mixed classes so it passes any password policy the pool might have.
+  const password = `${randomBytes(32).toString("base64url")}aA1!`;
+  await cognito().send(
+    new AdminSetUserPasswordCommand({
+      UserPoolId: USER_POOL_ID,
+      Username: username,
+      Password: password,
+      Permanent: true,
+    })
+  );
 }
 
 export async function updateUserEmail(username: string, email: string): Promise<void> {
