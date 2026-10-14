@@ -71,15 +71,18 @@ Accounts are invite-only, created by a parish administrator.
   `favicon.svg`; see `app/pwa-assets.config.js` for the command. One deploy consequence:
   `sw.js` must never be uploaded `immutable`, or every installed copy is pinned to that
   build with no address bar to reload from.
-- **Auth:** Cognito user pool (Essentials tier), email-OTP passwordless sign-in. Self
-  sign-up is disabled; administrators invite people and the API sends the invitation
-  through SES. Both messages come from the same display name, defined once as
-  `EMAIL_FROM_NAME` in the stack and passed to the Lambda as `FROM_NAME`: the code comes
-  from Cognito and the invitation from the API, and they used to disagree — a named sender
-  for one, a bare `no-reply@` for the other, which is two different-looking emails for the
-  first two a member ever receives. Cognito's own invitation is suppressed, because a custom Cognito template
-  must embed the `{####}` temporary-password placeholder — a live credential nobody needs
-  when sign-in is a one-time code.
+- **Auth:** Cognito user pool (Essentials tier), passwordless sign-in with a 6-digit
+  emailed code. Cognito's built-in email OTP is always 8 digits, so sign-in uses the custom
+  auth flow instead: one Lambda (`api/src/auth-challenge.ts`) serves the define, create and
+  verify triggers, generates the code and sends it through SES. A code lasts 10 minutes
+  (the client's `authSessionValidity`) and allows 3 tries. Self sign-up is disabled;
+  administrators invite people and the API sends the invitation through SES. Both messages
+  come from the same display name, defined once as `EMAIL_FROM_NAME` in the stack and
+  passed to both Lambdas as `FROM_NAME`. Cognito's own invitation is suppressed, because a
+  custom Cognito template must embed the `{####}` temporary-password placeholder — a live
+  credential nobody needs when sign-in is a one-time code. Invitees are given a random,
+  never-sent permanent password so the account is CONFIRMED, which custom auth requires;
+  `scripts/confirm-invited-users.sh` does the same for accounts invited before that.
 - **API:** API Gateway HTTP API with a Cognito JWT authorizer and one Lambda (Hono router,
   `api/src/api.ts`). CloudFront routes `/api/*` to it, so the SPA and API share an origin
   and there is no CORS in production.

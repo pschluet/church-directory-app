@@ -1,7 +1,8 @@
 import { SendEmailCommand, SESv2Client } from "@aws-sdk/client-sesv2";
 
 /**
- * Outbound email. Currently just the invitation.
+ * Outbound email: the invitation, and the sign-in code (see auth-challenge.ts,
+ * which runs in its own Lambda with just the FROM_* variables set).
  *
  * Cognito's own invitation is suppressed (see cognito.ts) because a custom
  * Cognito template must contain the `{####}` placeholder, which means emailing
@@ -124,6 +125,52 @@ export async function sendInvitationEmail(params: {
           </p>
           <p style="margin:0;color:#6b6b6b;">
             Once you are in, please check your contact details and add your family.
+          </p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+
+  await send(params.to, subject, text, html);
+}
+
+/**
+ * The 6-digit sign-in code. The code is in the subject too, so it can be read
+ * straight off a lock-screen notification without opening the message.
+ */
+export async function sendSignInCodeEmail(params: { to: string; code: string }): Promise<void> {
+  const subject = `Your sign-in code: ${params.code}`;
+  const heading = FROM_NAME || "Directory";
+
+  const text = [
+    `Your sign-in code is ${params.code}`,
+    "",
+    "Enter it on the sign-in page. It works once and expires in 10 minutes.",
+    "",
+    "If you did not try to sign in, you can ignore this email.",
+  ].join("\n");
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#faf8f5;font-family:Helvetica,Arial,sans-serif;color:#333333;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e0d8;border-radius:8px;">
+      <tr>
+        <td style="background:#b42d23;color:#ffffff;padding:16px 24px;font-size:16px;font-weight:bold;border-radius:8px 8px 0 0;">
+          ${escapeHtml(heading)}
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:24px;">
+          <p style="margin:0 0 16px;">Your sign-in code is</p>
+          <p style="margin:0 0 24px;font-size:32px;font-weight:bold;letter-spacing:8px;">
+            ${escapeHtml(params.code)}
+          </p>
+          <p style="margin:0 0 16px;color:#6b6b6b;">
+            Enter it on the sign-in page. It works once and expires in 10 minutes.
+          </p>
+          <p style="margin:0;color:#6b6b6b;">
+            If you did not try to sign in, you can ignore this email.
           </p>
         </td>
       </tr>
