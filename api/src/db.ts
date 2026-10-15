@@ -17,10 +17,18 @@ import { RDS_CA_BUNDLE } from "./rds-ca";
  *
  *   password  Local development and tests, against the Docker Postgres.
  *
- * The pool is deliberately tiny. db.t4g.micro has roughly 110 max_connections,
- * and a Lambda container handles one request at a time, so more than a couple
- * of connections per container buys nothing and risks exhausting the server
- * across concurrent cold starts. That also means there is no need for RDS Proxy.
+ * The deployed pool is one connection. db.t4g.micro has roughly 110
+ * max_connections, a Lambda container handles one request at a time, and a
+ * frozen warm container keeps its connections open until it is reclaimed -- so
+ * the server's budget is containers times pool size, and the API function's
+ * reserved concurrency (infra/lib/church-directory-stack.ts) is sized against
+ * exactly one each. A second connection would only let a handler's
+ * `Promise.all` reads overlap; with one they queue, which costs a few
+ * milliseconds and nothing else. That also means there is no need for RDS Proxy.
+ *
+ * The one rule this imposes: while a transaction is open, every query in it
+ * must go through its `tx`. A query through the outer `db` would wait for a
+ * second connection that never comes, until `connectionTimeoutMillis` fails it.
  */
 
 // The defaults are the docker-compose Postgres, matching scripts/seed.ts and the
@@ -60,7 +68,7 @@ export function getPool(): Pool {
       // exactly the token lifetime we want.
       password: () => signer.getAuthToken(),
       ssl: { ca: RDS_CA_BUNDLE, rejectUnauthorized: true },
-      max: 2,
+      max: 1,
       idleTimeoutMillis: 30_000,
       connectionTimeoutMillis: 10_000,
     });
