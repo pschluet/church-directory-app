@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { requireOrganizationId, requireRole, type AppEnv } from "../auth";
 import { one, type Queryable } from "../db";
@@ -19,6 +19,7 @@ import {
   assertCanInvite,
   assertCanModerate,
   assertCanPost,
+  assertCanReact,
   assertCanReadGroup,
   assertCanReadGroupContent,
   assertCanReply,
@@ -60,11 +61,13 @@ import {
   groupPostCreateSchema,
   groupPostReportSchema,
   groupPostUpdateSchema,
+  groupReactionEmojiSchema,
   groupRsvpSchema,
   groupSettingsSchema,
   groupUpdateSchema,
   groupVisibilityChangeSchema,
   GROUP_POST_MAX_ATTACHMENTS,
+  GROUP_REACTION_MAX_EMOJI,
   fullName,
   photoAttachSchema,
   uuidSchema,
@@ -375,6 +378,7 @@ routes.get("/:id", async (c) => {
     canPost: access.canPost,
     canInvite: access.canInvite,
     canReply: access.canReply,
+    canReact: access.canReact,
     canModerate: access.canModerate,
     canConvertVisibility: access.canConvertTo,
     canArchive: access.canModerate && !group.archived_at,
@@ -1566,6 +1570,74 @@ routes.get("/:id/posts/:postId/rsvps", async (c) => {
   const rsvps = await loadGroupEventRsvps(db, postId);
   return c.json({ rsvps: rsvps.map(toGroupRsvpDto) });
 });
+
+// ---------------------------------------------------------------------------
+// Reactions
+// ---------------------------------------------------------------------------
+
+/**
+ * The checks both reaction writes share, then the post's fresh DTO. The emoji
+ * travels in the path (percent-encoded; Hono hands it back decoded) so that
+ * adding and removing are the same resource under PUT and DELETE, each safe to
+ * repeat: a double-tap or a retried request leaves the same state.
+ */
+async function reactionWrite(
+  c: Context<AppEnv>,
+  write: (ctx: { db: Queryable; postId: string; appUserId: string; emoji: string }) => Promise<void>
+) {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const postId = uuidSchema.parse(c.req.param("postId"));
+  const parsedEmoji = groupReactionEmojiSchema.safeParse(c.req.param("emoji"));
+  if (!parsedEmoji.success) throw new HTTPException(400, { message: "That is not a single emoji" });
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroupContent(access);
+  assertCanReact(access);
+
+  const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  if (!row) throw new HTTPException(404, { message: "Post not found" });
+  if (row.deleted_at) throw new HTTPException(409, { message: "That post was deleted" });
+
+  await write({ db, postId, appUserId: caller.appUserId, emoji: parsedEmoji.data });
+
+  const updated = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  return c.json(toGroupPostDto(updated!, access, caller.personId));
+}
+
+routes.put("/:id/posts/:postId/reactions/:emoji", (c) =>
+  reactionWrite(c, async ({ db, postId, appUserId, emoji }) => {
+    // The cap is on *different* emoji: adding to a pill that exists is always fine.
+    const existing = await db.query<{ emoji: string }>(
+      "select distinct emoji from group_post_reactions where post_id = $1",
+      [postId]
+    );
+    const emojis = existing.rows.map((r) => r.emoji);
+    if (!emojis.includes(emoji) && emojis.length >= GROUP_REACTION_MAX_EMOJI) {
+      throw new HTTPException(409, {
+        message: `A post can have at most ${GROUP_REACTION_MAX_EMOJI} different reactions`,
+      });
+    }
+    await db.query(
+      `insert into group_post_reactions (post_id, app_user_id, emoji)
+       values ($1, $2, $3)
+       on conflict do nothing`,
+      [postId, appUserId, emoji]
+    );
+  })
+);
+
+routes.delete("/:id/posts/:postId/reactions/:emoji", (c) =>
+  reactionWrite(c, async ({ db, postId, appUserId, emoji }) => {
+    await db.query(
+      "delete from group_post_reactions where post_id = $1 and app_user_id = $2 and emoji = $3",
+      [postId, appUserId, emoji]
+    );
+  })
+);
 
 // ---------------------------------------------------------------------------
 // Reporting

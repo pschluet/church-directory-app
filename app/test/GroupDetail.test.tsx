@@ -13,6 +13,7 @@ import { GROUP_POST_MAX_ATTACHMENTS } from "@shared";
 import { ApiError } from "../src/lib/api";
 import { NavStackProvider } from "../src/components/NavStack";
 import { localDayIso } from "../src/lib/format";
+import { resetRecentReactions } from "../src/lib/emoji";
 import { GroupDetail } from "../src/pages/GroupDetail";
 import type { GroupAttachmentPicker } from "../src/components/useGroupAttachmentPicker";
 import { renderWithProviders } from "./utils";
@@ -48,11 +49,29 @@ vi.mock("../src/components/useGroupAttachmentPicker", async () => {
   };
 });
 
+/*
+ * The real picker loads emoji data over the network and virtualises its list,
+ * neither of which jsdom can do. This one offers a single emoji, which is all
+ * these cases need to say "somebody picked one".
+ */
+vi.mock("../src/components/EmojiPickerPanel", () => ({
+  default: ({ onPick }: { onPick: (emoji: string) => void }) => (
+    <div data-testid="emoji-picker">
+      <button type="button" onClick={() => onPick("🎉")}>
+        pick party
+      </button>
+    </div>
+  ),
+}));
+
 const adminState = { isAdmin: false };
 
 vi.mock("../src/context/MeContext", () => ({
   useMe: () => ({
-    me: { appUser: { id: "user-me", personId: "person-me" } } as unknown as MeDto,
+    me: {
+      appUser: { id: "user-me", personId: "person-me" },
+      person: { id: "person-me", firstName: "Me", lastName: "Myself" },
+    } as unknown as MeDto,
     isAdmin: adminState.isAdmin,
     organizationId: "org-1",
     maps: null,
@@ -107,6 +126,7 @@ function group(overrides: Partial<GroupDto> = {}): GroupDto {
     canPost: true,
     canInvite: true,
     canReply: true,
+    canReact: true,
     canModerate: false,
     canConvertVisibility: [],
     canArchive: false,
@@ -133,6 +153,7 @@ function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
     deletedBySelf: null,
     createdAt: "2026-10-09T10:00:00.000Z",
     attachments: [],
+    reactions: [],
     mentions: [],
     event: null,
     replyCount: 0,
@@ -231,6 +252,7 @@ describe("GroupDetail", () => {
     adminState.isAdmin = false;
     pickerOverride.value = null;
     seq = 0;
+    resetRecentReactions();
   });
 
   it("does not show the group photo on the group's own page", async () => {
@@ -1869,6 +1891,354 @@ describe("GroupDetail", () => {
           body: { notificationPref: null },
         })
       );
+    });
+  });
+
+  describe("reactions", () => {
+    const reactor = (personId: string, name: string) => ({
+      appUserId: `user-${personId.slice(7)}`,
+      personId,
+      name,
+    });
+    const FIRE = "🔥";
+    const fire = (overrides = {}) => ({
+      emoji: FIRE,
+      reactedByMe: false,
+      reactors: [reactor("person-ann", "Ann Lee"), reactor("person-bo", "Bo Park")],
+      ...overrides,
+    });
+    const reactionPath = (postId: string, emoji: string) =>
+      `/groups/g1/posts/${postId}/reactions/${encodeURIComponent(emoji)}`;
+
+    /** Answers a reaction write the way the server does, with the post as it then stands. */
+    function answerReactions(target: GroupPostDto, after: GroupPostDto["reactions"]) {
+      const base = apiMock.getMockImplementation()!;
+      apiMock.mockImplementation((path: string, options?: unknown) =>
+        path.includes("/reactions/")
+          ? Promise.resolve({ ...target, reactions: after })
+          : base(path, options)
+      );
+    }
+    const feed = (p: GroupPostDto) => ({ pages: [{ posts: [p], nextCursor: null }] });
+    const sent = (path: string, method: string) =>
+      apiMock.mock.calls.some(([p, o]) => p === path && o?.method === method);
+
+    it("shows each emoji with its count, yours marked", async () => {
+      const p = post({
+        body: "Hello there",
+        reactions: [
+          fire(),
+          { emoji: "👍", reactedByMe: true, reactors: [reactor("person-me", "Me Myself")] },
+        ],
+      });
+      stub(feed(p));
+      renderPage();
+      const pills = await screen.findByRole("group", { name: "Reactions" });
+      const ours = within(pills).getByRole("button", { name: "1 person reacted with 👍" });
+      const theirs = within(pills).getByRole("button", { name: "2 people reacted with 🔥" });
+      expect(ours).toHaveAttribute("aria-pressed", "true");
+      expect(theirs).toHaveAttribute("aria-pressed", "false");
+      expect(ours).toHaveTextContent("1");
+      expect(theirs).toHaveTextContent("2");
+    });
+
+    it("shows nothing under a message nobody has reacted to", async () => {
+      stub(feed(post({ body: "Quiet" })));
+      renderPage();
+      await screen.findByText("Quiet");
+      expect(screen.queryByRole("group", { name: "Reactions" })).toBeNull();
+    });
+
+    it("adds your reaction when you click a pill, before the server answers", async () => {
+      const p = post({ body: "Hello there", reactions: [fire()] });
+      stub(feed(p));
+      renderPage();
+      const pill = await screen.findByRole("button", { name: "2 people reacted with 🔥" });
+      // Never answers: what shows now is the optimistic state.
+      const base = apiMock.getMockImplementation()!;
+      apiMock.mockImplementation((path: string, options?: unknown) =>
+        path.includes("/reactions/") ? new Promise(() => {}) : base(path, options)
+      );
+
+      await userEvent.click(pill);
+      expect(apiMock).toHaveBeenCalledWith(reactionPath(p.id, FIRE), { method: "PUT" });
+      const updated = await screen.findByRole("button", { name: "3 people reacted with 🔥" });
+      expect(updated).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("takes your reaction back when you click your own pill", async () => {
+      const p = post({
+        body: "Hello there",
+        reactions: [fire({ reactedByMe: true, reactors: [reactor("person-me", "Me Myself")] })],
+      });
+      stub(feed(p));
+      renderPage();
+      answerReactions(p, []);
+      await userEvent.click(
+        await screen.findByRole("button", { name: "1 person reacted with 🔥" })
+      );
+      await waitFor(() => expect(sent(reactionPath(p.id, FIRE), "DELETE")).toBe(true));
+      await waitFor(() => expect(screen.queryByRole("group", { name: "Reactions" })).toBeNull());
+    });
+
+    it("puts the pill back, and says why, when the server refuses", async () => {
+      const p = post({ body: "Hello there", reactions: [fire()] });
+      stub(feed(p));
+      renderPage();
+      const pill = await screen.findByRole("button", { name: "2 people reacted with 🔥" });
+      const base = apiMock.getMockImplementation()!;
+      apiMock.mockImplementation((path: string, options?: unknown) =>
+        path.includes("/reactions/")
+          ? Promise.reject(new ApiError(409, "A post can have at most 20 different reactions"))
+          : base(path, options)
+      );
+      await userEvent.click(pill);
+      expect(await screen.findByRole("alert")).toHaveTextContent("at most 20");
+      expect(
+        await screen.findByRole("button", { name: "2 people reacted with 🔥" })
+      ).toHaveAttribute("aria-pressed", "false");
+    });
+
+    it("names who reacted when you hover a pill, you first", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({ "1F525": "fire" }) })
+      );
+      const p = post({
+        body: "Hello there",
+        reactions: [
+          fire({
+            reactedByMe: true,
+            reactors: [reactor("person-ann", "Ann Lee"), reactor("person-me", "Me Myself")],
+          }),
+        ],
+      });
+      stub(feed(p));
+      renderPage();
+      await userEvent.hover(
+        await screen.findByRole("button", { name: "2 people reacted with 🔥" })
+      );
+      const tip = await screen.findByRole("tooltip");
+      expect(tip).toHaveTextContent("You (click to remove) and Ann Lee");
+      await waitFor(() => expect(tip).toHaveTextContent("reacted with :fire:"));
+      vi.unstubAllGlobals();
+    });
+
+    it("lists everyone, and 'N others' past ten names", async () => {
+      const many = Array.from({ length: 13 }, (_, i) =>
+        reactor(`person-x${i}`, `Person ${String.fromCharCode(65 + i)}`)
+      );
+      stub(feed(post({ body: "Hello there", reactions: [fire({ reactors: many })] })));
+      renderPage();
+      await userEvent.hover(
+        await screen.findByRole("button", { name: "13 people reacted with 🔥" })
+      );
+      const tip = await screen.findByRole("tooltip");
+      expect(tip).toHaveTextContent("Person J, and 3 others");
+      expect(tip).not.toHaveTextContent("Person K");
+    });
+
+    it("adds a reaction from the picker beside the pills, and remembers it", async () => {
+      const p = post({ body: "Hello there", reactions: [fire()] });
+      stub(feed(p));
+      renderPage();
+      answerReactions(p, [
+        fire(),
+        { emoji: "🎉", reactedByMe: true, reactors: [reactor("person-me", "Me Myself")] },
+      ]);
+      const pills = await screen.findByRole("group", { name: "Reactions" });
+      await userEvent.click(within(pills).getByRole("button", { name: "Add reaction" }));
+      await userEvent.click(await screen.findByRole("button", { name: "pick party" }));
+      await waitFor(() => expect(sent(reactionPath(p.id, "🎉"), "PUT")).toBe(true));
+      expect(screen.queryByTestId("emoji-picker")).toBeNull();
+      expect(
+        await screen.findByRole("button", { name: "1 person reacted with 🎉" })
+      ).toBeInTheDocument();
+
+      // The hover toolbar now leads with it.
+      const row = screen.getByText("Hello there").closest("li")!;
+      expect(
+        within(row).getAllByRole("button", { name: /^(React with|Remove) / })[0]
+      ).toHaveAccessibleName("Remove 🎉");
+    });
+
+    it("offers quick reactions in the row's hover toolbar", async () => {
+      const p = post({ body: "Hello there" });
+      stub(feed(p));
+      renderPage();
+      answerReactions(p, [
+        { emoji: "👍", reactedByMe: true, reactors: [reactor("person-me", "Me Myself")] },
+      ]);
+      const row = (await screen.findByText("Hello there")).closest("li")!;
+      await userEvent.click(within(row).getByRole("button", { name: "React with 👍" }));
+      await waitFor(() => expect(sent(reactionPath(p.id, "👍"), "PUT")).toBe(true));
+      expect(
+        await screen.findByRole("button", { name: "1 person reacted with 👍" })
+      ).toBeInTheDocument();
+    });
+
+    it("opens the picker from the hover toolbar", async () => {
+      const p = post({ body: "Hello there" });
+      stub(feed(p));
+      renderPage();
+      answerReactions(p, []);
+      const row = (await screen.findByText("Hello there")).closest("li")!;
+      await userEvent.click(within(row).getByRole("button", { name: "Add reaction" }));
+      await userEvent.click(await screen.findByRole("button", { name: "pick party" }));
+      await waitFor(() => expect(sent(reactionPath(p.id, "🎉"), "PUT")).toBe(true));
+    });
+
+    it("closes the picker on Escape without reacting", async () => {
+      stub(feed(post({ body: "Hello there" })));
+      renderPage();
+      const row = (await screen.findByText("Hello there")).closest("li")!;
+      await userEvent.click(within(row).getByRole("button", { name: "Add reaction" }));
+      expect(await screen.findByTestId("emoji-picker")).toBeInTheDocument();
+      await userEvent.keyboard("{Escape}");
+      expect(screen.queryByTestId("emoji-picker")).toBeNull();
+      expect(apiMock.mock.calls.some(([p]) => String(p).includes("/reactions/"))).toBe(false);
+    });
+
+    it("works on a reply in a thread, and on the thread's own message", async () => {
+      const root = post({ body: "Root", reactions: [fire()] });
+      const reply = post({ body: "A reply", parentPostId: root.id, reactions: [fire()] });
+      stub({ thread: { root, replies: [reply] } });
+      renderPage(`/groups/g1/threads/${root.id}`);
+      await waitFor(() =>
+        expect(screen.getAllByRole("button", { name: "2 people reacted with 🔥" })).toHaveLength(2)
+      );
+      answerReactions(reply, [fire({ reactedByMe: true })]);
+      const replyRow = screen.getByText("A reply").closest("li")!;
+      await userEvent.click(
+        within(replyRow).getByRole("button", { name: "2 people reacted with 🔥" })
+      );
+      await waitFor(() => expect(sent(reactionPath(reply.id, FIRE), "PUT")).toBe(true));
+    });
+
+    it("lets you only look when you cannot react", async () => {
+      const p = post({ body: "Hello there", reactions: [fire()] });
+      stub({ ...feed(p), group: group({ canReact: false }) });
+      renderPage();
+      const pill = await screen.findByRole("button", { name: "2 people reacted with 🔥" });
+      expect(screen.queryByRole("button", { name: "Add reaction" })).toBeNull();
+      expect(screen.queryByRole("button", { name: "React with 👍" })).toBeNull();
+      await userEvent.click(pill);
+      expect(apiMock.mock.calls.some(([path]) => String(path).includes("/reactions/"))).toBe(false);
+    });
+
+    it("shows a message of only emoji large, and a mixed one normally", async () => {
+      stub({
+        pages: [
+          {
+            posts: [
+              post({ body: "hello 🎉", createdAt: "2026-10-09T10:01:00.000Z" }),
+              post({ body: "🎉 🙏", createdAt: "2026-10-09T10:00:00.000Z" }),
+            ],
+            nextCursor: null,
+          },
+        ],
+      });
+      renderPage();
+      expect((await screen.findByText("🎉 🙏")).className).toContain("text-3xl");
+      expect(screen.getByText("hello 🎉").className).not.toContain("text-3xl");
+    });
+
+    it("puts an emoji from the message bar's picker at the caret", async () => {
+      stub();
+      renderPage();
+      const bar = (await screen.findByRole("textbox", { name: "Message" })) as HTMLTextAreaElement;
+      await userEvent.type(bar, "hi  there");
+      bar.setSelectionRange(3, 3);
+      await userEvent.click(screen.getByRole("button", { name: "Add emoji" }));
+      await userEvent.click(await screen.findByRole("button", { name: "pick party" }));
+      expect(bar.value).toBe("hi 🎉 there");
+    });
+
+    describe("on a touch screen", () => {
+      const press = (el: Element) =>
+        fireEvent.pointerDown(el, { pointerType: "touch", clientX: 5, clientY: 5 });
+
+      it("offers a row of quick reactions in the long-press drawer", async () => {
+        const p = post({ body: "Hello there" });
+        stub(feed(p));
+        renderPage();
+        answerReactions(p, []);
+        press((await screen.findByText("Hello there")).closest("li")!);
+        const drawer = within(await screen.findByRole("dialog", { name: "Message" }));
+        expect(drawer.getAllByRole("button", { name: /^React with / })).toHaveLength(6);
+
+        await userEvent.click(drawer.getByRole("button", { name: "React with ❤️" }));
+        await waitFor(() => expect(sent(reactionPath(p.id, "❤️"), "PUT")).toBe(true));
+        expect(screen.queryByRole("dialog", { name: "Message" })).toBeNull();
+      });
+
+      it("opens the picker from the drawer's more button", async () => {
+        const p = post({ body: "Hello there" });
+        stub(feed(p));
+        renderPage();
+        answerReactions(p, []);
+        press((await screen.findByText("Hello there")).closest("li")!);
+        const drawer = within(await screen.findByRole("dialog", { name: "Message" }));
+        await userEvent.click(drawer.getByRole("button", { name: "More reactions" }));
+        await userEvent.click(await screen.findByRole("button", { name: "pick party" }));
+        await waitFor(() => expect(sent(reactionPath(p.id, "🎉"), "PUT")).toBe(true));
+      });
+
+      it("lists who reacted, a tab per emoji, from the drawer", async () => {
+        stub(
+          feed(
+            post({
+              body: "Hello there",
+              reactions: [
+                fire(),
+                { emoji: "👍", reactedByMe: false, reactors: [reactor("person-ann", "Ann Lee")] },
+              ],
+            })
+          )
+        );
+        renderPage();
+        press((await screen.findByText("Hello there")).closest("li")!);
+        const drawer = within(await screen.findByRole("dialog", { name: "Message" }));
+        await userEvent.click(drawer.getByRole("button", { name: "View reactions" }));
+
+        const sheet = within(await screen.findByRole("dialog", { name: "Reactions" }));
+        expect(sheet.getByRole("tab", { name: "All 3" })).toHaveAttribute("aria-selected", "true");
+        // Ann reacted twice, so she is one line with both emoji.
+        expect(sheet.getAllByText("Ann Lee")).toHaveLength(1);
+        expect(sheet.getByText("Bo Park")).toBeInTheDocument();
+
+        await userEvent.click(sheet.getByRole("tab", { name: "👍 1" }));
+        expect(sheet.getByText("Ann Lee")).toBeInTheDocument();
+        expect(sheet.queryByText("Bo Park")).toBeNull();
+      });
+
+      it("opens that list on a long press of a pill, without toggling it or opening the drawer", async () => {
+        const p = post({ body: "Hello there", reactions: [fire()] });
+        stub(feed(p));
+        renderPage();
+        const pill = await screen.findByRole("button", { name: "2 people reacted with 🔥" });
+        press(pill);
+        expect(await screen.findByRole("dialog", { name: "Reactions" })).toBeInTheDocument();
+        fireEvent.pointerUp(pill, { pointerType: "touch" });
+        fireEvent.click(pill);
+        expect(screen.queryByRole("dialog", { name: "Message" })).toBeNull();
+        expect(apiMock.mock.calls.some(([path]) => String(path).includes("/reactions/"))).toBe(
+          false
+        );
+      });
+
+      it("still toggles on a quick tap of a pill", async () => {
+        const p = post({ body: "Hello there", reactions: [fire()] });
+        stub(feed(p));
+        renderPage();
+        answerReactions(p, [fire({ reactedByMe: true })]);
+        const pill = await screen.findByRole("button", { name: "2 people reacted with 🔥" });
+        press(pill);
+        fireEvent.pointerUp(pill, { pointerType: "touch" });
+        await userEvent.click(pill);
+        await waitFor(() => expect(sent(reactionPath(p.id, FIRE), "PUT")).toBe(true));
+        expect(screen.queryByRole("dialog", { name: "Reactions" })).toBeNull();
+      });
     });
   });
 });

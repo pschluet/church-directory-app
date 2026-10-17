@@ -11,6 +11,8 @@ interface ImportMetaEnv {
    */
   readonly VITE_DEV_AUTH?: string;
   readonly VITE_DEV_API_PROXY_TARGET?: string;
+  /** Where the emoji picker's data is served from; injected by the emojibase plugin in vite.config.ts. */
+  readonly VITE_EMOJIBASE_URL?: string;
 }
 
 interface ImportMeta {

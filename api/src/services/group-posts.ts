@@ -81,6 +81,32 @@ export const GROUP_POST_SELECT = `
              join persons_resolved mp on mp.app_user_id = m.app_user_id
             where m.post_id = p.id
          ) as mentions,
+         (
+           select coalesce(
+                    json_agg(
+                      json_build_object('emoji', e.emoji, 'reactors', e.reactors)
+                      order by e.first_at
+                    ),
+                    '[]'::json
+                  )
+             from (
+               select x.emoji,
+                      min(x.created_at) as first_at,
+                      json_agg(
+                        json_build_object(
+                          'appUserId', x.app_user_id,
+                          'personId', rp.id,
+                          'firstName', rp.first_name,
+                          'lastName', rp.last_name
+                        )
+                        order by x.created_at
+                      ) as reactors
+                 from group_post_reactions x
+                 join persons_resolved rp on rp.app_user_id = x.app_user_id
+                where x.post_id = p.id
+                group by x.emoji
+             ) e
+         ) as reactions,
          (select count(*) filter (where r.response = 'YES')::int
             from group_event_rsvps r where r.post_id = p.id) as rsvp_yes,
          (select count(*) filter (where r.response = 'NO')::int
@@ -114,6 +140,11 @@ interface MentionRow {
   lastName: string | null;
 }
 
+interface ReactionRow {
+  emoji: string;
+  reactors: MentionRow[];
+}
+
 export interface GroupPostRow {
   id: string;
   group_id: string;
@@ -138,6 +169,7 @@ export interface GroupPostRow {
   last_reply_at: Date | string | null;
   attachments: AttachmentRow[];
   mentions: MentionRow[];
+  reactions: ReactionRow[];
   rsvp_yes: number;
   rsvp_no: number;
   rsvp_maybe: number;
@@ -203,6 +235,19 @@ export function toGroupPostDto(
           appUserId: m.appUserId,
           personId: m.personId,
           name: fullName({ firstName: m.firstName, lastName: m.lastName }),
+        })),
+    // A tombstone keeps no reactions, as it keeps no attachments.
+    reactions: isDeleted
+      ? []
+      : row.reactions.map((r) => ({
+          emoji: r.emoji,
+          reactedByMe:
+            callerPersonId !== null && r.reactors.some((m) => m.personId === callerPersonId),
+          reactors: r.reactors.map((m) => ({
+            appUserId: m.appUserId,
+            personId: m.personId,
+            name: fullName({ firstName: m.firstName, lastName: m.lastName }),
+          })),
         })),
     event:
       row.kind === "EVENT" && row.event_date !== null
