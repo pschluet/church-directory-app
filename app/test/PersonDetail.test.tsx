@@ -5,6 +5,7 @@ import { Route, Routes } from "react-router";
 import { renderWithProviders } from "./utils";
 import type { MergeRequestDto, MeDto, PersonDto, SpecialDateDto } from "@shared";
 import { PersonDetail } from "../src/pages/PersonDetail";
+import { downloadVCard } from "../src/lib/vcard";
 
 const api = vi.fn();
 vi.mock("../src/lib/api", () => ({
@@ -29,6 +30,8 @@ vi.mock("../src/context/MeContext", () => ({
     switchOrganization: vi.fn(),
   }),
 }));
+
+vi.mock("../src/lib/vcard", () => ({ downloadVCard: vi.fn() }));
 
 const navigate = vi.fn();
 vi.mock("react-router", async () => ({
@@ -362,13 +365,24 @@ describe("PersonDetail merging and deleting", () => {
     expect(menuitem(/delete this person/i)).toBeInTheDocument();
   });
 
-  it("offers neither on someone you cannot edit", async () => {
+  it("offers only the contact card on someone you cannot edit", async () => {
     meState.personId = "someone-else";
     render(person({ appUserId: null, canEdit: false }));
+    await openRecordMenu();
 
-    await screen.findByText("Layla Haddad");
-    // No menu at all, so none of it is reachable.
-    expect(button(/actions for/i)).not.toBeInTheDocument();
+    expect(await screen.findByRole("menuitem", { name: /download contact card/i })).toBeVisible();
+    for (const label of [/photo/i, /edit details/i, /merge/i, /delete this person/i]) {
+      expect(menuitem(label)).not.toBeInTheDocument();
+    }
+  });
+
+  it("offers the contact card to editors too, and downloads it on select", async () => {
+    const subject = person({ canEdit: true });
+    render(subject);
+    await openRecordMenu();
+    await userEvent.click(await screen.findByRole("menuitem", { name: /download contact card/i }));
+
+    expect(downloadVCard).toHaveBeenCalledWith(expect.objectContaining({ id: subject.id }));
   });
 
   it("stands down while a merge is already pending", async () => {
