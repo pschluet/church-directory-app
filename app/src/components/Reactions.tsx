@@ -700,7 +700,7 @@ export function ReactionsSheet({
         }));
 
   const tabClass = (active: boolean) =>
-    `tap-target inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-3 text-sm font-bold ${
+    `tap-target inline-flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full border px-4 text-sm font-bold ${
       active ? "border-accent bg-accent-light/40 text-ink" : "border-line text-ink-muted"
     }`;
 
@@ -710,7 +710,7 @@ export function ReactionsSheet({
         <div
           role="tablist"
           aria-label="Reactions"
-          className="-mx-1 mb-3 flex gap-2 overflow-x-auto px-1 pb-1"
+          className="-mx-1 mb-4 flex gap-2.5 overflow-x-auto px-1 pb-2"
         >
           <button
             type="button"
@@ -740,23 +740,32 @@ export function ReactionsSheet({
         </div>
         <ul role="tabpanel" className="divide-y divide-line">
           {rows.map((row) => (
-            <li key={row.personId} className="flex items-center gap-3 py-2">
+            <li key={row.personId} className="flex items-start gap-3 py-3">
               <Avatar
                 thumbUrl={thumbOf(row.appUserId)}
                 person={{ firstName: row.name, lastName: null }}
                 size="sm"
               />
-              <span className="min-w-0 flex-1 truncate font-bold text-ink">
-                {row.name}
-                {row.personId === me?.person?.id && (
-                  <span className="font-normal text-ink-muted"> (you)</span>
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-bold text-ink">
+                  {row.name}
+                  {row.personId === me?.person?.id && (
+                    <span className="font-normal text-ink-muted"> (you)</span>
+                  )}
+                </p>
+                {/* Under the name, and free to wrap: a person with many reactions
+                    must not squeeze their own name down to an ellipsis. */}
+                {tab === "all" && (
+                  <p
+                    aria-hidden="true"
+                    className="mt-0.5 flex flex-wrap gap-x-1.5 text-lg leading-snug"
+                  >
+                    {row.emojis.map((emoji) => (
+                      <span key={emoji}>{emoji}</span>
+                    ))}
+                  </p>
                 )}
-              </span>
-              {tab === "all" && (
-                <span aria-hidden="true" className="shrink-0 text-lg">
-                  {row.emojis.join("")}
-                </span>
-              )}
+              </div>
             </li>
           ))}
         </ul>
