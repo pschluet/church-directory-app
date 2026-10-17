@@ -40,6 +40,7 @@ import {
   specialDateLabel,
   specialDatePartner,
 } from "../lib/format";
+import { downloadVCard } from "../lib/vcard";
 
 /**
  * One person's full record, and the place their details and dates are edited.
@@ -345,40 +346,44 @@ export function PersonDetail() {
             </div>
             {/* Everything that acts on the record, in one place: a row of
                 buttons here competed with the details it edits, and the photo
-                controls sat a column away from the rest. */}
-            {person.canEdit && (
-              <MenuButton label={`Actions for ${name}`} className="shrink-0">
-                <MenuItem onSelect={photoPicker.open}>
-                  {person.thumbUrl ? "Change photo" : "Add a photo"}
+                controls sat a column away from the rest. Anyone can save the
+                contact card; the rest is for those who may edit. */}
+            <MenuButton label={`Actions for ${name}`} className="shrink-0">
+              {person.canEdit && (
+                <>
+                  <MenuItem onSelect={photoPicker.open}>
+                    {person.thumbUrl ? "Change photo" : "Add a photo"}
+                  </MenuItem>
+                  {person.thumbUrl && (
+                    <MenuItem danger onSelect={() => void savePhotoKey(null)}>
+                      Remove photo
+                    </MenuItem>
+                  )}
+                  <MenuItem
+                    onSelect={() => {
+                      // The warning describes the last save, not the next one.
+                      setGeocodeWarning(null);
+                      setEditing(true);
+                    }}
+                  >
+                    Edit details
+                  </MenuItem>
+                </>
+              )}
+              <MenuItem onSelect={() => void downloadVCard(person)}>Download contact card</MenuItem>
+              {person.canEdit && mergeOffer && (
+                <MenuItem onSelect={() => setMerging(true)}>
+                  {mergeOffer === "own"
+                    ? "Merge a duplicate into my record"
+                    : "Merge into an account holder"}
                 </MenuItem>
-                {person.thumbUrl && (
-                  <MenuItem danger onSelect={() => void savePhotoKey(null)}>
-                    Remove photo
-                  </MenuItem>
-                )}
-                <MenuItem
-                  onSelect={() => {
-                    // The warning describes the last save, not the next one.
-                    setGeocodeWarning(null);
-                    setEditing(true);
-                  }}
-                >
-                  Edit details
+              )}
+              {person.canEdit && !hasAccount && (
+                <MenuItem danger onSelect={() => setConfirmDelete(true)}>
+                  Delete this person
                 </MenuItem>
-                {mergeOffer && (
-                  <MenuItem onSelect={() => setMerging(true)}>
-                    {mergeOffer === "own"
-                      ? "Merge a duplicate into my record"
-                      : "Merge into an account holder"}
-                  </MenuItem>
-                )}
-                {!hasAccount && (
-                  <MenuItem danger onSelect={() => setConfirmDelete(true)}>
-                    Delete this person
-                  </MenuItem>
-                )}
-              </MenuButton>
-            )}
+              )}
+            </MenuButton>
           </div>
 
           {person.familyId && (
