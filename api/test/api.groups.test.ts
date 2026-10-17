@@ -1640,4 +1640,211 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(res.status).toBe(409);
     });
   });
+
+  describe("reactions", () => {
+    const FIRE = "🔥";
+    const THUMBS = "👍";
+    const path = (groupId: string, postId: string, emoji: string) =>
+      `/api/groups/${groupId}/posts/${postId}/reactions/${encodeURIComponent(emoji)}`;
+
+    async function setup(
+      visibility: "PUBLIC" | "PRIVATE" | "SECRET" = "PUBLIC"
+    ): Promise<{ groupId: string; postId: string }> {
+      const groupId = await createGroup(creator, visibility);
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Hi" });
+      return { groupId, postId: post.body.id as string };
+    }
+
+    async function activityAt(groupId: string): Promise<string> {
+      const { rows } = await db().query<{ activity_at: Date }>(
+        "select activity_at from groups where id = $1",
+        [groupId]
+      );
+      return new Date(rows[0]!.activity_at).toISOString();
+    }
+
+    it("adds a reaction, and adding it again changes nothing", async () => {
+      const { groupId, postId } = await setup();
+      const first = await as(member).call("PUT", path(groupId, postId, FIRE));
+      expect(first.status).toBe(200);
+      expect(first.body.reactions).toEqual([
+        {
+          emoji: FIRE,
+          reactedByMe: true,
+          reactors: [expect.objectContaining({ name: "Mo Member" })],
+        },
+      ]);
+
+      const again = await as(member).call("PUT", path(groupId, postId, FIRE));
+      expect(again.status).toBe(200);
+      expect(again.body.reactions[0].reactors).toHaveLength(1);
+    });
+
+    it("removes a reaction, and removing it again is fine", async () => {
+      const { groupId, postId } = await setup();
+      await as(member).call("PUT", path(groupId, postId, FIRE));
+      const gone = await as(member).call("DELETE", path(groupId, postId, FIRE));
+      expect(gone.status).toBe(200);
+      expect(gone.body.reactions).toEqual([]);
+      expect((await as(member).call("DELETE", path(groupId, postId, FIRE))).status).toBe(200);
+    });
+
+    it("groups people under one emoji, earliest first, with reactedByMe per caller", async () => {
+      const { groupId, postId } = await setup();
+      await as(member).call("PUT", path(groupId, postId, FIRE));
+      await as(creator).call("PUT", path(groupId, postId, THUMBS));
+      await as(creator).call("PUT", path(groupId, postId, FIRE));
+
+      const forCreator = await as(creator).call("GET", `/api/groups/${groupId}/posts/${postId}`);
+      // FIRE was used first, so it leads, though the creator also used 👍.
+      expect(forCreator.body.reactions.map((r: { emoji: string }) => r.emoji)).toEqual([
+        FIRE,
+        THUMBS,
+      ]);
+      const [fire, thumbs] = forCreator.body.reactions;
+      expect(fire.reactors.map((r: { name: string }) => r.name)).toEqual([
+        "Mo Member",
+        "Cara Creator",
+      ]);
+      expect(fire.reactedByMe).toBe(true);
+      expect(thumbs.reactedByMe).toBe(true);
+
+      const forMember = await as(member).call("GET", `/api/groups/${groupId}/posts/${postId}`);
+      expect(forMember.body.reactions[0].reactedByMe).toBe(true);
+      expect(forMember.body.reactions[1].reactedByMe).toBe(false);
+    });
+
+    it("shows reactions in the feed and on replies", async () => {
+      const { groupId, postId } = await setup();
+      const reply = await as(member).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Re",
+        parentPostId: postId,
+      });
+      expect((await as(creator).call("PUT", path(groupId, reply.body.id, FIRE))).status).toBe(200);
+      await as(creator).call("PUT", path(groupId, postId, THUMBS));
+
+      const feed = await as(member).call("GET", `/api/groups/${groupId}/posts`);
+      expect(feed.body.posts[0].reactions[0].emoji).toBe(THUMBS);
+      const replies = await as(member).call(
+        "GET",
+        `/api/groups/${groupId}/posts/${postId}/replies`
+      );
+      expect(replies.body.replies[0].reactions[0].emoji).toBe(FIRE);
+    });
+
+    it("accepts skin tones, ZWJ sequences, flags and keycaps, and nothing else", async () => {
+      const { groupId, postId } = await setup();
+      for (const ok of ["👍🏽", "👨‍👩‍👧", "🇺🇸", "1️⃣", "❤️"]) {
+        expect((await as(member).call("PUT", path(groupId, postId, ok))).status).toBe(200);
+      }
+      for (const bad of ["a", "🔥🔥", "hi", "1", "🔥a"]) {
+        expect((await as(member).call("PUT", path(groupId, postId, bad))).status).toBe(400);
+      }
+    });
+
+    it("caps a post at 20 different emoji, though an existing one can still be joined", async () => {
+      const { groupId, postId } = await setup();
+      const many = Array.from({ length: 20 }, (_, i) => String.fromCodePoint(0x1f600 + i));
+      for (const e of many) {
+        expect((await as(creator).call("PUT", path(groupId, postId, e))).status).toBe(200);
+      }
+      expect((await as(creator).call("PUT", path(groupId, postId, FIRE))).status).toBe(409);
+      expect((await as(member).call("PUT", path(groupId, postId, many[0]!))).status).toBe(200);
+    });
+
+    it("refuses a deleted post, and hides the reactions it had", async () => {
+      const { groupId, postId } = await setup();
+      await as(member).call("PUT", path(groupId, postId, FIRE));
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${postId}`);
+
+      expect((await as(member).call("PUT", path(groupId, postId, THUMBS))).status).toBe(409);
+      expect((await as(member).call("DELETE", path(groupId, postId, FIRE))).status).toBe(409);
+      const feed = await as(member).call("GET", `/api/groups/${groupId}/posts`);
+      expect(feed.body.posts[0].reactions).toEqual([]);
+    });
+
+    it("404s for a post that is not in this group", async () => {
+      const { groupId } = await setup();
+      const other = await createGroup(creator, "PUBLIC");
+      const post = await as(creator).call("POST", `/api/groups/${other}/posts`, { body: "x" });
+      expect((await as(creator).call("PUT", path(groupId, post.body.id, FIRE))).status).toBe(404);
+    });
+
+    it("is not for people who cannot post or reply in the group", async () => {
+      const { groupId, postId } = await setup("PUBLIC");
+      // A parishioner reading a public group they have not joined.
+      expect((await as(outsider).call("PUT", path(groupId, postId, FIRE))).status).toBe(403);
+      const detail = await as(outsider).call("GET", `/api/groups/${groupId}`);
+      expect(detail.body.canReact).toBe(false);
+    });
+
+    it("is not for an admin only looking into a private group", async () => {
+      const { groupId, postId } = await setup("PRIVATE");
+      const res = await as(parishAdmin).call("PUT", path(groupId, postId, FIRE));
+      expect(res.status).toBe(403);
+      // They can still see what others reacted.
+      await as(member).call("PUT", path(groupId, postId, FIRE));
+      const seen = await as(parishAdmin).call("GET", `/api/groups/${groupId}/posts/${postId}`);
+      expect(seen.body.reactions[0].reactedByMe).toBe(false);
+      expect((await as(parishAdmin).call("GET", `/api/groups/${groupId}`)).body.canReact).toBe(
+        false
+      );
+    });
+
+    it("is not for a member of an archived group", async () => {
+      const { groupId, postId } = await setup();
+      await as(creator).call("POST", `/api/groups/${groupId}/archive`);
+      expect((await as(member).call("PUT", path(groupId, postId, FIRE))).status).toBe(403);
+    });
+
+    it("follows posting and reply restrictions: either one is enough", async () => {
+      const { groupId, postId } = await setup();
+      const restrict = (postingRestricted: boolean, repliesRestricted: boolean) =>
+        as(creator).call("POST", `/api/groups/${groupId}/settings`, {
+          postingRestricted,
+          invitesRestricted: false,
+          repliesRestricted,
+        });
+
+      await restrict(true, false);
+      expect((await as(member).call("PUT", path(groupId, postId, FIRE))).status).toBe(200);
+      await restrict(false, true);
+      expect((await as(member).call("PUT", path(groupId, postId, THUMBS))).status).toBe(200);
+      await restrict(true, true);
+      expect((await as(member).call("PUT", path(groupId, postId, "🙏"))).status).toBe(403);
+      // A group admin is never restricted.
+      expect((await as(creator).call("PUT", path(groupId, postId, "🙏"))).status).toBe(200);
+    });
+
+    it("moves the group's activity stamp on add and on remove, so open pages refresh", async () => {
+      const { groupId, postId } = await setup();
+      const before = await activityAt(groupId);
+      await as(member).call("PUT", path(groupId, postId, FIRE));
+      const afterAdd = await activityAt(groupId);
+      expect(afterAdd > before).toBe(true);
+      await as(member).call("DELETE", path(groupId, postId, FIRE));
+      expect((await activityAt(groupId)) > afterAdd).toBe(true);
+    });
+
+    it("goes away with its post, and with its group", async () => {
+      const { groupId, postId } = await setup();
+      await as(member).call("PUT", path(groupId, postId, FIRE));
+      const count = async () =>
+        Number(
+          (await db().query<{ n: string }>("select count(*) as n from group_post_reactions"))
+            .rows[0]!.n
+        );
+      expect(await count()).toBe(1);
+      await db().query("delete from group_posts where id = $1", [postId]);
+      expect(await count()).toBe(0);
+
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "2" });
+      await as(member).call("PUT", path(groupId, post.body.id, FIRE));
+      await db().query("delete from groups where id = $1", [groupId]);
+      expect(await count()).toBe(0);
+    });
+  });
 });

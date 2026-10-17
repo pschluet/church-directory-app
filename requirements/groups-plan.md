@@ -63,7 +63,7 @@ These were not in the original draft and were not worth blocking on. Override an
 - Plain text with linkified URLs. No markdown, no link previews.
 - Keyset pagination, newest-first (`AuditLog.tsx` pattern). Prayer Requests' unpaginated
   one-month window will not survive a busy group.
-- **No reactions** in v1.
+- **No reactions** in v1. (Added afterwards: Slack-style emoji reactions -- see groups.md, Messaging.)
 - @mentions resolve to **group members only**; duplicate names disambiguate by family name
   via `persons_resolved.search_text`. No `@everyone`.
 - "Restrict who can post" = an admins-only toggle, not a per-member allowlist.
@@ -156,6 +156,8 @@ Match the existing migrations' heavy-comment style: justify every constraint and
 - `group_event_rsvps` — PK `(post_id, app_user_id)`, `response` (CHECK `YES|NO|MAYBE`),
   `guest_count`, `updated_at`.
 - `group_post_mentions` — PK `(post_id, app_user_id)`; drives mention notifications.
+- `group_post_reactions` — PK `(post_id, app_user_id, emoji)` (V22); one row per person per emoji
+  per post. Insert and delete both bump `groups.activity_at` so an open page's poll picks them up.
 - `group_post_reports` — `post_id`, `group_id`, `reporter_app_user_id`, `reporter_person_id`,
   `reason`, `status` (CHECK `PENDING|RESOLVED|DISMISSED`), `created_at`, `decided_at`,
   `decided_by_person_id`. Unique partial index for one PENDING per (post, reporter), same

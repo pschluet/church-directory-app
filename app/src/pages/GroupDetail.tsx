@@ -61,6 +61,14 @@ import { PersonPicker, type PickedPerson } from "../components/PersonPicker";
 import { usePhotoPicker } from "../components/usePhotoPicker";
 import { useGroupAttachmentPicker } from "../components/useGroupAttachmentPicker";
 import {
+  AddReactionButton,
+  QuickReactions,
+  ReactionBar,
+  ReactionsSheet,
+  useReactionToggle,
+} from "../components/Reactions";
+import { isEmojiOnly } from "../lib/emoji";
+import {
   Badge,
   Button,
   ConfirmDialog,
@@ -360,6 +368,7 @@ export function GroupDetail() {
         <EventsTab
           groupId={groupId}
           members={group.members}
+          canReact={group.canReact}
           now={now}
           onReport={setReporting}
           onChanged={refresh}
@@ -904,6 +913,7 @@ function MessagesTab({
                     onChanged={onChanged}
                     onMediaLoad={onMediaLoad}
                     canReply={group.canReply}
+                    canReact={group.canReact}
                     onEdit={setEditing}
                     editingId={editing?.id ?? null}
                   />
@@ -1079,6 +1089,7 @@ function ThreadView({
             onReport={onReport}
             onChanged={onChanged}
             onMediaLoad={onMediaLoad}
+            canReact={group.canReact}
             onEdit={setEditing}
             editingId={editing?.id ?? null}
           />
@@ -1127,6 +1138,7 @@ function ThreadView({
                     onReport={onReport}
                     onChanged={onChanged}
                     onMediaLoad={onMediaLoad}
+                    canReact={group.canReact}
                     onEdit={setEditing}
                     editingId={editing?.id ?? null}
                     isReply
@@ -1247,6 +1259,7 @@ function ChatRow({
   onChanged,
   onMediaLoad,
   canReply = false,
+  canReact = false,
   isReply = false,
   variant = "row",
   onEdit,
@@ -1256,6 +1269,8 @@ function ChatRow({
   showHeader: boolean;
   /** Whether the caller may reply here; offers "Reply" in the actions menu. */
   canReply?: boolean;
+  /** Whether the caller may add reactions here; offers the emoji toolbar, quick reactions and picker. */
+  canReact?: boolean;
   /**
    * `root` is the message a thread page is about: a card, with no thread controls
    * of its own. `card` is an event on the Events tab: just the event's card, with
@@ -1296,6 +1311,11 @@ function ChatRow({
   });
 
   const isDeleted = post.deletedAt !== null;
+  const { react } = useReactionToggle(groupId);
+  /** The emoji picker opened from the hover toolbar, which keeps the toolbar and row lit. */
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [reactionsOpen, setReactionsOpen] = useState(false);
+  const canReactHere = canReact && !isDeleted && !editing;
   // Replying lives in the actions menu rather than inline, so a row stays just
   // the message, and it opens the thread page -- where the reply bar is. Not for
   // a reply (one level of threading), a deleted post, or the thread's own root
@@ -1346,7 +1366,9 @@ function ChatRow({
   /** The lift that ends a long press must not also click whatever is under the finger. */
   const swallowClick = useRef(false);
   const sheetAvailable =
-    (!isDeleted || post.canRestore) && !editing && (actions.length > 0 || Boolean(post.body));
+    (!isDeleted || post.canRestore) &&
+    !editing &&
+    (actions.length > 0 || Boolean(post.body) || canReactHere);
 
   function cancelPress(): void {
     if (press.current) window.clearTimeout(press.current.timer);
@@ -1429,7 +1451,9 @@ function ChatRow({
             ? ""
             : isRoot
               ? "bg-surface-muted/60"
-              : "focus-within:bg-surface-muted/60 hover:bg-surface-muted/60"
+              : `focus-within:bg-surface-muted/60 hover:bg-surface-muted/60 ${
+                  pickerOpen ? "bg-surface-muted/60" : ""
+                }`
       } ${TOUCH_NO_SELECT}`}
     >
       {/* The same-width gutter on every row keeps a run of messages lined up under its byline. */}
@@ -1500,7 +1524,12 @@ function ChatRow({
               />
             )}
             {post.body && (
-              <p className="whitespace-pre-line break-words leading-snug text-ink">
+              <p
+                className={`whitespace-pre-line break-words text-ink ${
+                  // A message of nothing but emoji is shown large, as in Slack.
+                  isEmojiOnly(post.body) ? "text-3xl leading-tight" : "leading-snug"
+                }`}
+              >
                 <MentionText text={post.body} mentions={post.mentions} />
                 {!header && post.editedAt && (
                   <span className="text-xs text-ink-muted"> (edited)</span>
@@ -1508,6 +1537,12 @@ function ChatRow({
               </p>
             )}
             <AttachmentStrip attachments={post.attachments} onMediaLoad={onMediaLoad} />
+            <ReactionBar
+              post={post}
+              groupId={groupId}
+              canReact={canReact}
+              onShowReactions={() => setReactionsOpen(true)}
+            />
           </>
         )}
 
@@ -1536,16 +1571,41 @@ function ChatRow({
         sit on top of the messages, so it is gone and a long press opens the
         drawer below instead.
       */}
-      {actions.length > 0 && (
-        <div className="absolute -top-3 right-2 rounded-md border border-line bg-surface opacity-0 shadow-sm transition focus-within:opacity-100 group-hover/row:opacity-100 [@media(hover:none)]:hidden">
-          <MenuButton portal label={`Actions for this post`}>
-            {actions.map((action) => (
-              <MenuItem key={action.label} danger={action.danger} onSelect={action.onSelect}>
-                {action.label}
-              </MenuItem>
-            ))}
-          </MenuButton>
+      {(actions.length > 0 || canReactHere) && (
+        <div
+          className={`absolute -top-3 right-2 flex items-center rounded-md border border-line bg-surface shadow-sm transition focus-within:opacity-100 group-hover/row:opacity-100 [@media(hover:none)]:hidden ${
+            pickerOpen ? "opacity-100" : "opacity-0"
+          }`}
+        >
+          {canReactHere && (
+            <>
+              <QuickReactions
+                post={post}
+                count={3}
+                onReact={(emoji) => react(post, emoji)}
+                buttonClassName="flex size-8 items-center justify-center rounded-md text-base hover:bg-surface-muted aria-pressed:bg-accent-light/40"
+              />
+              <AddReactionButton
+                onOpenChange={setPickerOpen}
+                onPick={(emoji) => react(post, emoji)}
+                className="flex size-8 items-center justify-center rounded-md text-ink-muted hover:bg-surface-muted hover:text-primary"
+              />
+            </>
+          )}
+          {actions.length > 0 && (
+            <MenuButton portal label={`Actions for this post`}>
+              {actions.map((action) => (
+                <MenuItem key={action.label} danger={action.danger} onSelect={action.onSelect}>
+                  {action.label}
+                </MenuItem>
+              ))}
+            </MenuButton>
+          )}
         </div>
+      )}
+
+      {reactionsOpen && (
+        <ReactionsSheet post={post} members={members} onClose={() => setReactionsOpen(false)} />
       )}
 
       {sheetOpen && (
@@ -1555,7 +1615,42 @@ function ChatRow({
             <span className="font-bold">{post.authorName}</span>
             {post.body ? `: ${post.body}` : ""}
           </p>
+          {canReactHere && (
+            <div className="mb-2 flex items-center justify-between gap-1">
+              <QuickReactions
+                post={post}
+                count={6}
+                onReact={(emoji) => {
+                  setSheetOpen(false);
+                  react(post, emoji);
+                }}
+                buttonClassName="flex size-11 items-center justify-center rounded-full border border-line text-2xl aria-pressed:border-accent aria-pressed:bg-accent-light/40"
+              />
+              <AddReactionButton
+                label="More reactions"
+                onPick={(emoji) => {
+                  setSheetOpen(false);
+                  react(post, emoji);
+                }}
+                className="flex size-11 items-center justify-center rounded-full border border-line text-ink-muted"
+              />
+            </div>
+          )}
           <ul className="-mx-2 -mb-2 divide-y divide-line">
+            {post.reactions.length > 0 && (
+              <li>
+                <button
+                  type="button"
+                  className="tap-target block w-full px-2 py-3 text-left font-bold text-ink"
+                  onClick={() => {
+                    setSheetOpen(false);
+                    setReactionsOpen(true);
+                  }}
+                >
+                  View reactions
+                </button>
+              </li>
+            )}
             {post.body && (
               <li>
                 <button
@@ -1831,6 +1926,7 @@ function MentionTextarea({
   bare = false,
   autoFocus = false,
   focusToken,
+  inputRef,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -1851,6 +1947,8 @@ function MentionTextarea({
   autoFocus?: boolean;
   /** Focus (caret at the end) whenever this changes -- for text put in the box from outside. */
   focusToken?: unknown;
+  /** The textarea itself, for a parent that inserts text at the caret. */
+  inputRef?: { current: HTMLTextAreaElement | null };
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [query, setQuery] = useState<{ atIndex: number; text: string } | null>(null);
@@ -1950,7 +2048,10 @@ function MentionTextarea({
   return (
     <div className={bare ? "relative min-w-0 flex-1" : "relative"}>
       <textarea
-        ref={textareaRef}
+        ref={(el) => {
+          textareaRef.current = el;
+          if (inputRef) inputRef.current = el;
+        }}
         rows={rows}
         autoFocus={autoFocus}
         aria-label={ariaLabel}
@@ -2275,6 +2376,22 @@ function ChatComposer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingId]);
 
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  /** Put an emoji from the picker into the text at the caret, replacing any selection. */
+  function insertEmoji(emoji: string): void {
+    const el = inputRef.current;
+    const start = el?.selectionStart ?? body.length;
+    const end = el?.selectionEnd ?? body.length;
+    const next = `${body.slice(0, start)}${emoji}${body.slice(end)}`;
+    if (next.length > GROUP_POST_BODY_MAX) return;
+    onBodyChange(next);
+    const caret = start + emoji.length;
+    window.setTimeout(() => {
+      el?.focus();
+      el?.setSelectionRange(caret, caret);
+    }, 0);
+  }
+
   const lastSignal = useRef(0);
   function onBodyChange(next: string): void {
     setBody(next);
@@ -2461,6 +2578,13 @@ function ChatComposer({
           ariaLabel={editing ? "Edit message" : parentPostId ? "Reply" : "Message"}
           maxLength={GROUP_POST_BODY_MAX}
           onSubmit={() => void submit()}
+          inputRef={inputRef}
+        />
+
+        <AddReactionButton
+          label="Add emoji"
+          onPick={insertEmoji}
+          className="tap-target inline-flex shrink-0 items-center justify-center rounded-md text-ink-muted transition hover:bg-surface-muted hover:text-primary"
         />
 
         {editing ? (
@@ -3074,6 +3198,7 @@ function FilesTab({ groupId }: { groupId: string }) {
 function EventsTab({
   groupId,
   members,
+  canReact,
   now,
   onReport,
   onChanged,
@@ -3085,6 +3210,7 @@ function EventsTab({
    * silently strip every mention from any event edited from this tab.
    */
   members: GroupMemberDto[];
+  canReact: boolean;
   now: Date;
   onReport: (post: GroupPostDto) => void;
   onChanged: () => Promise<unknown>;
@@ -3129,6 +3255,7 @@ function EventsTab({
             now={now}
             onReport={onReport}
             onChanged={onChanged}
+            canReact={canReact}
             isReply
             variant="card"
           />

@@ -1090,6 +1090,27 @@ export const groupRsvpSchema = z.object({
 });
 export type GroupRsvp = z.infer<typeof groupRsvpSchema>;
 
+/** Most different emoji one post can carry, as Slack caps it -- keeps a row of pills sane. */
+export const GROUP_REACTION_MAX_EMOJI = 20;
+
+const EMOJI_GRAPHEME =
+  /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[0-9#*]\uFE0F?\u20E3)/u;
+
+/**
+ * Exactly one emoji: a single grapheme (so a skin tone, a ZWJ family, a flag or
+ * a keycap each count as one) that begins like an emoji. Not the `v`-flag
+ * RGI_Emoji property, which this file's ES2022 target cannot spell and an older
+ * Safari -- this module is shared with the SPA -- would throw on at load.
+ */
+export function isSingleEmoji(value: string): boolean {
+  return [...new Intl.Segmenter().segment(value)].length === 1 && EMOJI_GRAPHEME.test(value);
+}
+
+export const groupReactionEmojiSchema = z
+  .string()
+  .max(32)
+  .refine(isSingleEmoji, { message: "That is not a single emoji" });
+
 export const groupPostReportSchema = z.object({
   reason: trimmedOptional(GROUP_REPORT_REASON_MAX),
 });
@@ -1168,6 +1189,8 @@ export interface GroupDto extends GroupSummaryDto {
   canPost: boolean;
   canInvite: boolean;
   canReply: boolean;
+  /** May add or remove the caller's own emoji reactions. */
+  canReact: boolean;
   canModerate: boolean;
   canConvertVisibility: GroupVisibility[];
   canArchive: boolean;
@@ -1230,6 +1253,14 @@ export interface GroupPostMentionDto {
   name: string;
 }
 
+/** One emoji on a post, with everyone who put it there, earliest first. */
+export interface GroupPostReactionDto {
+  emoji: string;
+  /** Whether the caller is among `reactors` -- what highlights the pill and makes a click remove. */
+  reactedByMe: boolean;
+  reactors: GroupPostMentionDto[];
+}
+
 export interface GroupPostDto {
   id: string;
   groupId: string;
@@ -1247,6 +1278,8 @@ export interface GroupPostDto {
   createdAt: string;
   attachments: GroupPostAttachmentDto[];
   mentions: GroupPostMentionDto[];
+  /** In the order each emoji was first used; empty for a deleted post. */
+  reactions: GroupPostReactionDto[];
   event: GroupEventDto | null;
   /** How many replies exist, whether or not this response included them. */
   replyCount: number;

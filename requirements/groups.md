@@ -55,6 +55,12 @@ For a Private group, non-members see the title, description, image, and a member
 - Posts support plain text with clickable links; there's no rich text formatting.
 - Members can @ mention other members of the group, which notifies the person mentioned. You can only mention people who are already in the group.
 - Posts can include attachments: photos and documents (PDF, Word, Excel, PowerPoint, plain text, and CSV files). Video attachments are planned for a future phase and are not supported in this release. Each attachment is capped at 25MB.
+- **Reactions.** Members can react to any message, reply or event with an emoji, as in Slack:
+  - Reactions show as small pills under the message, each with its emoji and a count. The ones you've added are highlighted; clicking a pill adds your reaction or, if it's already yours, takes it back. Hovering a pill names everyone who reacted ("You (click to remove), Ann Lee, and Bo Park reacted with :fire:"); on a touch screen, a long press on a pill lists them, with a tab per emoji.
+  - The hover toolbar (and, on a touch screen, the long-press drawer) offers a few quick reactions — the ones the person has used most — and a full picker with search, categories and skin tones. The message bar has the same picker for putting an emoji in the text. A message that is only emoji (up to 23) is shown large.
+  - Anyone who can post or reply in the group can react, even when posting or replies are restricted for others, but not in an archived group. A parish admin looking into a Private or Secret group they haven't joined can see reactions but not add them.
+  - A message can carry at most 20 different emoji. A deleted message shows no reactions.
+  - Reactions don't send notifications and don't count as unread activity, though they do appear live on an open page.
 - A group's page has three tabs: Messages, Files, and Events. The Files and Events tabs are automatically populated from what's been posted in Messages, so members don't have to scroll back through the conversation to find a shared file or an upcoming event.
 - **Events** are a special post type with:
   - A title (required)
@@ -84,7 +90,7 @@ For a Private group, non-members see the title, description, image, and a member
 - Posts and their attachments are automatically and permanently removed 5 years after they were posted. This is a hard deletion with no way to recover the content afterward, and no individual warning is given beforehand.
 - A thread — the original post plus its replies — stays alive as long as any reply within it is still inside the 5-year window. A post that keeps getting replies won't disappear out from under an active conversation; the whole thread is only removed once it has gone quiet for 5+ years.
 - For events, the 5-year retention clock starts after the event date, not the post date, so a far-future event scheduled today won't be deleted before it happens.
-- Reports, mentions, and RSVPs tied to a post are removed along with it.
+- Reports, mentions, reactions, and RSVPs tied to a post are removed along with it.
 
 # Considerations for a Future Revision
 - There's no way today to report content with full anonymity assurance. The UI doesn't disclose who filed a report, but a resolving admin could, in some cases, infer who it was from context.

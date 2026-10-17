@@ -2,6 +2,54 @@ import { defineConfig, loadEnv } from "vite";
 import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { VitePWA } from "vite-plugin-pwa";
+import { createRequire } from "node:module";
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import type { Plugin } from "vite";
+
+/*
+ * The emoji picker's data (frimousse reads Emojibase's JSON), served from our
+ * own origin rather than its default CDN: no third party in the request path,
+ * and nothing for a strict CSP to block.
+ *
+ * The package version is in the URL. deploy.yml uploads everything that is not
+ * a hashed asset `immutable` for a year, which is only safe for a file whose
+ * URL changes when its content does -- so a dependency bump gets a new path
+ * instead of a stale copy. Only what the app reads is served: the picker's
+ * data and labels, and the shortcode names the reaction tooltip shows.
+ */
+function emojibase(): Plugin {
+  const require = createRequire(import.meta.url);
+  const root = dirname(require.resolve("emojibase-data/package.json"));
+  const version = (
+    JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version: string }
+  ).version;
+  const base = `/emojibase/${version}`;
+  const files = ["en/data.json", "en/messages.json", "en/shortcodes/iamcal.json"];
+  return {
+    name: "emojibase-data",
+    config: () => ({ define: { "import.meta.env.VITE_EMOJIBASE_URL": JSON.stringify(base) } }),
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        const url = req.url?.split("?")[0] ?? "";
+        const file = files.find((f) => url === `${base}/${f}`);
+        if (!file) return next();
+        res.setHeader("Content-Type", "application/json");
+        res.end(readFileSync(join(root, file)));
+      });
+    },
+    // `vite preview` serves the build, so the build must contain them.
+    generateBundle() {
+      for (const file of files) {
+        this.emitFile({
+          type: "asset",
+          fileName: `${base.slice(1)}/${file}`,
+          source: readFileSync(join(root, file)),
+        });
+      }
+    },
+  };
+}
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd());
@@ -27,6 +75,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       tailwindcss(),
+      emojibase(),
       /*
        * Installable, so the directory can live on a home screen: this is the
        * app someone opens standing in the parking lot after a service, and one

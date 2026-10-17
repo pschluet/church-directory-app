@@ -122,4 +122,27 @@ describe.skipIf(!hasDb)("group retention", () => {
     const result = await expireGroupPosts(db(), { now: NOW });
     expect(result.byOrganization.size).toBe(0);
   });
+
+  it("takes a purged post's reactions with it, without moving the group's activity stamp", async () => {
+    const groupId = await createGroup(db());
+    const postId = await createPost(db(), groupId, { createdAt: SIX_YEARS_AGO });
+    const { rows: users } = await db().query<{ app_user_id: string }>(
+      "select app_user_id from persons where id = $1",
+      [personId]
+    );
+    await db().query(
+      "insert into group_post_reactions (post_id, app_user_id, emoji) values ($1, $2, '🔥')",
+      [postId, users[0]!.app_user_id]
+    );
+    const stamp = async () =>
+      (await db().query("select activity_at from groups where id = $1", [groupId])).rows[0]!
+        .activity_at as Date;
+    const before = await stamp();
+
+    await expireGroupPosts(db(), { now: NOW });
+
+    const { rows } = await db().query("select 1 from group_post_reactions");
+    expect(rows).toHaveLength(0);
+    expect((await stamp()).getTime()).toBe(before.getTime());
+  });
 });

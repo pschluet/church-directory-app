@@ -113,6 +113,12 @@ export interface GroupAccess {
   canReadContent: boolean;
   canPost: boolean;
   canReply: boolean;
+  /**
+   * Emoji reactions. Anyone who can post or reply, but not a parish admin only
+   * looking in (`viewingAsAdmin`): that view is read-only, and a reaction would
+   * put their name in front of a group that never admitted them.
+   */
+  canReact: boolean;
   canInvite: boolean;
   /** Group-admin powers: delete any post, remove members, restrict, promote, archive. */
   canModerate: boolean;
@@ -160,6 +166,7 @@ export function groupAccess(
     canReadContent,
     canPost,
     canReply,
+    canReact: (canPost || canReply) && !viewingAsAdmin,
     canInvite,
     canModerate: isAdminRole,
     canConvertTo: isAdminRole ? [...GROUP_VISIBILITY_TARGETS[group.visibility]] : [],
@@ -198,6 +205,12 @@ export function assertCanPost(access: GroupAccess): void {
 export function assertCanReply(access: GroupAccess): void {
   if (!access.canReply) {
     throw new HTTPException(403, { message: "You cannot reply in this group" });
+  }
+}
+
+export function assertCanReact(access: GroupAccess): void {
+  if (!access.canReact) {
+    throw new HTTPException(403, { message: "You cannot react in this group" });
   }
 }
 
