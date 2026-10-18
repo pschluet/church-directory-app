@@ -1,7 +1,11 @@
 import { afterAll, beforeEach, describe, expect, inject, it } from "vitest";
 import { closeDatabase, resetTables, testDb } from "./helpers/testDb";
 import { client } from "./helpers/request";
-import { createOrganization, createUser, type CreatedUser } from "./helpers/fixtures";
+import {
+  createOrganization,
+  createUser,
+  type CreatedUser,
+} from "./helpers/fixtures";
 import { GROUP_GUIDELINES_VERSION } from "../src/types";
 
 const hasDb = inject("hasDatabase");
@@ -17,14 +21,19 @@ describe.skipIf(!hasDb)("group guidelines", () => {
   beforeEach(async () => {
     await resetTables();
     const orgId = await createOrganization(db());
-    user = await createUser(db(), { organizationId: orgId, email: "user@test.example" });
+    user = await createUser(db(), {
+      organizationId: orgId,
+      email: "user@test.example",
+      agreedToGroupGuidelines: false,
+    });
   });
 
   afterAll(async () => {
     await closeDatabase();
   });
 
-  const as = (who: CreatedUser) => client(db(), { sub: who.cognitoSub, email: who.email });
+  const as = (who: CreatedUser) =>
+    client(db(), { sub: who.cognitoSub, email: who.email });
 
   it("reports no agreement until the member agrees", async () => {
     const res = await as(user).call("GET", "/api/me");
@@ -44,17 +53,24 @@ describe.skipIf(!hasDb)("group guidelines", () => {
     expect(Date.parse(me.body.groupGuidelinesAgreedAt)).not.toBeNaN();
 
     const { rows } = await db().query(
-      "select entity_id, changes from audit_log where action = 'user.agreeGroupGuidelines'"
+      "select entity_id, changes from audit_log where action = 'user.agreeGroupGuidelines'",
     );
     expect(rows).toEqual([
-      { entity_id: user.appUserId, changes: { version: GROUP_GUIDELINES_VERSION } },
+      {
+        entity_id: user.appUserId,
+        changes: { version: GROUP_GUIDELINES_VERSION },
+      },
     ]);
   });
 
   it("can agree again without error", async () => {
     const body = { version: GROUP_GUIDELINES_VERSION };
-    expect((await as(user).call("POST", "/api/me/group-guidelines", body)).status).toBe(204);
-    expect((await as(user).call("POST", "/api/me/group-guidelines", body)).status).toBe(204);
+    expect(
+      (await as(user).call("POST", "/api/me/group-guidelines", body)).status,
+    ).toBe(204);
+    expect(
+      (await as(user).call("POST", "/api/me/group-guidelines", body)).status,
+    ).toBe(204);
   });
 
   it("refuses any version but the current one", async () => {
@@ -65,5 +81,31 @@ describe.skipIf(!hasDb)("group guidelines", () => {
 
     const me = await as(user).call("GET", "/api/me");
     expect(me.body.groupGuidelinesAgreedVersion).toBeNull();
+  });
+
+  it("blocks groups routes until the member agrees to the current version", async () => {
+    for (const [method, path] of [
+      ["GET", "/api/groups"],
+      ["GET", "/api/groups/00000000-0000-0000-0000-000000000000"],
+      ["POST", "/api/groups"],
+    ] as const) {
+      expect(
+        (await as(user).call(method, path, {})).status,
+        `${method} ${path}`,
+      ).toBe(403);
+    }
+
+    await as(user).call("POST", "/api/me/group-guidelines", {
+      version: GROUP_GUIDELINES_VERSION,
+    });
+    expect((await as(user).call("GET", "/api/groups")).status).toBe(200);
+  });
+
+  it("blocks groups routes when the agreement is for an older version", async () => {
+    await db().query(
+      "insert into group_guidelines_agreements (app_user_id, version) values ($1, $2)",
+      [user.appUserId, GROUP_GUIDELINES_VERSION - 1],
+    );
+    expect((await as(user).call("GET", "/api/groups")).status).toBe(403);
   });
 });

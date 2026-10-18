@@ -84,6 +84,7 @@ For a Private group, non-members see the title, description, image, and a member
 - Before using any groups page, a member must agree to the parish's group guidelines in a pop-up that cannot be dismissed. They tick "I have read and agree" and press Agree, or press "Not now" to go back home.
 - Agreement is saved on the member's account, so it carries across devices, and is recorded in the audit log.
 - The guidelines are versioned (`GROUP_GUIDELINES_VERSION` in `api/src/types.ts`). Changing the version asks everyone to agree again.
+- The server enforces this too: every `/api/groups` route returns 403 until the account has agreed to the current version.
 
 # Notifications
 - Notifications are delivered in-app (a badge/bell) and as web push notifications to a member's device. Email and text message notifications are not part of this release.
