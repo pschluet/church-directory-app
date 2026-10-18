@@ -4,12 +4,17 @@ import type { AppEnv } from "../auth";
 import { one } from "../db";
 import { GROUP_GUIDELINES_VERSION } from "../types";
 
+const READ_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
+
 /**
- * Refuses every groups route until the account has agreed to the current
- * guidelines, so the client's gate cannot be bypassed by calling the API
- * directly. Mounted after authentication, so the caller is always set.
+ * Refuses every groups route that changes something (anything but a read)
+ * until the account has agreed to the current guidelines, so the client's gate
+ * cannot be bypassed by posting through the API directly. Reads skip the check
+ * to save a query on the frequent polling calls. Mounted after authentication,
+ * so the caller is always set.
  */
 export const requireGroupGuidelinesAgreement: MiddlewareHandler<AppEnv> = async (c, next) => {
+  if (READ_METHODS.has(c.req.method)) return next();
   const caller = c.get("caller");
   const agreement = await one<{ version: number }>(
     c.get("db"),

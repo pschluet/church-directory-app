@@ -74,26 +74,29 @@ describe.skipIf(!hasDb)("group guidelines", () => {
     expect(me.body.groupGuidelinesAgreedVersion).toBeNull();
   });
 
-  it("blocks groups routes until the member agrees to the current version", async () => {
+  it("blocks groups writes until the member agrees to the current version", async () => {
     for (const [method, path] of [
-      ["GET", "/api/groups"],
-      ["GET", "/api/groups/00000000-0000-0000-0000-000000000000"],
       ["POST", "/api/groups"],
+      ["PATCH", "/api/groups/00000000-0000-0000-0000-000000000000"],
+      ["DELETE", "/api/groups/00000000-0000-0000-0000-000000000000"],
+      ["POST", "/api/groups/00000000-0000-0000-0000-000000000000/posts"],
     ] as const) {
       expect((await as(user).call(method, path, {})).status, `${method} ${path}`).toBe(403);
     }
 
-    await as(user).call("POST", "/api/me/group-guidelines", {
-      version: GROUP_GUIDELINES_VERSION,
-    });
+    await as(user).call("POST", "/api/me/group-guidelines", { version: GROUP_GUIDELINES_VERSION });
+    expect((await as(user).call("POST", "/api/groups", {})).status).not.toBe(403);
+  });
+
+  it("does not block groups reads", async () => {
     expect((await as(user).call("GET", "/api/groups")).status).toBe(200);
   });
 
-  it("blocks groups routes when the agreement is for an older version", async () => {
+  it("blocks groups writes when the agreement is for an older version", async () => {
     await db().query(
       "insert into group_guidelines_agreements (app_user_id, version) values ($1, $2)",
       [user.appUserId, GROUP_GUIDELINES_VERSION - 1]
     );
-    expect((await as(user).call("GET", "/api/groups")).status).toBe(403);
+    expect((await as(user).call("POST", "/api/groups", {})).status).toBe(403);
   });
 });
