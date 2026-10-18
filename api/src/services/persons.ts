@@ -40,6 +40,7 @@ export interface PersonRow {
   country: string | null;
   place_id: string | null;
   patron_saint: string | null;
+  occupation: string | null;
   photo_key: string | null;
   /** Position within the family; null until someone sets a custom order. */
   family_order: number | null;
@@ -69,6 +70,7 @@ export const PERSON_COLUMNS = `
   r.country,
   r.place_id,
   r.patron_saint,
+  r.occupation,
   r.photo_key,
   r.family_order,
   r.inherit_email_from_person_id,
@@ -138,6 +140,7 @@ export function toSummary(caller: Caller, row: PersonRow): PersonSummaryDto {
     country: row.country,
     placeId: row.place_id,
     patronSaint: row.patron_saint,
+    occupation: row.occupation,
     // photoUrl is deprecated; it mirrors the thumbnail so a still-cached older
     // SPA bundle keeps rendering avatars until it is replaced.
     photoUrl: thumbUrl,
@@ -357,6 +360,7 @@ export const PERSON_WRITE_COLUMNS = {
    */
   placeId: "place_id",
   patronSaint: "patron_saint",
+  occupation: "occupation",
   familyId: "family_id",
   inheritEmailFromPersonId: INHERIT_COLUMN.email,
   inheritPhoneFromPersonId: INHERIT_COLUMN.phone,

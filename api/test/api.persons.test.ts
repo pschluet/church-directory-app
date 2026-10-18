@@ -561,6 +561,19 @@ describe.skipIf(!hasDb)("addresses and the map", () => {
     expect(await storedPlaceId(member.personId!)).toBe("ChIJhome");
   });
 
+  it("sets, trims and clears an occupation", async () => {
+    const set = await asMember().call("PATCH", `/api/persons/${member.personId}`, {
+      occupation: "  Nurse  ",
+    });
+    expect(set.status).toBe(200);
+    expect(set.body.occupation).toBe("Nurse");
+
+    const cleared = await asMember().call("PATCH", `/api/persons/${member.personId}`, {
+      occupation: "",
+    });
+    expect(cleared.body.occupation).toBeNull();
+  });
+
   it("keeps the pin when a person changes family", async () => {
     // Clearing the inheritance pointer is enough: the view then falls back to
     // this person's own address and their own place_id, which were written

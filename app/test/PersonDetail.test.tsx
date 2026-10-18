@@ -76,6 +76,7 @@ function buildPerson(specialDates: SpecialDateDto[]): PersonDto {
     country: null,
     placeId: null,
     patronSaint: null,
+    occupation: null,
     photoUrl: null,
     thumbUrl: null,
     fullUrl: null,
@@ -101,6 +102,44 @@ function renderPage(specialDates: SpecialDateDto[], overrides: Partial<PersonDto
 }
 
 const infoButton = () => screen.queryByRole("button", { name: /why can i see the year/i });
+
+describe("PersonDetail details", () => {
+  beforeEach(() => {
+    api.mockReset();
+    meState.personId = "person-1";
+    meState.isAdmin = false;
+  });
+
+  it("leaves out every field nobody has filled in", async () => {
+    renderPage([], { email: "layla@example.com" });
+    expect(await screen.findByText("layla@example.com")).toBeInTheDocument();
+
+    for (const label of ["Phone", "Alternate phone", "Occupation", "Patron saint", "Address"]) {
+      expect(screen.queryByText(label)).toBeNull();
+    }
+    expect(screen.queryByText("—")).toBeNull();
+    expect(screen.getByText("Email")).toBeInTheDocument();
+  });
+
+  it("shows the occupation and the other fields once they are filled in", async () => {
+    renderPage([], {
+      occupation: "Nurse",
+      patronSaint: "St. Agatha",
+      phone: "+13125551234",
+      altPhone: "+13125550000",
+    });
+    expect(await screen.findByText("Nurse")).toBeInTheDocument();
+    for (const label of ["Occupation", "Patron saint", "Phone", "Alternate phone"]) {
+      expect(screen.getByText(label)).toBeInTheDocument();
+    }
+    expect(screen.queryByText("Email")).toBeNull();
+  });
+
+  it("says so, once, when there are no details at all", async () => {
+    renderPage([]);
+    expect(await screen.findByText(/no details have been added yet/i)).toBeInTheDocument();
+  });
+});
 
 describe("PersonDetail special dates", () => {
   beforeEach(() => {

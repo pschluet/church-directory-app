@@ -1,8 +1,9 @@
 import { describe, expect, it, vi, beforeEach } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PersonDto, PersonSummaryDto } from "@shared";
 import { PersonForm } from "../src/components/PersonForm";
+import { renderWithProviders } from "./utils";
 
 const PERSON_ID = "11111111-1111-4111-8111-111111111111";
 const PARENT_ID = "22222222-2222-4222-8222-222222222222";
@@ -44,6 +45,7 @@ function summary(overrides: { id: string; firstName: string }): PersonSummaryDto
     country: null,
     placeId: null,
     patronSaint: null,
+    occupation: null,
     photoUrl: null,
     thumbUrl: null,
     fullUrl: null,
@@ -69,13 +71,19 @@ const FAMILIES = [
 ];
 
 function renderForm(props: Partial<React.ComponentProps<typeof PersonForm>> = {}) {
-  return render(
+  return renderWithProviders(
     <PersonForm person={person()} familyMembers={[PARENT]} onSaved={vi.fn()} {...props} />
   );
 }
 
 async function save() {
   await userEvent.click(screen.getByRole("button", { name: /save/i }));
+}
+
+/** The body of the PATCH, whatever lookups have been made since. */
+function savedBody(): Record<string, unknown> {
+  const call = api.mock.calls.find(([, options]) => options?.method === "PATCH")!;
+  return (call[1] as { body: Record<string, unknown> }).body;
 }
 
 function lastBody(): Record<string, unknown> {
@@ -87,6 +95,31 @@ describe("PersonForm", () => {
   beforeEach(() => {
     api.mockReset();
     api.mockResolvedValue(person());
+  });
+
+  it("saves the occupation, trimmed, and clears it when emptied", async () => {
+    renderForm({ person: person({ occupation: "Nurse" }) });
+    const input = screen.getByRole("combobox", { name: "Occupation" });
+    expect(input).toHaveValue("Nurse");
+
+    await userEvent.clear(input);
+    await userEvent.type(input, "  Teacher ");
+    await save();
+    await waitFor(() => expect(savedBody().occupation).toBe("Teacher"));
+  });
+
+  it("suggests occupations other members have entered, and accepts one", async () => {
+    api.mockImplementation((path: string) =>
+      Promise.resolve(path === "/directory/occupations" ? { occupations: ["Teacher"] } : person())
+    );
+    renderForm();
+
+    await userEvent.type(screen.getByRole("combobox", { name: "Occupation" }), "tea");
+    await userEvent.click(await screen.findByRole("option", { name: "Teacher" }));
+    expect(screen.getByRole("combobox", { name: "Occupation" })).toHaveValue("Teacher");
+
+    await save();
+    await waitFor(() => expect(savedBody().occupation).toBe("Teacher"));
   });
 
   it("offers no family picker, and never mentions familyId, without the list", async () => {

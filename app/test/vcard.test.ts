@@ -39,6 +39,7 @@ function person(overrides: Partial<PersonDto> = {}): PersonDto {
     country: null,
     placeId: null,
     patronSaint: null,
+    occupation: null,
     photoUrl: null,
     thumbUrl: null,
     fullUrl: null,
@@ -52,6 +53,12 @@ function person(overrides: Partial<PersonDto> = {}): PersonDto {
 const lines = (card: string) => card.split("\r\n");
 
 describe("buildVCard", () => {
+  it("writes the occupation as the job title", () => {
+    const card = buildVCard(person({ occupation: "Nurse; RN" }));
+    expect(lines(card)).toContain("TITLE:Nurse\\; RN");
+    expect(lines(buildVCard(person()))).not.toContain(expect.stringMatching(/^TITLE/));
+  });
+
   it("writes a full record", () => {
     const card = buildVCard(
       person({

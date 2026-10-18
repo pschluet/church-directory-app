@@ -24,6 +24,7 @@ function person(overrides: Partial<PersonSummaryDto> = {}): PersonSummaryDto {
     country: null,
     placeId: null,
     patronSaint: "St. Anna",
+    occupation: null,
     photoUrl: null,
     thumbUrl: null,
     fullUrl: null,
@@ -200,6 +201,7 @@ describe("PersonCard", () => {
     { field: "postal code", overrides: { postalCode: "99501" }, term: "99501" },
     { field: "country", overrides: { country: "Greece" }, term: "greece" },
     { field: "patron saint", overrides: { patronSaint: "St Demetrios" }, term: "demetrios" },
+    { field: "occupation", overrides: { occupation: "Cabinetmaker" }, term: "cabinet" },
   ];
 
   it.each(SEARCHED_FIELDS)("shows why it matched on the $field", ({ overrides, term }) => {

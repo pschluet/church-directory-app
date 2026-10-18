@@ -82,6 +82,7 @@ async function main(): Promise<void> {
     phone?: string;
     address?: [string, string, string, string];
     patronSaint?: string;
+    occupation?: string;
   }): Promise<string> {
     const { rows: userRows } = await pool.query<{ id: string }>(
       `insert into app_users (cognito_sub, email, role, organization_id, status)
@@ -91,8 +92,8 @@ async function main(): Promise<void> {
     const [line1, city, state, postal] = options.address ?? ["", "", "", ""];
     const { rows } = await pool.query<{ id: string }>(
       `insert into persons (organization_id, family_id, app_user_id, first_name, last_name,
-                            email, phone, address_line1, city, state, postal_code, patron_saint)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                            email, phone, address_line1, city, state, postal_code, patron_saint, occupation)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        returning id`,
       [
         options.organizationId,
@@ -107,6 +108,7 @@ async function main(): Promise<void> {
         state || null,
         postal || null,
         options.patronSaint ?? null,
+        options.occupation ?? null,
       ]
     );
     return rows[0]!.id;
@@ -122,6 +124,7 @@ async function main(): Promise<void> {
     phone: "+13125551234",
     address: ["4129 W Newport Ave", "Chicago", "IL", "60641"],
     patronSaint: "St. Paul the Apostle",
+    occupation: "Software engineer",
   });
 
   const maria = await addUser({

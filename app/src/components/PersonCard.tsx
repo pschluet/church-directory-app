@@ -35,7 +35,7 @@ const plain: RevealGroup["find"] = (_person, text, terms) => highlightRanges(tex
  * address and an @chicago.org email -- and on a directory card the address is
  * the more useful of the two to have put there.
  *
- * Between them these four cover every field of `search_text` that the card does
+ * Between them these five cover every field of `search_text` that the card does
  * not already show: address line 1 and 2, city, state, postcode and country all
  * live in the address line, and the name, family and phone are on the card
  * already. That exhaustiveness is what makes "every result shows a reason it
@@ -45,6 +45,7 @@ const REVEAL_GROUPS: RevealGroup[] = [
   { label: "Address", text: (p) => formatSingleLineAddress(p) || null, find: plain },
   { label: "Email", text: (p) => p.email, find: plain },
   { label: "Saint", text: (p) => p.patronSaint, find: plain },
+  { label: "Occupation", text: (p) => p.occupation, find: plain },
   {
     label: "Other phone",
     text: (p) => displayPhone(p.altPhone),
@@ -55,9 +56,9 @@ const REVEAL_GROUPS: RevealGroup[] = [
 /**
  * Two lines, because a third inflates the whole grid row: every card beside a
  * tall one grows to match it, so one record with a lot of matching fields would
- * tax its neighbours. With four groups this is now the only thing that can hide
+ * tax its neighbours. With five groups this is now the only thing that can hide
  * a field the search really did match, and it is a deliberate trade -- a
- * one-character term can be in all four at once, and every card growing four
+ * one-character term can be in all five at once, and every card growing five
  * lines for it would be worse than the two most informative ones. Anything past
  * the second is dropped in silence: a "+1 more" would be a promise the card
  * cannot keep.

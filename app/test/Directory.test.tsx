@@ -43,6 +43,7 @@ function person(
     country: null,
     placeId: null,
     patronSaint: null,
+    occupation: null,
     photoUrl: null,
     thumbUrl: null,
     fullUrl: null,

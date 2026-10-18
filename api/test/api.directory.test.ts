@@ -128,7 +128,7 @@ describe.skipIf(!hasDb)("directory browse and search", () => {
         `update persons
             set phone = '+13125551234', city = 'Chicago', state = 'IL',
                 address_line1 = '4129 W Newport Ave', postal_code = '60641',
-                patron_saint = 'St. Paul the Apostle'
+                patron_saint = 'St. Paul the Apostle', occupation = 'Cabinetmaker'
           where id = $1`,
         [me.personId]
       );
@@ -152,6 +152,12 @@ describe.skipIf(!hasDb)("directory browse and search", () => {
     it("matches a patron saint", async () => {
       const { body } = await as(me).call("GET", "/api/directory/search?q=Apostle");
       expect(body.people).toHaveLength(1);
+    });
+
+    it("matches an occupation", async () => {
+      const { body } = await as(me).call("GET", "/api/directory/search?q=cabinet");
+      expect(body.people.map((p: any) => p.firstName)).toEqual(["Paul"]);
+      expect(body.people[0].occupation).toBe("Cabinetmaker");
     });
 
     it("matches a family name", async () => {
@@ -320,6 +326,47 @@ describe.skipIf(!hasDb)("directory browse and search", () => {
         "/api/directory/search?q=Popov&accountHoldersOnly=true"
       );
       expect(body).toEqual({ people: [], query: "Popov" });
+    });
+  });
+
+  describe("occupations", () => {
+    const person = (occupation: string | null, extra: object = {}) =>
+      createNonUserPerson(db(), { organizationId: orgId, familyId, occupation, ...extra });
+    const list = async (query = "") =>
+      (await as(me).call("GET", `/api/directory/occupations${query}`)).body.occupations;
+
+    it("folds case variants into the most common spelling", async () => {
+      await person("Teacher");
+      await person("Teacher");
+      await person("teacher");
+      expect(await list()).toEqual(["Teacher"]);
+    });
+
+    it("puts prefix matches first, then the most used", async () => {
+      await person("Art teacher");
+      await person("Teacher");
+      await person("Teacher");
+      await person("Nurse");
+      expect(await list("?q=tea")).toEqual(["Teacher", "Art teacher"]);
+    });
+
+    it("treats a typed wildcard literally", async () => {
+      await person("Teacher");
+      expect(await list("?q=%25")).toEqual([]);
+    });
+
+    it("leaves out deleted people, blanks and other parishes", async () => {
+      const gone = await person("Astronaut");
+      await db().query("update persons set deleted_at = now() where id = $1", [gone]);
+      await person(null);
+      const otherOrg = await createOrganization(db(), "Elsewhere", "elsewhere");
+      await createNonUserPerson(db(), {
+        organizationId: otherOrg,
+        familyId: null,
+        occupation: "Spy",
+      });
+      await person("Baker");
+      expect(await list()).toEqual(["Baker"]);
     });
   });
 
