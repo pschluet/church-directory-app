@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, inject, it } from "vitest";
 import { closeDatabase, resetTables, testDb } from "./helpers/testDb";
 import { client } from "./helpers/request";
 import { createOrganization, createUser, type CreatedUser } from "./helpers/fixtures";
+import { requireGroupGuidelinesAgreement } from "../src/services/group-guidelines";
 import { GROUP_GUIDELINES_VERSION } from "../src/types";
 
 const hasDb = inject("hasDatabase");
@@ -92,11 +93,16 @@ describe.skipIf(!hasDb)("group guidelines", () => {
     expect((await as(user).call("GET", "/api/groups")).status).toBe(200);
   });
 
+  // The table only allows versions >= 1, so while the current version is 1 an
+  // older agreement can't be stored; a stub database stands in for one.
   it("blocks groups writes when the agreement is for an older version", async () => {
-    await db().query(
-      "insert into group_guidelines_agreements (app_user_id, version) values ($1, $2)",
-      [user.appUserId, GROUP_GUIDELINES_VERSION - 1]
-    );
-    expect((await as(user).call("POST", "/api/groups", {})).status).toBe(403);
+    const stub = { query: async () => ({ rows: [{ version: GROUP_GUIDELINES_VERSION - 1 }] }) };
+    const context = {
+      req: { method: "POST" },
+      get: (key: string) => (key === "db" ? stub : { appUserId: user.appUserId }),
+    };
+    await expect(
+      requireGroupGuidelinesAgreement(context as never, async () => {})
+    ).rejects.toMatchObject({ status: 403 });
   });
 });
