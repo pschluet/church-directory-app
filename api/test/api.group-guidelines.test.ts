@@ -30,6 +30,7 @@ describe.skipIf(!hasDb)("group guidelines", () => {
     const res = await as(user).call("GET", "/api/me");
     expect(res.status).toBe(200);
     expect(res.body.groupGuidelinesAgreedVersion).toBeNull();
+    expect(res.body.groupGuidelinesAgreedAt).toBeNull();
   });
 
   it("records agreement to the current version and audits it", async () => {
@@ -40,6 +41,7 @@ describe.skipIf(!hasDb)("group guidelines", () => {
 
     const me = await as(user).call("GET", "/api/me");
     expect(me.body.groupGuidelinesAgreedVersion).toBe(GROUP_GUIDELINES_VERSION);
+    expect(Date.parse(me.body.groupGuidelinesAgreedAt)).not.toBeNaN();
 
     const { rows } = await db().query(
       "select entity_id, changes from audit_log where action = 'user.agreeGroupGuidelines'"

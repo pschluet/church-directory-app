@@ -1695,6 +1695,8 @@ export interface MeDto {
    * `GROUP_GUIDELINES_VERSION`.
    */
   groupGuidelinesAgreedVersion: number | null;
+  /** When that agreement was made, as an ISO timestamp, or null if never. */
+  groupGuidelinesAgreedAt: string | null;
 }
 
 // ---------------------------------------------------------------------------

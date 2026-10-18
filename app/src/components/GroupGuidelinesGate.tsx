@@ -1,10 +1,11 @@
 import { useState } from "react";
 import type { ReactNode } from "react";
 import { useNavigate } from "react-router";
-import { GROUP_GUIDELINES, GROUP_GUIDELINES_VERSION } from "@shared";
+import { GROUP_GUIDELINES_VERSION } from "@shared";
 import { useMe } from "../context/MeContext";
 import { api, ApiError } from "../lib/api";
 import { Button, Modal } from "./ui";
+import { GroupGuidelinesList } from "./GroupGuidelinesInfo";
 
 /**
  * The groups pages, behind the parish's group guidelines.
@@ -45,14 +46,7 @@ export function GroupGuidelinesGate({ children }: { children: ReactNode }) {
         <p className="text-ink-muted">
           Please read and agree to these guidelines before using the groups page.
         </p>
-        <ol className="list-decimal space-y-2 pl-5">
-          {GROUP_GUIDELINES.map((guideline) => (
-            <li key={guideline.title}>
-              <span className="font-bold text-ink">{guideline.title}:</span>{" "}
-              <span className="text-ink-muted">{guideline.body}</span>
-            </li>
-          ))}
-        </ol>
+        <GroupGuidelinesList />
         <label className="flex items-center gap-2 font-bold text-ink">
           <input
             type="checkbox"

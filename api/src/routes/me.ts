@@ -47,9 +47,9 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
     caller.personId && caller.homeOrganizationId
       ? loadPerson(db, asHomeParishCaller(caller), caller.personId, caller.homeOrganizationId)
       : Promise.resolve(null),
-    one<{ version: number }>(
+    one<{ version: number; agreed_at: Date }>(
       db,
-      "select version from group_guidelines_agreements where app_user_id = $1",
+      "select version, agreed_at from group_guidelines_agreements where app_user_id = $1",
       [caller.appUserId]
     ),
   ]);
@@ -113,6 +113,7 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
     mapsBrowserKey: maps.key,
     mapsMapId: maps.mapId,
     groupGuidelinesAgreedVersion: guidelines?.version ?? null,
+    groupGuidelinesAgreedAt: guidelines?.agreed_at.toISOString() ?? null,
   };
 }
 

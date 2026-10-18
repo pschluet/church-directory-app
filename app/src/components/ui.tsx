@@ -68,6 +68,8 @@ export function PageHeading({
    * somebody came to the Directory to type in, so it keeps the wide row.
    */
   titleAction,
+  /** Something small that sits inline right after the title, such as an info button. */
+  titleAdornment,
   /**
    * For `actions` that are icon-sized -- a lone three-dots menu, say. Keeps
    * them beside the title even on a phone, where the default stacking would
@@ -87,6 +89,7 @@ export function PageHeading({
   actions?: ReactNode;
   filters?: ReactNode;
   titleAction?: ReactNode;
+  titleAdornment?: ReactNode;
   compactActions?: boolean;
   tight?: boolean;
 }) {
@@ -102,7 +105,14 @@ export function PageHeading({
       >
         {/* `mr-auto` is what pushes everything else right once this is a flex row. */}
         <div className="min-w-0 md:mr-auto">
-          <h1 className="text-2xl font-bold text-ink md:text-3xl">{title}</h1>
+          {titleAdornment ? (
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold text-ink md:text-3xl">{title}</h1>
+              {titleAdornment}
+            </div>
+          ) : (
+            <h1 className="text-2xl font-bold text-ink md:text-3xl">{title}</h1>
+          )}
           {subtitle && <p className="mt-1 text-ink-muted">{subtitle}</p>}
         </div>
         {titleAction && (

@@ -30,6 +30,7 @@ import {
   Spinner,
   inputClass,
 } from "../components/ui";
+import { GroupGuidelinesInfo } from "../components/GroupGuidelinesInfo";
 
 /**
  * Every group the caller may know about: Public and Private ones parish-wide,
@@ -102,6 +103,7 @@ export function Groups() {
     <>
       <PageHeading
         title="Groups"
+        titleAdornment={<GroupGuidelinesInfo />}
         subtitle={
           groupsQuery.isPending
             ? undefined
