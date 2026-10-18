@@ -3,6 +3,7 @@ import { useAuth } from "./context/AuthContext";
 import { MeProvider, useMe } from "./context/MeContext";
 import { AppShell } from "./components/AppShell";
 import { NavStackProvider } from "./components/NavStack";
+import { GroupGuidelinesGate } from "./components/GroupGuidelinesGate";
 import { ErrorNotice, Spinner } from "./components/ui";
 import { Login } from "./pages/Login";
 import { Directory } from "./pages/Directory";
@@ -54,11 +55,32 @@ export const router = createBrowserRouter([
       { path: "me", element: <MyDetails /> },
       { path: "settings", element: <Settings /> },
       { path: "prayer-requests", element: <PrayerRequests /> },
-      { path: "groups", element: <Groups /> },
-      { path: "groups/:id", element: <GroupDetail /> },
+      {
+        path: "groups",
+        element: (
+          <GroupGuidelinesGate>
+            <Groups />
+          </GroupGuidelinesGate>
+        ),
+      },
+      {
+        path: "groups/:id",
+        element: (
+          <GroupGuidelinesGate>
+            <GroupDetail />
+          </GroupGuidelinesGate>
+        ),
+      },
       // A message's thread, on a page of its own. The same component: it shares
       // the group, the live poll and the modals with the feed.
-      { path: "groups/:id/threads/:postId", element: <GroupDetail /> },
+      {
+        path: "groups/:id/threads/:postId",
+        element: (
+          <GroupGuidelinesGate>
+            <GroupDetail />
+          </GroupGuidelinesGate>
+        ),
+      },
       { path: "families", element: <Families /> },
       { path: "families/:id", element: <FamilyDetail /> },
       {

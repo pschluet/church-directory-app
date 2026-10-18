@@ -146,6 +146,7 @@ export const AUDIT_ACTIONS = [
   "user.changeNotifications",
   "user.adoptParish",
   "user.changeParish",
+  "user.agreeGroupGuidelines",
 
   "organization.create",
   "organization.update",
@@ -211,6 +212,7 @@ const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "user.changeNotifications": "Notification settings changed",
   "user.adoptParish": "Given a parish",
   "user.changeParish": "Moved parish",
+  "user.agreeGroupGuidelines": "Agreed to group guidelines",
 
   "organization.create": "Church created",
   "organization.update": "Church edited",
@@ -1687,7 +1689,67 @@ export interface MeDto {
    * required rather than optional: Advanced Markers do not render without one.
    */
   mapsMapId: string | null;
+  /**
+   * The version of the group guidelines this account last agreed to, or null
+   * if never. The groups pages ask again whenever it is not
+   * `GROUP_GUIDELINES_VERSION`.
+   */
+  groupGuidelinesAgreedVersion: number | null;
 }
+
+// ---------------------------------------------------------------------------
+// Group guidelines
+// ---------------------------------------------------------------------------
+/**
+ * What every member agrees to before using the groups pages.
+ *
+ * Bump the version whenever the text changes in substance: everyone who agreed
+ * to an older version is asked again on their next visit.
+ */
+export const GROUP_GUIDELINES_VERSION = 1;
+
+export const GROUP_GUIDELINES: readonly { title: string; body: string }[] = [
+  {
+    title: "Parish-focused use",
+    body: "Use the groups page for parish life: events, ministry coordination, volunteer needs, announcements, words of encouragement, etc.",
+  },
+  {
+    title: "Fundraising",
+    body: "Fundraising for the church or charitable causes is welcome.",
+  },
+  {
+    title: "Charitable speech",
+    body: "No gossip or criticism of individuals or clergy. Bring concerns to the priest or parish council directly (Matthew 18:15).",
+  },
+  {
+    title: "No political debate",
+    body: "No partisan content, political debate, or divisive social commentary.",
+  },
+  {
+    title: "No contentious topics",
+    body: "Don't share unverified teachings or \u201cprophecies,\u201d and don't debate jurisdictions, the calendar, or other controversies within Orthodoxy.",
+  },
+  {
+    title: "No pastoral matters",
+    body: "Confession and pastoral matters are never discussed in the group.",
+  },
+  {
+    title: "Refrain during services",
+    body: "Don't use the groups page during services.",
+  },
+  {
+    title: "Moderator authority",
+    body: "The priest and moderators may remove posts or members who don't follow these guidelines. Report concerns to a moderator privately, not publicly, or use the Report option on a post (in its message menu) to flag it for review.",
+  },
+  {
+    title: "Agreement",
+    body: "Using the groups page means you agree to these guidelines.",
+  },
+];
+
+export const groupGuidelinesAgreementSchema = z.object({
+  version: z.literal(GROUP_GUIDELINES_VERSION),
+});
 
 // ---------------------------------------------------------------------------
 // Audit log

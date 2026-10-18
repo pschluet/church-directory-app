@@ -48,6 +48,7 @@ const TABLES = [
   "person_merge_requests",
   "notifications",
   "notification_preferences",
+  "group_guidelines_agreements",
   "push_subscriptions",
   "prayer_request_images",
   "prayer_requests",
