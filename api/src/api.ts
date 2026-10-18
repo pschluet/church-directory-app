@@ -8,6 +8,7 @@ import { assertPhotoCookieConfig } from "./photo-cookies";
 import { assertPushConfig } from "./services/push";
 import { assertGeocodingConfig } from "./services/geocoding";
 import type { Queryable } from "./db";
+import { requireGroupGuidelinesAgreement } from "./services/group-guidelines";
 import meRoutes from "./routes/me";
 import directoryRoutes from "./routes/directory";
 import mapRoutes from "./routes/map";
@@ -109,6 +110,7 @@ export function createApp(queryable?: Queryable) {
   app.get("/api/health", (c) => c.json({ ok: true }));
 
   app.route("/api/me", meRoutes);
+  app.use("/api/groups/*", requireGroupGuidelinesAgreement);
   app.route("/api/directory", directoryRoutes);
   app.route("/api/map", mapRoutes);
   app.route("/api/persons", personRoutes);

@@ -1,5 +1,5 @@
 import type { Queryable } from "../../src/db";
-import type { Role } from "../../src/types";
+import { GROUP_GUIDELINES_VERSION, type Role } from "../../src/types";
 
 /**
  * Builders for the shapes these tests keep needing: a parish, some families,
@@ -52,6 +52,8 @@ export async function createUser(
     firstName?: string;
     lastName?: string | null;
     familyId?: string | null;
+    /** Groups routes refuse accounts that haven't; defaults to true. */
+    agreedToGroupGuidelines?: boolean;
   }
 ): Promise<CreatedUser> {
   const role = options.role ?? "USER";
@@ -65,6 +67,12 @@ export async function createUser(
     [cognitoSub, email, role, options.organizationId]
   );
   const appUserId = userRows[0]!.id;
+  if (options.agreedToGroupGuidelines ?? true) {
+    await db.query(
+      "insert into group_guidelines_agreements (app_user_id, version) values ($1, $2)",
+      [appUserId, GROUP_GUIDELINES_VERSION]
+    );
+  }
 
   // A super admin with no organization has no directory record yet, which is
   // exactly what the invite flow in routes/admin.ts does.

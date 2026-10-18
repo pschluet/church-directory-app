@@ -9,7 +9,13 @@ import { setAccountOrganization } from "../services/membership";
 import { PHOTO_COOKIE_TTL_SECONDS, signPhotoCookies } from "../photo-cookies";
 import { pushPublicKey } from "../services/push";
 import { mapsBrowserConfig } from "../services/geocoding";
-import { fullName, setMyOrganizationSchema, type MeDto, type OrganizationMoveDto } from "../types";
+import {
+  fullName,
+  groupGuidelinesAgreementSchema,
+  setMyOrganizationSchema,
+  type MeDto,
+  type OrganizationMoveDto,
+} from "../types";
 
 /**
  * Everything the SPA needs on boot: who you are, what you may do, the
@@ -30,7 +36,7 @@ function asHomeParishCaller(caller: Caller): Caller {
 }
 
 async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<MeDto> {
-  const [org, person] = await Promise.all([
+  const [org, person, guidelines] = await Promise.all([
     caller.organizationId
       ? one<{ id: string; name: string; map_view_enabled: boolean }>(
           db,
@@ -41,6 +47,11 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
     caller.personId && caller.homeOrganizationId
       ? loadPerson(db, asHomeParishCaller(caller), caller.personId, caller.homeOrganizationId)
       : Promise.resolve(null),
+    one<{ version: number; agreed_at: Date }>(
+      db,
+      "select version, agreed_at from group_guidelines_agreements where app_user_id = $1",
+      [caller.appUserId]
+    ),
   ]);
 
   // Only super admins may act outside their own organization, so nobody else
@@ -101,6 +112,8 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
     mapViewEnabled,
     mapsBrowserKey: maps.key,
     mapsMapId: maps.mapId,
+    groupGuidelinesAgreedVersion: guidelines?.version ?? null,
+    groupGuidelinesAgreedAt: guidelines?.agreed_at.toISOString() ?? null,
   };
 }
 
@@ -133,6 +146,34 @@ routes.get("/", async (c) => {
   const body = await loadMe(c.get("db"), c.get("caller"));
   issuePhotoCookies(c);
   return c.json(body);
+});
+
+/**
+ * Agree to the group guidelines. The schema only accepts the current version,
+ * so a tab left open across a guidelines change cannot agree to text the
+ * member never saw. Keyed by account, not parish: the guidelines are the same
+ * in every group.
+ */
+routes.post("/group-guidelines", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const { version } = groupGuidelinesAgreementSchema.parse(await c.req.json());
+
+  await db.query(
+    `insert into group_guidelines_agreements (app_user_id, version)
+     values ($1, $2)
+     on conflict (app_user_id) do update set version = $2, agreed_at = now()`,
+    [caller.appUserId, version]
+  );
+
+  await audit(db, caller, {
+    action: "user.agreeGroupGuidelines",
+    entityType: "appUser",
+    entityId: caller.appUserId,
+    changes: { version },
+  });
+
+  return c.body(null, 204);
 });
 
 /**

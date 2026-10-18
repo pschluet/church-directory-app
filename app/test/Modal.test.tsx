@@ -44,4 +44,19 @@ describe("Modal", () => {
     await userEvent.click(screen.getByRole("button", { name: "Close" }));
     expect(onClose).toHaveBeenCalled();
   });
+
+  it("cannot be dismissed when dismissable is false", async () => {
+    const onClose = vi.fn();
+    render(
+      <Modal title="Group Guidelines" onClose={onClose} dismissable={false}>
+        <p>Body</p>
+      </Modal>
+    );
+    expect(screen.queryByRole("button", { name: "Close" })).not.toBeInTheDocument();
+
+    const { default: userEvent } = await import("@testing-library/user-event");
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(screen.getByRole("dialog", { name: "Group Guidelines" }));
+    expect(onClose).not.toHaveBeenCalled();
+  });
 });

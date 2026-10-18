@@ -80,6 +80,12 @@ For a Private group, non-members see the title, description, image, and a member
 - Resolving a report means either dismissing it or removing the reported post; either way, the report is closed. The person who filed the report is not told who resolved it or what the outcome was — this keeps moderation decisions separate from interpersonal conflict.
 - Reports are retained even if the reported post is later deleted, preserving a record of what happened.
 
+# Member Guidelines
+- Before using any groups page, a member must agree to the parish's group guidelines in a pop-up that cannot be dismissed. They tick "I have read and agree" and press Agree, or press "Not now" to go back home.
+- Agreement is saved on the member's account, so it carries across devices, and is recorded in the audit log.
+- The guidelines are versioned (`GROUP_GUIDELINES_VERSION` in `api/src/types.ts`). Changing the version asks everyone to agree again.
+- The server enforces this too: every `/api/groups` route that creates, updates or deletes returns 403 until the account has agreed to the current version.
+
 # Notifications
 - Notifications are delivered in-app (a badge/bell) and as web push notifications to a member's device. Email and text message notifications are not part of this release.
 - Members can set notification preferences on a per-group basis: notify on all new posts, notify only when they're @ mentioned, or don't notify at all.

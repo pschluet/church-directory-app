@@ -68,6 +68,8 @@ export function PageHeading({
    * somebody came to the Directory to type in, so it keeps the wide row.
    */
   titleAction,
+  /** Something small that sits inline right after the title, such as an info button. */
+  titleAdornment,
   /**
    * For `actions` that are icon-sized -- a lone three-dots menu, say. Keeps
    * them beside the title even on a phone, where the default stacking would
@@ -87,6 +89,7 @@ export function PageHeading({
   actions?: ReactNode;
   filters?: ReactNode;
   titleAction?: ReactNode;
+  titleAdornment?: ReactNode;
   compactActions?: boolean;
   tight?: boolean;
 }) {
@@ -102,7 +105,14 @@ export function PageHeading({
       >
         {/* `mr-auto` is what pushes everything else right once this is a flex row. */}
         <div className="min-w-0 md:mr-auto">
-          <h1 className="text-2xl font-bold text-ink md:text-3xl">{title}</h1>
+          {titleAdornment ? (
+            <div className="flex items-center gap-2">
+              <h1 className="text-2xl font-bold text-ink md:text-3xl">{title}</h1>
+              {titleAdornment}
+            </div>
+          ) : (
+            <h1 className="text-2xl font-bold text-ink md:text-3xl">{title}</h1>
+          )}
           {subtitle && <p className="mt-1 text-ink-muted">{subtitle}</p>}
         </div>
         {titleAction && (
@@ -592,11 +602,17 @@ export function Modal({
   /** For a dialog that needs the width, such as the photo cropper. */
   wide = false,
   noSelect = false,
+  dismissable = true,
 }: {
   title: string;
   onClose: () => void;
   children: ReactNode;
   wide?: boolean;
+  /**
+   * False for a dialog that must be answered from its own buttons: no ×, and
+   * neither Escape nor a backdrop click closes it. The scroll lock still holds.
+   */
+  dismissable?: boolean;
   /**
    * No text selection or touch callout anywhere in it. For a sheet opened by a
    * long press: the OS is still treating that press as "select", and without
@@ -605,7 +621,7 @@ export function Modal({
    */
   noSelect?: boolean;
 }) {
-  useDismissable(onClose);
+  useDismissable(dismissable ? onClose : () => {});
 
   /*
    * Portalled to the body, like PhotoLightbox, rather than rendered where it
@@ -628,7 +644,7 @@ export function Modal({
       aria-modal="true"
       aria-label={title}
       onClick={(event) => {
-        if (event.target === event.currentTarget) onClose();
+        if (dismissable && event.target === event.currentTarget) onClose();
       }}
     >
       {/* Full-height sheet on a phone, centred dialog from md up. */}
@@ -639,14 +655,16 @@ export function Modal({
       >
         <div className="mb-4 flex items-start justify-between gap-4">
           <h2 className="text-xl font-bold text-ink">{title}</h2>
-          <button
-            type="button"
-            onClick={onClose}
-            aria-label="Close"
-            className="tap-target -mr-2 -mt-2 text-2xl leading-none text-ink-muted hover:text-primary"
-          >
-            ×
-          </button>
+          {dismissable && (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="tap-target -mr-2 -mt-2 text-2xl leading-none text-ink-muted hover:text-primary"
+            >
+              ×
+            </button>
+          )}
         </div>
         {children}
       </div>
