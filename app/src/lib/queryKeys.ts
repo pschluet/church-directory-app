@@ -47,6 +47,8 @@ export const qk = {
     [...qk.directoryRoot(orgId), "browse", { accountHoldersOnly }] as const,
   directorySearch: (orgId: string | null, q: string, accountHoldersOnly: boolean) =>
     [...qk.directoryRoot(orgId), "search", { q, accountHoldersOnly }] as const,
+  occupations: (orgId: string | null, q: string) =>
+    [...qk.directoryRoot(orgId), "occupations", { q }] as const,
   directoryLookup: (
     orgId: string | null,
     q: string,

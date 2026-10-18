@@ -479,6 +479,15 @@ describe.skipIf(!hasDb)("merging duplicate people", () => {
       expect(merged.alt_phone).toBe("+13125550000");
     });
 
+    it("fills a blank occupation from the duplicate", async () => {
+      await db().query("update persons set occupation = 'Nurse' where id = $1", [duplicate]);
+      await mergeAsAdmin();
+      const { rows } = await db().query("select occupation from persons where id = $1", [
+        holder.personId,
+      ]);
+      expect(rows[0]?.occupation).toBe("Nurse");
+    });
+
     it("moves the address as a block rather than splicing two together", async () => {
       await db().query("update persons set city = $2 where id = $1", [holder.personId, "Evanston"]);
       await db().query("update persons set address_line1 = $2, city = $3 where id = $1", [

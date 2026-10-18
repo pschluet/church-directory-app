@@ -361,6 +361,7 @@ export const personWriteSchema = addressSchema.merge(inheritanceSchema).extend({
   phone: phoneSchema.nullable().optional(),
   altPhone: phoneSchema.nullable().optional(),
   patronSaint: trimmedOptional(120),
+  occupation: trimmedOptional(100),
   familyId: uuidSchema.nullable().optional(),
 });
 export type PersonWrite = z.infer<typeof personWriteSchema>;
@@ -396,6 +397,7 @@ export interface PersonSummaryDto {
    */
   placeId: string | null;
   patronSaint: string | null;
+  occupation: string | null;
   /**
    * @deprecated Use `thumbUrl`/`fullUrl`. Kept for one release because the SPA
    * is published after the API, so an older bundle may still be live.

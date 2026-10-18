@@ -178,6 +178,7 @@ export async function mergePersons(
               phone        = coalesce(a.phone, d.phone),
               alt_phone    = coalesce(a.alt_phone, d.alt_phone),
               patron_saint = coalesce(a.patron_saint, d.patron_saint),
+              occupation   = coalesce(a.occupation, d.occupation),
               photo_key    = coalesce(a.photo_key, d.photo_key),
               family_id    = $3,
               -- The survivor takes over the duplicate's seat in the family's

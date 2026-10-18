@@ -46,6 +46,7 @@ function person(id: string, firstName: string, lastName: string): PersonSummaryD
     country: null,
     placeId: null,
     patronSaint: null,
+    occupation: null,
     photoUrl: null,
     thumbUrl: null,
     fullUrl: null,

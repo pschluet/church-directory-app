@@ -215,7 +215,16 @@ export function PersonDetail() {
   if (!person) return null;
 
   const name = fullName(person);
-  const address = formatMultilineAddress(person);
+  const hasAddress = formatMultilineAddress(person).length > 0;
+  // Fields nobody has filled in are left out rather than shown as a dash.
+  const hasDetails = Boolean(
+    person.phone ||
+      person.altPhone ||
+      person.email ||
+      person.occupation ||
+      person.patronSaint ||
+      hasAddress
+  );
   const editingDate = person.specialDates.find((date) => date.id === editingDateId);
 
   const isOwnRecord = person.id === me?.appUser.personId;
@@ -394,54 +403,75 @@ export function PersonDetail() {
             </p>
           )}
 
-          <dl className="mt-4 grid gap-x-8 gap-y-3 md:grid-cols-2">
-            <DetailRow label="Phone" inheritedFrom={person.inheritedFrom.phone?.name}>
-              {person.phone ? <PhoneLink phone={person.phone} label={name} /> : <NotSet />}
-            </DetailRow>
-
-            <DetailRow label="Alternate phone" inheritedFrom={person.inheritedFrom.altPhone?.name}>
-              {person.altPhone ? <PhoneLink phone={person.altPhone} label={name} /> : <NotSet />}
-            </DetailRow>
-
-            <DetailRow label="Email" inheritedFrom={person.inheritedFrom.email?.name}>
-              {person.email ? (
-                <a
-                  href={`mailto:${person.email}`}
-                  className="break-all text-primary hover:text-accent"
-                >
-                  {person.email}
-                </a>
-              ) : (
-                <NotSet />
+          {hasDetails ? (
+            <dl className="mt-4 grid gap-x-8 gap-y-3 md:grid-cols-2">
+              {person.phone && (
+                <DetailRow label="Phone" inheritedFrom={person.inheritedFrom.phone?.name}>
+                  <PhoneLink phone={person.phone} label={name} />
+                </DetailRow>
               )}
-            </DetailRow>
 
-            <DetailRow label="Patron saint">
-              {person.patronSaint ? <span>{person.patronSaint}</span> : <NotSet />}
-            </DetailRow>
+              {person.altPhone && (
+                <DetailRow
+                  label="Alternate phone"
+                  inheritedFrom={person.inheritedFrom.altPhone?.name}
+                >
+                  <PhoneLink phone={person.altPhone} label={name} />
+                </DetailRow>
+              )}
 
-            <DetailRow
-              label="Address"
-              inheritedFrom={person.inheritedFrom.address?.name}
-              className="md:col-span-2"
+              {person.email && (
+                <DetailRow label="Email" inheritedFrom={person.inheritedFrom.email?.name}>
+                  <a
+                    href={`mailto:${person.email}`}
+                    className="break-all text-primary hover:text-accent"
+                  >
+                    {person.email}
+                  </a>
+                </DetailRow>
+              )}
+
+              {person.occupation && (
+                <DetailRow label="Occupation">
+                  <span>{person.occupation}</span>
+                </DetailRow>
+              )}
+
+              {person.patronSaint && (
+                <DetailRow label="Patron saint">
+                  <span>{person.patronSaint}</span>
+                </DetailRow>
+              )}
+
+              {hasAddress && (
+                <DetailRow
+                  label="Address"
+                  inheritedFrom={person.inheritedFrom.address?.name}
+                  className="md:col-span-2"
+                >
+                  <AddressLink person={person} />
+                </DetailRow>
+              )}
+            </dl>
+          ) : (
+            <p className="mt-4 text-ink-muted">No details have been added yet.</p>
+          )}
+
+          {/*
+            `role="status"` and not `alert`: the save succeeded, so this is
+            news rather than a fault, and an alert would interrupt a screen
+            reader to say something went wrong when nothing did. Outside the
+            list of details because it must show even when the address itself
+            has nothing to display.
+          */}
+          {geocodeWarning && (
+            <p
+              role="status"
+              className="mt-3 rounded-md border border-accent bg-surface-muted p-3 text-sm text-ink"
             >
-              {address.length > 0 ? <AddressLink person={person} /> : <NotSet />}
-              {/*
-                `role="status"` and not `alert`: the save succeeded, so this is
-                news rather than a fault, and an alert would interrupt a screen
-                reader to say something went wrong when nothing did. Beside the
-                address because that is the field it is about.
-              */}
-              {geocodeWarning && (
-                <p
-                  role="status"
-                  className="mt-2 rounded-md border border-accent bg-surface-muted p-3 text-sm text-ink"
-                >
-                  {geocodeWarning}
-                </p>
-              )}
-            </DetailRow>
-          </dl>
+              {geocodeWarning}
+            </p>
+          )}
         </div>
       </div>
 
@@ -750,8 +780,4 @@ function DetailRow({
       </dd>
     </div>
   );
-}
-
-function NotSet() {
-  return <span className="text-ink-muted">—</span>;
 }

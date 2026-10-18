@@ -23,6 +23,9 @@ const MAX_LIMIT = 200;
 const DEFAULT_LOOKUP_LIMIT = 20;
 const MAX_LOOKUP_LIMIT = 50;
 
+const DEFAULT_OCCUPATION_LIMIT = 10;
+const MAX_OCCUPATION_LIMIT = 25;
+
 /** A query string has no booleans; anything but an explicit "true" means off. */
 function parseFlag(raw: string | undefined): boolean {
   return raw === "true";
@@ -219,6 +222,37 @@ routes.get("/lookup", async (c) => {
     familyName: row.family_name,
   }));
   return c.json({ people });
+});
+
+/**
+ * The type-ahead behind the Occupation field: what other members of this parish
+ * have already entered, so spellings converge on one another.
+ *
+ * Grouped case-insensitively -- "teacher" and "Teacher" are one suggestion --
+ * and shown as whichever spelling is most used. Prefix matches come first, then
+ * the most common, then alphabetical. Scoped to the caller's organization like
+ * every other read: another parish's professions are not this parish's business.
+ */
+routes.get("/occupations", async (c) => {
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const q = (c.req.query("q") ?? "").trim();
+  const limit = parseLimit(c.req.query("limit"), DEFAULT_OCCUPATION_LIMIT, MAX_OCCUPATION_LIMIT);
+
+  const { rows } = await db.query<{ occupation: string }>(
+    `select mode() within group (order by occupation) as occupation
+       from persons
+      where organization_id = $1
+        and deleted_at is null
+        and occupation is not null
+        and occupation ilike $2
+      group by lower(occupation)
+      order by (lower(occupation) like $3) desc, count(*) desc, lower(occupation) asc
+      limit $4`,
+    [organizationId, `%${escapeLike(q)}%`, `${escapeLike(q.toLowerCase())}%`, limit]
+  );
+
+  return c.json({ occupations: rows.map((row) => row.occupation) });
 });
 
 export function escapeLike(input: string): string {

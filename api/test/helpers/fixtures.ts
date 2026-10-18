@@ -108,11 +108,12 @@ export async function createNonUserPerson(
     phone?: string | null;
     city?: string | null;
     patronSaint?: string | null;
+    occupation?: string | null;
   }
 ): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
-    `insert into persons (organization_id, family_id, first_name, last_name, email, phone, city, patron_saint)
-     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+    `insert into persons (organization_id, family_id, first_name, last_name, email, phone, city, patron_saint, occupation)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9) returning id`,
     [
       options.organizationId,
       options.familyId,
@@ -122,6 +123,7 @@ export async function createNonUserPerson(
       options.phone ?? null,
       options.city ?? null,
       options.patronSaint ?? null,
+      options.occupation ?? null,
     ]
   );
   return rows[0]!.id;

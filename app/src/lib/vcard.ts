@@ -86,6 +86,8 @@ export function buildVCard(person: PersonDto, photo?: VCardPhoto | null): string
   if (person.altPhone) lines.push(`TEL;TYPE=VOICE:${escapeText(person.altPhone)}`);
   if (person.email) lines.push(`EMAIL;TYPE=INTERNET:${escapeText(person.email)}`);
 
+  if (person.occupation) lines.push(`TITLE:${escapeText(person.occupation)}`);
+
   const street = [person.addressLine1, person.addressLine2].filter(Boolean).join(", ");
   const address = [street, person.city, person.state, person.postalCode, person.country];
   if (address.some((part) => part?.trim())) {

@@ -13,6 +13,9 @@ import { api, ApiError } from "../lib/api";
 import { InheritToggle, inheritanceCandidates } from "./InheritToggle";
 import { AddressAutocomplete } from "./AddressAutocomplete";
 import { Button, Field, inputClass } from "./ui";
+import { SuggestInput } from "./SuggestInput";
+import { useMe } from "../context/MeContext";
+import { qk } from "../lib/queryKeys";
 
 /**
  * Editing a person.
@@ -43,6 +46,7 @@ interface FormState {
   postalCode: string;
   country: string;
   patronSaint: string;
+  occupation: string;
   /**
    * Google's id for the address, from the suggestion that was picked.
    *
@@ -74,6 +78,7 @@ function initialState(person: PersonDto): FormState {
     postalCode: person.inheritedFrom.address ? "" : (person.postalCode ?? ""),
     country: person.inheritedFrom.address ? "" : (person.country ?? ""),
     patronSaint: person.patronSaint ?? "",
+    occupation: person.occupation ?? "",
     familyId: person.familyId ?? "",
     inherit: {
       email: person.inheritedFrom.email?.personId ?? null,
@@ -108,6 +113,7 @@ export function PersonForm({
   onSaved: (updated: PersonDto) => void;
   onCancel?: () => void;
 }) {
+  const { organizationId } = useMe();
   const [form, setForm] = useState<FormState>(() => initialState(person));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -180,6 +186,7 @@ export function PersonForm({
             country: form.country,
           }),
       patronSaint: form.patronSaint,
+      occupation: form.occupation,
       inheritEmailFromPersonId: movingFamily ? null : form.inherit.email,
       inheritPhoneFromPersonId: movingFamily ? null : form.inherit.phone,
       inheritAltPhoneFromPersonId: movingFamily ? null : form.inherit.altPhone,
@@ -270,6 +277,22 @@ export function PersonForm({
           />
         </Field>
       </div>
+
+      <SuggestInput
+        label="Occupation"
+        hint="Start typing to see what others in the parish have entered"
+        value={form.occupation}
+        onChange={(value) => set("occupation", value)}
+        maxLength={100}
+        queryKey={(term) => qk.occupations(organizationId, term)}
+        fetchSuggestions={async (term, signal) => {
+          const { occupations } = await api<{ occupations: string[] }>("/directory/occupations", {
+            signal,
+            query: { q: term },
+          });
+          return occupations;
+        }}
+      />
 
       {families && (
         <Field
