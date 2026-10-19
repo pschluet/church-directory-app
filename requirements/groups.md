@@ -30,7 +30,7 @@ There are 3 types of groups:
   - Archive the group
 - Any member can leave a group at any time, except for the sole-admin restriction above. When a member leaves or is removed, their past posts stay in the group, still attributed to them — they aren't deleted.
 - Public groups can be freely joined and left. Rejoining a public group restores full visibility into its past history.
-- Parish admins and super admins have the same abilities as a group admin in every group, including Secret groups and their messages — they can see and act in any group regardless of membership. Because this crosses a meaningful privacy boundary, the app discloses it clearly in the product (for example, a notice shown when creating or viewing a secret group that parish administrators are able to view it). Every time a parish admin or super admin views or takes action in a group they don't belong to, that access is logged for accountability.
+- Parish admins and super admins have the same abilities as a group admin in every group, including Secret groups and their messages — they can see and act in any group regardless of membership. Because this crosses a meaningful privacy boundary, the app discloses it clearly in the product (for example, a notice shown when creating or viewing a secret group that parish administrators are able to view it).
 - There is currently no automatic age restriction on who can join a group — the directory doesn't reliably track ages, so this isn't enforced today. This is a known gap, flagged here as a future consideration rather than a current rule.
 
 # Group Metadata

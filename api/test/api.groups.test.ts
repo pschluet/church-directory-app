@@ -121,38 +121,24 @@ describe.skipIf(!hasDb)("groups", () => {
       const detail = await as(parishAdmin).call("GET", `/api/groups/${groupId}`);
       expect(detail.status).toBe(200);
       expect(detail.body.viewingAsAdmin).toBe(true);
-
-      const audit = await as(parishAdmin).call("GET", "/api/audit");
-      expect(
-        audit.body.entries.some(
-          (e: { action: string; entityId: string }) =>
-            e.action === "group.adminView" && e.entityId === groupId
-        )
-      ).toBe(true);
     });
 
-    it("logs an admin view of a private group they are not in", async () => {
+    it("marks an admin view of a private group they are not in, without auditing it", async () => {
       const groupId = await createGroup(creator, "PRIVATE");
       const detail = await as(parishAdmin).call("GET", `/api/groups/${groupId}`);
       expect(detail.body.viewingAsAdmin).toBe(true);
 
       const { rows } = await db().query<{ n: string }>(
-        "select count(*)::text as n from audit_log where action = 'group.adminView' and entity_id = $1",
-        [groupId]
+        "select count(*)::text as n from audit_log where entity_type = 'group' and entity_id = $1 and actor_app_user_id = $2",
+        [groupId, parishAdmin.appUserId]
       );
-      expect(rows[0]!.n).toBe("1");
+      expect(rows[0]!.n).toBe("0");
     });
 
-    it("neither discloses nor logs an admin view of a public group", async () => {
+    it("does not disclose an admin view of a public group", async () => {
       const groupId = await createGroup(creator, "PUBLIC");
       const detail = await as(parishAdmin).call("GET", `/api/groups/${groupId}`);
       expect(detail.body.viewingAsAdmin).toBe(false);
-
-      const { rows } = await db().query<{ n: string }>(
-        "select count(*)::text as n from audit_log where action = 'group.adminView' and entity_id = $1",
-        [groupId]
-      );
-      expect(rows[0]!.n).toBe("0");
     });
 
     it("lets a member see a secret group's content without being flagged as admin-viewing", async () => {
@@ -1314,19 +1300,9 @@ describe.skipIf(!hasDb)("groups", () => {
       expect((await as(outsider).call("GET", `/api/groups/${secret}/live`)).status).toBe(404);
     });
 
-    it("lets a parish admin watch without logging each poll as a visit", async () => {
+    it("lets a parish admin watch a secret group they are not in", async () => {
       const groupId = await createGroup(creator, "SECRET");
-      await as(parishAdmin).call("GET", `/api/groups/${groupId}`);
-      const { rows: before } = await db().query<{ n: string }>(
-        "select count(*)::text as n from audit_log where action = 'group.adminView'"
-      );
-      for (let i = 0; i < 3; i++) {
-        expect((await as(parishAdmin).call("GET", `/api/groups/${groupId}/live`)).status).toBe(200);
-      }
-      const { rows: after } = await db().query<{ n: string }>(
-        "select count(*)::text as n from audit_log where action = 'group.adminView'"
-      );
-      expect(after[0]!.n).toBe(before[0]!.n);
+      expect((await as(parishAdmin).call("GET", `/api/groups/${groupId}/live`)).status).toBe(200);
     });
 
     it("moves the stamp for a post, a reply, an edit, a delete and an RSVP, and not for a read", async () => {

@@ -179,7 +179,6 @@ export const AUDIT_ACTIONS = [
   "group.post.resolveReport",
   "group.post.dismissReport",
   "group.post.expire",
-  "group.adminView",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -245,7 +244,6 @@ const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "group.post.resolveReport": "Group post report resolved",
   "group.post.dismissReport": "Group post report dismissed",
   "group.post.expire": "Group posts expired",
-  "group.adminView": "Viewed a group as an administrator",
 };
 
 /**
@@ -1202,8 +1200,8 @@ export interface GroupDto extends GroupSummaryDto {
   /**
    * True when the caller can see this group only because they are a parish
    * admin and not a member -- what the UI discloses (see
-   * requirements/groups.md, Membership & Admins) and what the route logs as
-   * `group.adminView`. Always false for Public groups, which anyone can read.
+   * requirements/groups.md, Membership & Admins). Always false for Public
+   * groups, which anyone can read.
    */
   viewingAsAdmin: boolean;
 }
