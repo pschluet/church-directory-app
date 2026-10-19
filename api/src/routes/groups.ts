@@ -131,29 +131,6 @@ function toGroupSummary(
   };
 }
 
-/**
- * Logs an admin looking at, or acting in, a group they do not belong to --
- * "disclosed in the UI and audited" (requirements/groups.md, Membership &
- * Admins). Only Private and Secret groups are logged: a Public group's content
- * is open to every parishioner, so an admin opening one discloses nothing.
- * Fire-and-forget like every other audit write; a failure here must not block
- * the read.
- */
-async function logAdminViewIfNeeded(
-  db: Queryable,
-  caller: Parameters<typeof audit>[1],
-  group: GroupRow,
-  access: GroupAccess
-): Promise<void> {
-  if (!access.viewingAsAdmin) return;
-  await audit(db, caller, {
-    action: "group.adminView",
-    entityType: "group",
-    entityId: group.id,
-    changes: { title: group.title, visibility: group.visibility },
-  });
-}
-
 // ---------------------------------------------------------------------------
 // Browsing and creating
 // ---------------------------------------------------------------------------
@@ -342,8 +319,6 @@ routes.get("/:id", async (c) => {
         [id, access.membership?.last_read_at ?? null, caller.personId]
       )
     : null;
-
-  await logAdminViewIfNeeded(db, caller, group, access);
 
   const { thumbUrl, fullUrl } = photoUrls(group.photo_key);
   const body: GroupDto = {
@@ -951,8 +926,7 @@ routes.get("/:id/posts", async (c) => {
 
 /**
  * The poll behind "live" -- see V20__group_live.sql. Same gate as reading the
- * content, but deliberately not logged as an admin view: it fires every couple
- * of seconds, and the visit itself was already recorded when the page loaded.
+ * content.
  */
 routes.get("/:id/live", async (c) => {
   const caller = c.get("caller");

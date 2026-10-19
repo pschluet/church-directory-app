@@ -330,8 +330,7 @@ export function GroupDetail() {
 
       {group.viewingAsAdmin && (
         <div className="mb-4 rounded-md border border-accent/40 bg-accent/5 p-3 text-sm text-ink">
-          You are viewing this group as a parish administrator. You are not a member, and this visit
-          has been recorded.
+          You are viewing this group as a parish administrator. You are not a member.
         </div>
       )}
 
