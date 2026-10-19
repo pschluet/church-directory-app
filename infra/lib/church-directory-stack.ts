@@ -922,7 +922,7 @@ UNIT`,
       integration: apiIntegration,
       authorizer: new apigwv2.HttpNoneAuthorizer(),
     });
-    httpApi.addRoutes({
+    const [directoryRequestRoute] = httpApi.addRoutes({
       path: "/api/directory-requests",
       methods: [apigwv2.HttpMethod.POST],
       integration: apiIntegration,
@@ -934,10 +934,17 @@ UNIT`,
     // above what a parish's sign-in page will ever see, so it only bites on
     // a script hammering the form. The L2 stage has no RouteSettings, hence
     // the escape hatch.
+    //
+    // RouteSettings names the route by its key, a plain string, so
+    // CloudFormation sees no reference from the stage to the route and is free
+    // to update the stage first -- which API Gateway rejects with "Unable to
+    // find Route by key". The explicit dependency puts the route first.
     const defaultStage = httpApi.defaultStage?.node.defaultChild as apigwv2.CfnStage | undefined;
     defaultStage?.addPropertyOverride("RouteSettings", {
       "POST /api/directory-requests": { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 5 },
     });
+    if (defaultStage && directoryRequestRoute)
+      defaultStage.addDependency(directoryRequestRoute.node.defaultChild as apigwv2.CfnRoute);
 
     // -------------------------------------------------------------------
     // CloudFront -- SPA at "/", API at "/api/*" on the same origin (no CORS)
