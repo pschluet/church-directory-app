@@ -29,6 +29,13 @@ const ROUTE_FILES = [
 ];
 
 /**
+ * Services that call `audit()` themselves, because more than one route shares
+ * them: inviteAccount is both "Invite someone" and approving a directory
+ * request. Read exactly like the routes.
+ */
+const SERVICE_FILES = ["invitations.ts"];
+
+/**
  * `group.post.expire` is the one action nothing in `src/routes/` writes. It
  * comes from services/group-retention.ts, a scheduled job with no `Caller` to
  * hand `audit()` -- so it inserts into `audit_log` directly, as a raw SQL
@@ -60,8 +67,12 @@ function scanRoutes(): Scan {
   const entityTypes = new Set<string>();
   const unreadable: string[] = [];
 
-  for (const file of ROUTE_FILES) {
-    const source = readFileSync(join(__dirname, "..", "src", "routes", file), "utf8");
+  const sources = [
+    ...ROUTE_FILES.map((file) => ({ file, dir: "routes" })),
+    ...SERVICE_FILES.map((file) => ({ file, dir: "services" })),
+  ];
+  for (const { file, dir } of sources) {
+    const source = readFileSync(join(__dirname, "..", "src", dir, file), "utf8");
 
     // The property value only, stopping at the comma -- taking the whole line
     // would swallow the `entityType` sitting beside it on the one-liners.

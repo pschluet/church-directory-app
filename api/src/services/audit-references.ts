@@ -67,6 +67,7 @@ const TYPE_RANK: Record<AuditEntityType, number> = {
   specialDate: 5,
   group: 6,
   groupPost: 7,
+  directoryRequest: 8,
 };
 
 /**

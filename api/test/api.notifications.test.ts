@@ -363,6 +363,7 @@ describe.skipIf(!hasDb)("notifications", () => {
       expect(body).toEqual({
         prayerRequests: true,
         prayerRequestReviews: true,
+        directoryRequests: true,
         groupNotificationPref: "ALL",
         groupExceptions: [],
       });
@@ -380,6 +381,7 @@ describe.skipIf(!hasDb)("notifications", () => {
       expect(off.body).toEqual({
         prayerRequests: false,
         prayerRequestReviews: true,
+        directoryRequests: true,
         groupNotificationPref: "ALL",
         groupExceptions: [],
       });
@@ -418,6 +420,7 @@ describe.skipIf(!hasDb)("notifications", () => {
       expect(body).toEqual({
         prayerRequests: false,
         prayerRequestReviews: true,
+        directoryRequests: true,
         groupNotificationPref: "ALL",
         groupExceptions: [],
       });
@@ -435,6 +438,7 @@ describe.skipIf(!hasDb)("notifications", () => {
       expect(body).toEqual({
         prayerRequests: false,
         prayerRequestReviews: false,
+        directoryRequests: true,
         groupNotificationPref: "ALL",
         groupExceptions: [],
       });
@@ -446,6 +450,7 @@ describe.skipIf(!hasDb)("notifications", () => {
       expect(body).toEqual({
         prayerRequests: true,
         prayerRequestReviews: true,
+        directoryRequests: true,
         groupNotificationPref: "ALL",
         groupExceptions: [],
       });
@@ -468,6 +473,7 @@ describe.skipIf(!hasDb)("notifications", () => {
       expect(rows[0]!.changes).toEqual({
         prayerRequests: false,
         prayerRequestReviews: true,
+        directoryRequests: true,
         groupNotificationPref: "ALL",
       });
     });

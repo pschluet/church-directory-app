@@ -2,7 +2,13 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { renderWithProviders } from "./utils";
-import type { AppUserDto, JoinRequestDto, MeDto, MergeRequestDto } from "@shared";
+import type {
+  AppUserDto,
+  DirectoryRequestDto,
+  JoinRequestDto,
+  MeDto,
+  MergeRequestDto,
+} from "@shared";
 import { AdminUsers } from "../src/pages/AdminUsers";
 
 const api = vi.fn();
@@ -57,7 +63,8 @@ const REQUEST: JoinRequestDto = {
 function mockLoad(
   joinRequests: JoinRequestDto[],
   mergeRequests: MergeRequestDto[] = [],
-  users: AppUserDto[] = [USER]
+  users: AppUserDto[] = [USER],
+  directoryRequests: DirectoryRequestDto[] = []
 ) {
   api.mockImplementation((path: string, options?: { method?: string }) => {
     if (options?.method === "POST") return Promise.resolve({ status: "APPROVED" });
@@ -67,6 +74,7 @@ function mockLoad(
     if (path === "/families") return Promise.resolve({ families: [] });
     if (path === "/families/join-requests/pending") return Promise.resolve({ joinRequests });
     if (path === "/merges/pending") return Promise.resolve({ mergeRequests });
+    if (path === "/admin/directory-requests") return Promise.resolve({ directoryRequests });
     return Promise.resolve({ organizations: [] });
   });
 }
@@ -423,5 +431,74 @@ describe("AdminUsers", () => {
 
     await screen.findByText("layla@example.com");
     expect(screen.queryByText(/pending merge requests/i)).not.toBeInTheDocument();
+  });
+
+  describe("requests to be added", () => {
+    const DIRECTORY_REQUESTS: DirectoryRequestDto[] = [
+      {
+        id: "dr-1",
+        firstName: "Maria",
+        lastName: "Lopez",
+        email: "maria@example.com",
+        organizationId: "org-1",
+        requestedAt: "2026-08-01T10:00:00.000Z",
+      },
+      {
+        id: "dr-2",
+        firstName: "Tomas",
+        lastName: "Reyes",
+        email: "tomas@example.com",
+        organizationId: "org-1",
+        requestedAt: "2026-08-02T10:00:00.000Z",
+      },
+    ];
+
+    it("is not shown when there are none", async () => {
+      mockLoad([]);
+      renderWithProviders(<AdminUsers />);
+      await screen.findByText("Layla Haddad");
+      expect(screen.queryByRole("button", { name: /Requests to be added/ })).toBeNull();
+    });
+
+    it("starts collapsed, with the count on the heading either way", async () => {
+      mockLoad([], [], [USER], DIRECTORY_REQUESTS);
+      renderWithProviders(<AdminUsers />);
+
+      const toggle = await screen.findByRole("button", { name: /Requests to be added/ });
+      expect(toggle).toHaveAttribute("aria-expanded", "false");
+      expect(toggle).toHaveTextContent("2");
+      expect(screen.queryByText("Maria Lopez")).toBeNull();
+
+      await userEvent.click(toggle);
+      expect(toggle).toHaveAttribute("aria-expanded", "true");
+      expect(toggle).toHaveTextContent("2");
+      expect(screen.getByText("Maria Lopez")).toBeInTheDocument();
+      expect(screen.getByText(/tomas@example.com/)).toBeInTheDocument();
+
+      await userEvent.click(toggle);
+      expect(screen.queryByText("Maria Lopez")).toBeNull();
+    });
+
+    it("approves and declines through the admin routes", async () => {
+      mockLoad([], [], [USER], DIRECTORY_REQUESTS);
+      renderWithProviders(<AdminUsers />);
+
+      await userEvent.click(await screen.findByRole("button", { name: /Requests to be added/ }));
+      const [approveFirst] = screen.getAllByRole("button", { name: "Approve" });
+      await userEvent.click(approveFirst!);
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith("/admin/directory-requests/dr-1/approve", {
+          method: "POST",
+        })
+      );
+
+      const declines = screen.getAllByRole("button", { name: "Decline" });
+      await userEvent.click(declines[1]!);
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith("/admin/directory-requests/dr-2/decline", {
+          method: "POST",
+        })
+      );
+    });
   });
 });

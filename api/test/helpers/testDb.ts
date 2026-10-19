@@ -47,6 +47,7 @@ const TABLES = [
   "family_join_requests",
   "person_merge_requests",
   "notifications",
+  "directory_requests",
   "notification_preferences",
   "group_guidelines_agreements",
   "push_subscriptions",

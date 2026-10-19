@@ -912,6 +912,33 @@ UNIT`,
       authorizer: new apigwv2.HttpNoneAuthorizer(),
     });
 
+    // "Request to be added" on the sign-in page, for people who cannot sign
+    // in yet -- see routes/directory-requests.ts. Opted out of the authorizer
+    // for the same reason as the health check, and only these two route keys:
+    // the admin half lives under /api/admin and stays behind the JWT.
+    httpApi.addRoutes({
+      path: "/api/directory-requests/churches",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: apiIntegration,
+      authorizer: new apigwv2.HttpNoneAuthorizer(),
+    });
+    httpApi.addRoutes({
+      path: "/api/directory-requests",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: apiIntegration,
+      authorizer: new apigwv2.HttpNoneAuthorizer(),
+    });
+
+    // The one anonymous write, so it gets a ceiling of its own. Route-wide
+    // rather than per visitor -- API Gateway has no per-IP limit -- and far
+    // above what a parish's sign-in page will ever see, so it only bites on
+    // a script hammering the form. The L2 stage has no RouteSettings, hence
+    // the escape hatch.
+    const defaultStage = httpApi.defaultStage?.node.defaultChild as apigwv2.CfnStage | undefined;
+    defaultStage?.addPropertyOverride("RouteSettings", {
+      "POST /api/directory-requests": { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 5 },
+    });
+
     // -------------------------------------------------------------------
     // CloudFront -- SPA at "/", API at "/api/*" on the same origin (no CORS)
     // -------------------------------------------------------------------

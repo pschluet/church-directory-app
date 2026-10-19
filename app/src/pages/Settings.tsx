@@ -70,7 +70,7 @@ export function Settings() {
       body: Partial<
         Pick<
           NotificationPreferencesDto,
-          "prayerRequests" | "prayerRequestReviews" | "groupNotificationPref"
+          "prayerRequests" | "prayerRequestReviews" | "directoryRequests" | "groupNotificationPref"
         >
       >
     ) =>
@@ -189,6 +189,7 @@ export function Settings() {
   const preferences = preferencesQuery.data;
   const prayerRequests = preferences?.prayerRequests ?? true;
   const prayerRequestReviews = preferences?.prayerRequestReviews ?? true;
+  const directoryRequests = preferences?.directoryRequests ?? true;
   const groupNotificationPref = preferences?.groupNotificationPref ?? "ALL";
   const groupExceptions = preferences?.groupExceptions ?? [];
   const saving =
@@ -247,6 +248,19 @@ export function Settings() {
                 checked={prayerRequestReviews}
                 disabled={saving}
                 onChange={(next) => savePreferences.mutate({ prayerRequestReviews: next })}
+              />
+            </div>
+          )}
+
+          {/* Administrators only, for the same reason as the switch above. */}
+          {isAdmin && (
+            <div className="mt-4 border-t border-line pt-4">
+              <Switch
+                label="Requests to be added to the directory"
+                hint="When somebody asks to be added from the sign-in page. Turning this off does not hide them — they still show on People & Accounts."
+                checked={directoryRequests}
+                disabled={saving}
+                onChange={(next) => savePreferences.mutate({ directoryRequests: next })}
               />
             </div>
           )}
@@ -353,6 +367,7 @@ export function Settings() {
                 // somebody with push on and nothing selected to send.
                 !prayerRequests &&
                 !(canApprovePrayerRequests && prayerRequestReviews) &&
+                !(isAdmin && directoryRequests) &&
                 !anyGroupNotifications
                   ? "Nothing to send while everything above is switched off."
                   : subscribed

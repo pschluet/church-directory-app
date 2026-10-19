@@ -102,6 +102,7 @@ export const AUDIT_ENTITY_TYPES = [
   "specialDate",
   "group",
   "groupPost",
+  "directoryRequest",
 ] as const;
 export type AuditEntityType = (typeof AUDIT_ENTITY_TYPES)[number];
 
@@ -147,6 +148,9 @@ export const AUDIT_ACTIONS = [
   "user.adoptParish",
   "user.changeParish",
   "user.agreeGroupGuidelines",
+
+  "directoryRequest.approve",
+  "directoryRequest.decline",
 
   "organization.create",
   "organization.update",
@@ -213,6 +217,9 @@ const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "user.changeParish": "Moved parish",
   "user.agreeGroupGuidelines": "Agreed to group guidelines",
 
+  "directoryRequest.approve": "Directory request approved",
+  "directoryRequest.decline": "Directory request declined",
+
   "organization.create": "Church created",
   "organization.update": "Church edited",
   "organization.updateAddress": "Church address edited",
@@ -269,6 +276,7 @@ const AUDIT_ENTITY_TYPE_LABELS: Record<AuditEntityType, string> = {
   specialDate: "Special date",
   group: "Group",
   groupPost: "Group post",
+  directoryRequest: "Directory request",
 };
 
 export function auditEntityTypeLabel(entityType: string): string {
@@ -764,6 +772,7 @@ export const NOTIFICATION_TYPES = [
   "GROUP_JOIN_REQUEST",
   "GROUP_EVENT",
   "GROUP_POST_REPORT",
+  "DIRECTORY_REQUEST",
 ] as const;
 export const notificationTypeSchema = z.enum(NOTIFICATION_TYPES);
 export type NotificationType = z.infer<typeof notificationTypeSchema>;
@@ -781,6 +790,8 @@ export interface NotificationDto {
   prayerRequestId: string | null;
   groupId: string | null;
   groupPostId: string | null;
+  /** Set only for `DIRECTORY_REQUEST`, whose title is the requester's name. */
+  directoryRequestId: string | null;
   createdAt: string;
   read: boolean;
 }
@@ -813,6 +824,8 @@ export type GroupNotificationPref = z.infer<typeof groupNotificationPrefSchema>;
 export const notificationPreferencesSchema = z.object({
   prayerRequests: z.boolean().optional(),
   prayerRequestReviews: z.boolean().optional(),
+  /** Administrators only: somebody asked to be added from the sign-in page. */
+  directoryRequests: z.boolean().optional(),
   /** The default for every group; a group's own setting is an exception to it. */
   groupNotificationPref: groupNotificationPrefSchema.optional(),
 });
@@ -821,6 +834,7 @@ export type NotificationPreferences = z.infer<typeof notificationPreferencesSche
 export interface NotificationPreferencesDto {
   prayerRequests: boolean;
   prayerRequestReviews: boolean;
+  directoryRequests: boolean;
   groupNotificationPref: GroupNotificationPref;
   groupExceptions: GroupNotificationExceptionDto[];
 }
@@ -1594,6 +1608,38 @@ export const inviteUserSchema = z.object({
   familyId: uuidSchema.nullable().optional(),
 });
 export type InviteUser = z.infer<typeof inviteUserSchema>;
+
+/**
+ * "Request to be added", from the sign-in page -- the one write anybody can
+ * make without signing in.
+ *
+ * `website` is a honeypot: the field is hidden from people, so anything in it
+ * was typed by a script, and the route accepts the request without keeping it.
+ */
+export const directoryRequestSchema = z.object({
+  firstName: z.string().trim().min(1).max(100),
+  lastName: z.string().trim().min(1).max(100),
+  email: emailSchema,
+  organizationId: uuidSchema,
+  website: z.string().max(500).optional(),
+});
+export type DirectoryRequestInput = z.infer<typeof directoryRequestSchema>;
+
+/** A pending request, as People & Accounts lists it. */
+export interface DirectoryRequestDto {
+  id: string;
+  firstName: string;
+  lastName: string;
+  email: string;
+  organizationId: string;
+  requestedAt: string;
+}
+
+/** A church as the sign-in page's picker shows it: nothing but its name. */
+export interface DirectoryRequestChurchDto {
+  id: string;
+  name: string;
+}
 
 export const updateUserSchema = z.object({
   role: roleSchema.optional(),

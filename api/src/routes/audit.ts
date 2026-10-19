@@ -103,6 +103,10 @@ const TARGET_LABEL = `
         from group_posts gpo
         join groups gr on gr.id = gpo.group_id
        where gpo.id = a.entity_id)
+    when 'directoryRequest' then (
+      select nullif(trim(d.first_name || ' ' || d.last_name), '')
+        from directory_requests d
+       where d.id = a.entity_id)
     else null
   end`;
 

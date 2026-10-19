@@ -1,12 +1,12 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
-import { requireRole, type AppEnv } from "../auth";
-import { one } from "../db";
+import { requireOrganizationId, requireRole, type AppEnv } from "../auth";
+import { one, type Queryable } from "../db";
 import { audit } from "../audit";
 import { assertCanGrantRole } from "../services/access";
-import { createInvitedUser, deleteUser, setUserEnabled, updateUserEmail } from "../cognito";
-import { sendInvitationEmail } from "../email";
+import { deleteUser, setUserEnabled, updateUserEmail } from "../cognito";
 import { clearInheritanceFor } from "../services/inheritance";
+import { inviteAccount } from "../services/invitations";
 import { setAccountOrganization } from "../services/membership";
 import { deletePhoto } from "../photos";
 import {
@@ -15,6 +15,7 @@ import {
   updateUserSchema,
   uuidSchema,
   type AppUserDto,
+  type DirectoryRequestDto,
 } from "../types";
 
 /**
@@ -27,6 +28,8 @@ const routes = new Hono<AppEnv>();
 
 routes.use("/users/*", requireRole("ADMIN"));
 routes.use("/users", requireRole("ADMIN"));
+routes.use("/directory-requests", requireRole("ADMIN"));
+routes.use("/directory-requests/*", requireRole("ADMIN"));
 
 interface AppUserRow {
   id: string;
@@ -97,100 +100,16 @@ routes.post("/users", async (c) => {
       ? (payload.organizationId ?? null)
       : (payload.organizationId ?? caller.homeOrganizationId);
 
-  assertCanGrantRole(caller, payload.role, organizationId);
-
-  if (payload.role !== "SUPER_ADMIN" && !organizationId) {
-    throw new HTTPException(400, { message: "Choose an organization for this person" });
-  }
-  if (organizationId) {
-    const org = await one<{ id: string }>(db, "select id from organizations where id = $1", [
-      organizationId,
-    ]);
-    if (!org) throw new HTTPException(404, { message: "Organization not found" });
-  }
-
-  const existing = await one<{ id: string }>(db, "select id from app_users where email = $1", [
-    payload.email,
-  ]);
-  if (existing) {
-    throw new HTTPException(409, {
-      message: "Someone with that email address already has an account",
-    });
-  }
-
-  if (payload.familyId) {
-    const family = await one<{ id: string }>(
-      db,
-      "select id from families where id = $1 and organization_id = $2",
-      [payload.familyId, organizationId]
-    );
-    if (!family) throw new HTTPException(404, { message: "Family not found" });
-  }
-
-  // Cognito first: if it fails we have written nothing, whereas the reverse
-  // order can leave an app_users row with no way to sign in.
-  const { sub } = await createInvitedUser({
+  const created = await inviteAccount(db, caller, {
     email: payload.email,
     firstName: payload.firstName,
     lastName: payload.lastName ?? null,
-  });
-
-  const created = await db.transaction(async (tx) => {
-    const user = await one<{ id: string }>(
-      tx,
-      `insert into app_users (cognito_sub, email, role, organization_id, status)
-       values ($1, $2, $3, $4, 'INVITED')
-       returning id`,
-      [sub, payload.email, payload.role, organizationId]
-    );
-    if (!user) throw new HTTPException(500, { message: "Could not create that account" });
-
-    // Super admins are cross-organization and need no directory record until
-    // they are given an organization.
-    let personId: string | null = null;
-    if (organizationId) {
-      const person = await one<{ id: string }>(
-        tx,
-        `insert into persons (organization_id, family_id, app_user_id, first_name, last_name, email)
-         values ($1, $2, $3, $4, $5, $6)
-         returning id`,
-        [
-          organizationId,
-          payload.familyId ?? null,
-          user.id,
-          payload.firstName,
-          payload.lastName ?? null,
-          payload.email,
-        ]
-      );
-      personId = person?.id ?? null;
-    }
-    return { userId: user.id, personId };
-  });
-
-  await audit(db, caller, {
-    action: "user.invite",
-    entityType: "appUser",
-    entityId: created.userId,
-    changes: { email: payload.email, role: payload.role, organizationId },
+    role: payload.role,
+    organizationId,
+    familyId: payload.familyId ?? null,
   });
 
   const row = await one<AppUserRow>(db, `${APP_USER_SELECT} where u.id = $1`, [created.userId]);
-
-  // After the account exists, not before: a failed send leaves someone who can
-  // still be told to sign in, whereas failing the request would leave a
-  // Cognito user with no directory row.
-  try {
-    await sendInvitationEmail({
-      to: payload.email,
-      firstName: payload.firstName,
-      organizationName: row?.organization_name ?? "the parish",
-      invitedBy: caller.email,
-    });
-  } catch (err) {
-    console.error("Invitation email failed for", payload.email, err);
-  }
-
   return c.json(row ? toAppUser(row) : { id: created.userId }, 201);
 });
 
@@ -447,6 +366,131 @@ routes.put("/users/:id/email", async (c) => {
     changes: { from: target.email, to: email },
   });
   return c.json({ id, email });
+});
+
+// ---------------------------------------------------------------------------
+// Directory requests -- "Request to be added" from the sign-in page. The
+// public half is routes/directory-requests.ts.
+//
+// Scoped to the active organization rather than the caller's home one, so a
+// super admin looking at a parish sees that parish's requests.
+// ---------------------------------------------------------------------------
+
+interface DirectoryRequestRow {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  organization_id: string;
+  requested_at: Date | string;
+}
+
+function toDirectoryRequest(row: DirectoryRequestRow): DirectoryRequestDto {
+  return {
+    id: row.id,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    email: row.email,
+    organizationId: row.organization_id,
+    requestedAt: new Date(row.requested_at).toISOString(),
+  };
+}
+
+const DIRECTORY_REQUEST_SELECT = `
+  select id, first_name, last_name, email::text as email, organization_id, requested_at
+    from directory_requests
+`;
+
+routes.get("/directory-requests", async (c) => {
+  const organizationId = requireOrganizationId(c);
+  const { rows } = await c
+    .get("db")
+    .query<DirectoryRequestRow>(
+      `${DIRECTORY_REQUEST_SELECT} where organization_id = $1 and status = 'PENDING' order by requested_at desc`,
+      [organizationId]
+    );
+  return c.json({ directoryRequests: rows.map(toDirectoryRequest) });
+});
+
+async function loadPendingDirectoryRequest(
+  db: Queryable,
+  id: string,
+  organizationId: string
+): Promise<DirectoryRequestRow> {
+  const row = await one<DirectoryRequestRow>(
+    db,
+    `${DIRECTORY_REQUEST_SELECT} where id = $1 and organization_id = $2 and status = 'PENDING'`,
+    [id, organizationId]
+  );
+  if (!row) throw new HTTPException(404, { message: "That request has already been handled" });
+  return row;
+}
+
+/**
+ * One click: an ordinary member with no family, invited exactly as "Invite
+ * someone" would. Anything else -- a role, a family -- is set afterwards from
+ * the account's row, the same as for anyone invited by hand.
+ *
+ * The invitation goes first and the request is only marked approved once it
+ * has: if the address already has an account, the 409 leaves the request
+ * pending for the administrator to decline.
+ */
+routes.post("/directory-requests/:id/approve", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const request = await loadPendingDirectoryRequest(db, id, organizationId);
+
+  const created = await inviteAccount(db, caller, {
+    email: request.email,
+    firstName: request.first_name,
+    lastName: request.last_name,
+    role: "USER",
+    organizationId,
+    familyId: null,
+  });
+
+  await db.query(
+    `update directory_requests
+        set status = 'APPROVED', decided_at = now(), decided_by_app_user_id = $2, app_user_id = $3
+      where id = $1 and status = 'PENDING'`,
+    [id, caller.appUserId, created.userId]
+  );
+
+  await audit(db, caller, {
+    action: "directoryRequest.approve",
+    entityType: "directoryRequest",
+    entityId: id,
+    changes: { email: request.email, appUserId: created.userId },
+  });
+
+  const row = await one<AppUserRow>(db, `${APP_USER_SELECT} where u.id = $1`, [created.userId]);
+  return c.json(row ? toAppUser(row) : { id: created.userId }, 201);
+});
+
+routes.post("/directory-requests/:id/decline", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const request = await loadPendingDirectoryRequest(db, id, organizationId);
+
+  await db.query(
+    `update directory_requests
+        set status = 'DECLINED', decided_at = now(), decided_by_app_user_id = $2
+      where id = $1 and status = 'PENDING'`,
+    [id, caller.appUserId]
+  );
+
+  await audit(db, caller, {
+    action: "directoryRequest.decline",
+    entityType: "directoryRequest",
+    entityId: id,
+    changes: { email: request.email },
+  });
+
+  return c.body(null, 204);
 });
 
 export default routes;

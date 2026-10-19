@@ -37,6 +37,9 @@ export const NOTIFICATION_PAGE_SIZE = 30;
  *                           request id on the row, only the group -- so an
  *                           admin clears it by reading it rather than it
  *                           retiring itself the moment somebody acts.
+ *   DIRECTORY_REQUEST       still waiting. Like PRAYER_REQUEST_REVIEW, it is
+ *                           gone from every administrator's bell the moment
+ *                           any one of them approves or declines it.
  *
  * Kept as one fragment because `loadInbox` and `unreadNotificationCounts` both
  * need it and must not drift: the count on a push notification and the badge
@@ -56,6 +59,7 @@ const NOTIFICATION_VISIBLE = `(
     or (n.type in ('GROUP_POST', 'GROUP_MENTION', 'GROUP_EVENT', 'GROUP_POST_REPORT')
          and gp.id is not null and g.archived_at is null)
     or (n.type = 'GROUP_JOIN_REQUEST' and g.id is not null and g.archived_at is null)
+    or (n.type = 'DIRECTORY_REQUEST' and dr.status = 'PENDING')
   )`;
 
 /**
@@ -75,13 +79,15 @@ const NOTIFICATION_SELECT = `
          n.prayer_request_id,
          n.group_id,
          n.group_post_id,
-         coalesce(pr.title, g.title) as title,
+         n.directory_request_id,
+         coalesce(pr.title, g.title, dr.first_name || ' ' || dr.last_name) as title,
          n.created_at,
          n.read_at
     from notifications n
     left join prayer_requests pr on pr.id = n.prayer_request_id
     left join groups g on g.id = n.group_id
     left join group_posts gp on gp.id = n.group_post_id
+    left join directory_requests dr on dr.id = n.directory_request_id
    where n.app_user_id = $1
      and ${NOTIFICATION_VISIBLE}
 `;
@@ -92,6 +98,7 @@ interface NotificationRow {
   prayer_request_id: string | null;
   group_id: string | null;
   group_post_id: string | null;
+  directory_request_id: string | null;
   title: string | null;
   created_at: Date | string;
   read_at: Date | string | null;
@@ -127,6 +134,7 @@ export async function loadInbox(q: Queryable, appUserId: string): Promise<Inbox>
       prayerRequestId: row.prayer_request_id,
       groupId: row.group_id,
       groupPostId: row.group_post_id,
+      directoryRequestId: row.directory_request_id,
       createdAt: new Date(row.created_at).toISOString(),
       read: row.read_at !== null,
     })),
@@ -194,6 +202,7 @@ export async function unreadNotificationCounts(
        left join prayer_requests pr on pr.id = n.prayer_request_id
        left join groups g on g.id = n.group_id
        left join group_posts gp on gp.id = n.group_post_id
+       left join directory_requests dr on dr.id = n.directory_request_id
       where n.app_user_id = any($1::uuid[])
         and n.type = $2
         and n.read_at is null
@@ -277,6 +286,35 @@ export async function fanOutPrayerRequest(
      on conflict do nothing
      returning app_user_id`,
     [options.prayerRequestId, options.organizationId, options.actingPersonId]
+  );
+  return rows.map((row) => row.app_user_id);
+}
+
+/**
+ * Who is told that somebody asked to be added to the directory.
+ *
+ * Every administrator of the church they picked -- the same people who could
+ * invite them by hand from People & Accounts -- unless they switched it off in
+ * Settings. Scoped to the parish like `fanOutPrayerRequestForReview`, with the
+ * same consequence: a super admin from elsewhere sees the request on the page
+ * when they look at this parish, but is not notified.
+ */
+export async function fanOutDirectoryRequest(
+  q: Queryable,
+  options: { directoryRequestId: string; organizationId: string }
+): Promise<string[]> {
+  const { rows } = await q.query<{ app_user_id: string }>(
+    `insert into notifications (app_user_id, organization_id, type, directory_request_id)
+     select u.id, $2, 'DIRECTORY_REQUEST', $1
+       from app_users u
+       left join notification_preferences p on p.app_user_id = u.id
+      where u.organization_id = $2
+        and u.status = 'ACTIVE'
+        and u.role = any($3::text[])
+        and coalesce(p.directory_requests, true)
+     on conflict do nothing
+     returning app_user_id`,
+    [options.directoryRequestId, options.organizationId, rolesAtLeast("ADMIN")]
   );
   return rows.map((row) => row.app_user_id);
 }

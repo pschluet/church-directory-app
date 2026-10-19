@@ -37,13 +37,18 @@ const NOTIFICATION_LABELS: Record<NotificationType, string> = {
   GROUP_JOIN_REQUEST: "Someone wants to join",
   GROUP_EVENT: "Event changed",
   GROUP_POST_REPORT: "A post was reported",
+  DIRECTORY_REQUEST: "Asked to be added to the directory",
 };
 
-/** Where tapping a notification lands -- its group, or the prayer requests page. */
+/**
+ * Where tapping a notification lands -- its group, People & Accounts for a
+ * directory request, or the prayer requests page.
+ */
 function notificationHref(notification: {
   type: NotificationType;
   groupId: string | null;
 }): string {
+  if (notification.type === "DIRECTORY_REQUEST") return "/admin/users";
   return notification.groupId ? `/groups/${notification.groupId}` : "/prayer-requests";
 }
 
