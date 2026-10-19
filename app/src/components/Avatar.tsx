@@ -84,7 +84,7 @@ export function Avatar({
   return (
     <span
       aria-hidden="true"
-      className={`${shared} flex items-center justify-center bg-surface-muted font-bold text-accent ring-1 ring-line`}
+      className={`${shared} flex items-center justify-center border border-line bg-surface-muted font-bold text-accent`}
     >
       {initials(person) || "?"}
     </span>
