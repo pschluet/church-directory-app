@@ -525,6 +525,25 @@ describe("ChurchDirectoryStack", () => {
       );
       expect((proxy!.Properties as { AuthorizationType?: string }).AuthorizationType).toBe("JWT");
     });
+
+    it("leaves only the two directory-request routes open, and throttles the write", () => {
+      const routes = template.findResources("AWS::ApiGatewayV2::Route");
+      for (const key of ["GET /api/directory-requests/churches", "POST /api/directory-requests"]) {
+        const route = Object.values(routes).find(
+          (r) => (r.Properties as { RouteKey?: string }).RouteKey === key
+        );
+        expect(route, key).toBeDefined();
+        expect((route!.Properties as { AuthorizationType?: string }).AuthorizationType).toBe(
+          "NONE"
+        );
+      }
+
+      template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
+        RouteSettings: {
+          "POST /api/directory-requests": Match.objectLike({ ThrottlingRateLimit: 1 }),
+        },
+      });
+    });
   });
 
   describe("CloudFront", () => {

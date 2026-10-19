@@ -56,6 +56,7 @@ const notification = (
   prayerRequestId: `pr-${id}`,
   groupId: null,
   groupPostId: null,
+  directoryRequestId: null,
   createdAt: new Date().toISOString(),
   read,
 });
@@ -190,6 +191,24 @@ describe("NotificationBell", () => {
 
     expect(screen.getByText(/^Prayer request ·/)).toBeInTheDocument();
     expect(screen.getByText(/^Needs your approval ·/)).toBeInTheDocument();
+  });
+
+  it("labels a directory request and links it to People & Accounts", async () => {
+    stub(
+      inbox({
+        unreadCount: 1,
+        notifications: [notification("1", "Maria Lopez", false, "DIRECTORY_REQUEST")],
+      })
+    );
+    renderWithProviders(<NotificationBell />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /1 unread/ }));
+
+    expect(screen.getByText(/^Asked to be added to the directory ·/)).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: /Maria Lopez/ })).toHaveAttribute(
+      "href",
+      "/admin/users"
+    );
   });
 
   it("says so when the panel is empty", async () => {

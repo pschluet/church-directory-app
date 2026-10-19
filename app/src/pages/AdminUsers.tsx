@@ -1,10 +1,11 @@
-import { useMemo, useState } from "react";
+import { useId, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   roleLabel,
   userStatusLabel,
   type AppUserDto,
+  type DirectoryRequestDto,
   type FamilySummaryDto,
   type JoinRequestDto,
   type MergeRequestDto,
@@ -30,6 +31,7 @@ import {
 } from "../components/ui";
 import { Link } from "../components/nav";
 import { SearchField } from "../components/SearchField";
+import { formatPostedAt } from "../lib/format";
 
 /**
  * Accounts.
@@ -138,7 +140,15 @@ export function AdminUsers() {
       api<{ mergeRequests: MergeRequestDto[] }>("/merges/pending", { signal }),
   });
 
+  // "Request to be added" from the sign-in page, for the parish in view.
+  const directoryRequestsQuery = useQuery({
+    queryKey: qk.directoryRequests(organizationId),
+    queryFn: ({ signal }) =>
+      api<{ directoryRequests: DirectoryRequestDto[] }>("/admin/directory-requests", { signal }),
+  });
+
   const users = usersQuery.data?.users ?? [];
+  const directoryRequests = directoryRequestsQuery.data?.directoryRequests ?? [];
   const families = familiesQuery.data?.families ?? [];
   const joinRequests = joinRequestsQuery.data?.joinRequests ?? [];
   const mergeRequests = mergesQuery.data?.mergeRequests ?? [];
@@ -195,6 +205,29 @@ export function AdminUsers() {
       if (request.personId === me?.appUser.personId) await reloadMe();
     } catch (err) {
       setActionError(err instanceof Error ? err.message : "Could not decide that request");
+    }
+  }
+
+  /*
+   * Approving creates an account, so it reloads the accounts list as well as
+   * the requests; either decision also retires the bell entry for every
+   * administrator, this one included.
+   */
+  async function decideDirectoryRequest(
+    request: DirectoryRequestDto,
+    decision: "approve" | "decline"
+  ): Promise<void> {
+    setActionError(null);
+    try {
+      await api(`/admin/directory-requests/${request.id}/${decision}`, { method: "POST" });
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not decide that request");
+    } finally {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: qk.directoryRequests(organizationId) }),
+        queryClient.invalidateQueries({ queryKey: qk.notifications() }),
+        decision === "approve" ? reload() : Promise.resolve(),
+      ]);
     }
   }
 
@@ -278,6 +311,10 @@ export function AdminUsers() {
       />
 
       {error && <ErrorNotice message={error} onRetry={() => void usersQuery.refetch()} />}
+
+      {directoryRequests.length > 0 && (
+        <DirectoryRequestsSection requests={directoryRequests} onDecide={decideDirectoryRequest} />
+      )}
 
       {joinRequests.length > 0 && (
         <section className="mb-6 rounded-lg border border-accent/40 bg-accent/5 p-4">
@@ -437,6 +474,105 @@ export function AdminUsers() {
         />
       )}
     </>
+  );
+}
+
+/**
+ * Requests to be added, from the sign-in page.
+ *
+ * Collapsed to its heading by default, with the count on the heading either
+ * way: unlike a join or merge request these come from people nobody here knows
+ * yet, and a parish that gets a steady trickle should not have the accounts
+ * list pushed down the page by them. The count is what says there is
+ * something to open.
+ */
+function DirectoryRequestsSection({
+  requests,
+  onDecide,
+}: {
+  requests: DirectoryRequestDto[];
+  onDecide: (request: DirectoryRequestDto, decision: "approve" | "decline") => Promise<void>;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const listId = useId();
+
+  async function decide(request: DirectoryRequestDto, decision: "approve" | "decline") {
+    setBusyId(request.id);
+    try {
+      await onDecide(request, decision);
+    } finally {
+      setBusyId(null);
+    }
+  }
+
+  return (
+    <section className="mb-6 rounded-lg border border-accent/40 bg-accent/5">
+      <h2>
+        <button
+          type="button"
+          aria-expanded={expanded}
+          aria-controls={listId}
+          onClick={() => setExpanded((open) => !open)}
+          className="tap-target flex w-full items-center gap-3 rounded-lg p-4 text-left font-bold text-ink hover:bg-accent/10"
+        >
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 20 20"
+            fill="currentColor"
+            className={`h-5 w-5 shrink-0 text-ink-muted transition-transform ${expanded ? "rotate-90" : ""}`}
+          >
+            <path
+              fillRule="evenodd"
+              d="M7.21 14.77a.75.75 0 0 1 .02-1.06L11.168 10 7.23 6.29a.75.75 0 1 1 1.04-1.08l4.5 4.25a.75.75 0 0 1 0 1.08l-4.5 4.25a.75.75 0 0 1-1.06-.02Z"
+              clipRule="evenodd"
+            />
+          </svg>
+          <span className="flex-1">Requests to be added</span>
+          <Badge tone="primary">
+            <span className="sr-only">
+              {requests.length === 1 ? "1 request" : `${requests.length} requests`}
+            </span>
+            <span aria-hidden="true">{requests.length}</span>
+          </Badge>
+        </button>
+      </h2>
+
+      {expanded && (
+        <ul id={listId} className="space-y-3 px-4 pb-4">
+          {requests.map((request) => (
+            <li
+              key={request.id}
+              className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+            >
+              <div className="min-w-0">
+                <p className="truncate font-bold text-ink">
+                  {request.firstName} {request.lastName}
+                </p>
+                <p className="truncate text-sm text-ink-muted">
+                  {request.email} · {formatPostedAt(request.requestedAt)}
+                </p>
+              </div>
+              <span className="flex shrink-0 gap-2">
+                <Button
+                  disabled={busyId === request.id}
+                  onClick={() => void decide(request, "approve")}
+                >
+                  Approve
+                </Button>
+                <Button
+                  variant="ghost"
+                  disabled={busyId === request.id}
+                  onClick={() => void decide(request, "decline")}
+                >
+                  Decline
+                </Button>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 

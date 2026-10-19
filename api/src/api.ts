@@ -7,7 +7,7 @@ import { authMiddleware, type AppEnv } from "./auth";
 import { assertPhotoCookieConfig } from "./photo-cookies";
 import { assertPushConfig } from "./services/push";
 import { assertGeocodingConfig } from "./services/geocoding";
-import type { Queryable } from "./db";
+import { db as defaultDb, type Queryable } from "./db";
 import { requireGroupGuidelinesAgreement } from "./services/group-guidelines";
 import meRoutes from "./routes/me";
 import directoryRoutes from "./routes/directory";
@@ -24,6 +24,7 @@ import uploadRoutes from "./routes/uploads";
 import adminRoutes from "./routes/admin";
 import organizationRoutes from "./routes/organizations";
 import auditRoutes from "./routes/audit";
+import directoryRequestRoutes from "./routes/directory-requests";
 
 // Deployed, this function lives in a VPC whose only route out is IPv6 (see the
 // networking comment in infra/lib/church-directory-stack.ts). Both the Cognito
@@ -100,14 +101,26 @@ export function createApp(queryable?: Queryable) {
   // infra/lib/church-directory-stack.ts) -- with a default authorizer on the
   // API, anything rejected there never reaches this Lambda. This list keeps
   // the local server, which has no gateway in front of it, consistent.
-  const PUBLIC_PATHS = new Set(["/api/health"]);
+  //
+  // The two directory-request paths are the sign-in page's "Request to be
+  // added" form, for people who by definition cannot sign in yet. They still
+  // need the database, which is otherwise handed over by the auth middleware.
+  const PUBLIC_PATHS = new Set([
+    "/api/health",
+    "/api/directory-requests",
+    "/api/directory-requests/churches",
+  ]);
   const auth = authMiddleware(queryable);
   app.use("/api/*", async (c, next) => {
-    if (PUBLIC_PATHS.has(c.req.path)) return next();
+    if (PUBLIC_PATHS.has(c.req.path)) {
+      c.set("db", queryable ?? defaultDb);
+      return next();
+    }
     return auth(c, next);
   });
 
   app.get("/api/health", (c) => c.json({ ok: true }));
+  app.route("/api/directory-requests", directoryRequestRoutes);
 
   app.route("/api/me", meRoutes);
   app.use("/api/groups/*", requireGroupGuidelinesAgreement);

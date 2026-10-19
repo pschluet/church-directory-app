@@ -50,6 +50,7 @@ routes.post("/read", async (c) => {
 interface PreferenceRow {
   prayer_requests: boolean;
   prayer_request_reviews: boolean;
+  directory_requests: boolean;
   group_notification_pref: GroupNotificationPref;
 }
 
@@ -58,11 +59,12 @@ function toSwitches(
   row: PreferenceRow | null
 ): Pick<
   NotificationPreferencesDto,
-  "prayerRequests" | "prayerRequestReviews" | "groupNotificationPref"
+  "prayerRequests" | "prayerRequestReviews" | "directoryRequests" | "groupNotificationPref"
 > {
   return {
     prayerRequests: row?.prayer_requests ?? true,
     prayerRequestReviews: row?.prayer_request_reviews ?? true,
+    directoryRequests: row?.directory_requests ?? true,
     groupNotificationPref: row?.group_notification_pref ?? "ALL",
   };
 }
@@ -74,7 +76,8 @@ function toPreferences(
   return { ...toSwitches(row), groupExceptions };
 }
 
-const PREFERENCE_COLUMNS = "prayer_requests, prayer_request_reviews, group_notification_pref";
+const PREFERENCE_COLUMNS =
+  "prayer_requests, prayer_request_reviews, directory_requests, group_notification_pref";
 
 async function loadPreferences(
   db: Queryable,
@@ -106,12 +109,14 @@ routes.put("/preferences", async (c) => {
   const row = await one<PreferenceRow>(
     db,
     `insert into notification_preferences
-            (app_user_id, prayer_requests, prayer_request_reviews, group_notification_pref)
-     values ($1, coalesce($2, true), coalesce($3, true), coalesce($4, 'ALL'))
+            (app_user_id, prayer_requests, prayer_request_reviews, directory_requests,
+             group_notification_pref)
+     values ($1, coalesce($2, true), coalesce($3, true), coalesce($5, true), coalesce($4, 'ALL'))
      on conflict (app_user_id) do update
         set prayer_requests = coalesce($2, notification_preferences.prayer_requests),
             prayer_request_reviews =
               coalesce($3, notification_preferences.prayer_request_reviews),
+            directory_requests = coalesce($5, notification_preferences.directory_requests),
             group_notification_pref =
               coalesce($4, notification_preferences.group_notification_pref)
      returning ${PREFERENCE_COLUMNS}`,
@@ -120,6 +125,7 @@ routes.put("/preferences", async (c) => {
       payload.prayerRequests ?? null,
       payload.prayerRequestReviews ?? null,
       payload.groupNotificationPref ?? null,
+      payload.directoryRequests ?? null,
     ]
   );
 

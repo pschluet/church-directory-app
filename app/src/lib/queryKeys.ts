@@ -107,6 +107,9 @@ export const qk = {
   pendingMerges: (orgId: string | null) => [...qk.persons(orgId), "merges", "pending"] as const,
 
   adminUsers: (orgId: string | null) => [...qk.org(orgId), "admin", "users"] as const,
+  /** "Request to be added" from the sign-in page, pending for this parish. */
+  directoryRequests: (orgId: string | null) =>
+    [...qk.org(orgId), "admin", "directory-requests"] as const,
 
   /**
    * The audit log. Nested so that the page's entries and the filter options it

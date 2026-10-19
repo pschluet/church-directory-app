@@ -280,6 +280,44 @@ describe("Settings", () => {
     });
   });
 
+  describe("requests to be added to the directory", () => {
+    it("is offered to an administrator, on by default", async () => {
+      meState.isAdmin = true;
+      meState.canApprove = true;
+      renderWithProviders(<Settings />);
+      expect(
+        await screen.findByRole("checkbox", { name: /Requests to be added to the directory/ })
+      ).toBeChecked();
+      expect(screen.getByText(/still show on People & Accounts/i)).toBeInTheDocument();
+    });
+
+    it("is hidden from everybody else, approvers included", async () => {
+      meState.canApprove = true;
+      renderWithProviders(<Settings />);
+      await screen.findByRole("checkbox", { name: /New prayer requests/ });
+      expect(
+        screen.queryByRole("checkbox", { name: /Requests to be added to the directory/ })
+      ).not.toBeInTheDocument();
+    });
+
+    it("saves only itself", async () => {
+      meState.isAdmin = true;
+      renderWithProviders(<Settings />);
+
+      await userEvent.click(
+        await screen.findByRole("checkbox", { name: /Requests to be added to the directory/ })
+      );
+
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/notifications/preferences", {
+          method: "PUT",
+          body: { directoryRequests: false },
+          withOrg: false,
+        })
+      );
+    });
+  });
+
   it("saves the prayer request preference", async () => {
     renderWithProviders(<Settings />);
 

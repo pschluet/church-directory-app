@@ -1,16 +1,18 @@
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import { Button, Field, inputClass } from "../components/ui";
+import { RequestAccessModal } from "../components/RequestAccessModal";
 
 /**
  * Two steps, no password: enter your email, then the code that arrives.
- * Sign-up is disabled on the user pool, so anyone not already invited is told
- * to ask an administrator rather than being offered a way to register.
+ * Sign-up is disabled on the user pool, so anyone not already invited can ask
+ * to be added instead -- a request an administrator approves, not an account.
  */
 export function Login() {
   const { status, email, error, busy, requestCode, submitCode, restart } = useAuth();
   const [address, setAddress] = useState("");
   const [code, setCode] = useState("");
+  const [requesting, setRequesting] = useState(false);
 
   const awaitingCode = status === "awaitingCode";
 
@@ -102,12 +104,23 @@ export function Login() {
               </form>
 
               <p className="mt-6 border-t border-line pt-4 text-sm text-ink-muted">
-                Not in the directory yet? Ask a parish administrator to add you.
+                Not in the directory yet?{" "}
+                <button
+                  type="button"
+                  className="font-bold text-primary underline-offset-2 hover:text-accent hover:underline"
+                  onClick={() => setRequesting(true)}
+                >
+                  Request to be added
+                </button>
               </p>
             </>
           )}
         </div>
       </div>
+
+      {requesting && (
+        <RequestAccessModal initialEmail={address.trim()} onClose={() => setRequesting(false)} />
+      )}
     </div>
   );
 }
