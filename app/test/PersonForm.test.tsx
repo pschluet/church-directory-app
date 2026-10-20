@@ -122,6 +122,34 @@ describe("PersonForm", () => {
     await waitFor(() => expect(savedBody().occupation).toBe("Teacher"));
   });
 
+  it("drops a picked placeId when only the ZIP is corrected, so the map re-geocodes", async () => {
+    renderForm({
+      person: person({
+        addressLine1: "4741 W Berenice Ave",
+        city: "Chicago",
+        state: "IL",
+        postalCode: "60618",
+        placeId: "stale-place",
+      }),
+    });
+
+    const zip = screen.getByLabelText("ZIP code");
+    await userEvent.clear(zip);
+    await userEvent.type(zip, "60641");
+    await save();
+
+    await waitFor(() => expect(savedBody().postalCode).toBe("60641"));
+    expect(savedBody().placeId).toBeNull();
+  });
+
+  it("keeps a picked placeId when the address is not touched", async () => {
+    renderForm({
+      person: person({ addressLine1: "4741 W Berenice Ave", placeId: "kept-place" }),
+    });
+    await save();
+    await waitFor(() => expect(savedBody().placeId).toBe("kept-place"));
+  });
+
   it("offers no family picker, and never mentions familyId, without the list", async () => {
     renderForm();
     expect(screen.queryByLabelText(/^family/i)).not.toBeInTheDocument();

@@ -238,28 +238,36 @@ function OrganizationModal({
               <input
                 className={inputClass}
                 value={address.city}
-                onChange={(event) => setAddress((p) => ({ ...p, city: event.target.value }))}
+                onChange={(event) =>
+                  setAddress((p) => ({ ...p, city: event.target.value, placeId: null }))
+                }
               />
             </Field>
             <Field label="State">
               <input
                 className={inputClass}
                 value={address.state}
-                onChange={(event) => setAddress((p) => ({ ...p, state: event.target.value }))}
+                onChange={(event) =>
+                  setAddress((p) => ({ ...p, state: event.target.value, placeId: null }))
+                }
               />
             </Field>
             <Field label="ZIP code">
               <input
                 className={inputClass}
                 value={address.postalCode}
-                onChange={(event) => setAddress((p) => ({ ...p, postalCode: event.target.value }))}
+                onChange={(event) =>
+                  setAddress((p) => ({ ...p, postalCode: event.target.value, placeId: null }))
+                }
               />
             </Field>
             <Field label="Country">
               <input
                 className={inputClass}
                 value={address.country}
-                onChange={(event) => setAddress((p) => ({ ...p, country: event.target.value }))}
+                onChange={(event) =>
+                  setAddress((p) => ({ ...p, country: event.target.value, placeId: null }))
+                }
               />
             </Field>
           </div>

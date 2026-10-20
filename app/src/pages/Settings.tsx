@@ -518,28 +518,34 @@ function ChurchAddressSection() {
             <input
               className={inputClass}
               value={form.city}
-              onChange={(event) => setAddress({ ...form, city: event.target.value })}
+              onChange={(event) => setAddress({ ...form, city: event.target.value, placeId: null })}
             />
           </Field>
           <Field label="State">
             <input
               className={inputClass}
               value={form.state}
-              onChange={(event) => setAddress({ ...form, state: event.target.value })}
+              onChange={(event) =>
+                setAddress({ ...form, state: event.target.value, placeId: null })
+              }
             />
           </Field>
           <Field label="ZIP code">
             <input
               className={inputClass}
               value={form.postalCode}
-              onChange={(event) => setAddress({ ...form, postalCode: event.target.value })}
+              onChange={(event) =>
+                setAddress({ ...form, postalCode: event.target.value, placeId: null })
+              }
             />
           </Field>
           <Field label="Country">
             <input
               className={inputClass}
               value={form.country}
-              onChange={(event) => setAddress({ ...form, country: event.target.value })}
+              onChange={(event) =>
+                setAddress({ ...form, country: event.target.value, placeId: null })
+              }
             />
           </Field>
 

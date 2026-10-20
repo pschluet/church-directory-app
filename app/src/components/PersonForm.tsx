@@ -123,6 +123,16 @@ export function PersonForm({
     setForm((prev) => ({ ...prev, [key]: value }));
 
   /*
+   * Any edit to the address un-picks the suggestion, not only one to the
+   * street. A stored `placeId` the server already knows is used as-is, so
+   * correcting a ZIP while keeping the old id left the map showing the old one.
+   */
+  const setAddressField = (
+    key: "addressLine2" | "city" | "state" | "postalCode" | "country",
+    value: string
+  ) => setForm((prev) => ({ ...prev, [key]: value, placeId: null }));
+
+  /*
    * Inheritance is validated against the *destination* family, so a move and a
    * set of pointers cannot travel in one request: the API would reject every
    * source as "not in the same family", or refuse the lot with "join a family
@@ -495,7 +505,7 @@ export function PersonForm({
                 className={inputClass}
                 autoComplete="address-line2"
                 value={form.addressLine2}
-                onChange={(e) => set("addressLine2", e.target.value)}
+                onChange={(e) => setAddressField("addressLine2", e.target.value)}
               />
             </Field>
             <Field label="City">
@@ -503,7 +513,7 @@ export function PersonForm({
                 className={inputClass}
                 autoComplete="address-level2"
                 value={form.city}
-                onChange={(e) => set("city", e.target.value)}
+                onChange={(e) => setAddressField("city", e.target.value)}
               />
             </Field>
             <Field label="State">
@@ -511,7 +521,7 @@ export function PersonForm({
                 className={inputClass}
                 autoComplete="address-level1"
                 value={form.state}
-                onChange={(e) => set("state", e.target.value)}
+                onChange={(e) => setAddressField("state", e.target.value)}
               />
             </Field>
             <Field label="ZIP code">
@@ -520,7 +530,7 @@ export function PersonForm({
                 inputMode="numeric"
                 autoComplete="postal-code"
                 value={form.postalCode}
-                onChange={(e) => set("postalCode", e.target.value)}
+                onChange={(e) => setAddressField("postalCode", e.target.value)}
               />
             </Field>
             <Field label="Country">
@@ -528,7 +538,7 @@ export function PersonForm({
                 className={inputClass}
                 autoComplete="country-name"
                 value={form.country}
-                onChange={(e) => set("country", e.target.value)}
+                onChange={(e) => setAddressField("country", e.target.value)}
               />
             </Field>
           </div>
