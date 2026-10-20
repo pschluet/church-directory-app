@@ -544,6 +544,21 @@ describe("ChurchDirectoryStack", () => {
         },
       });
     });
+
+    it("creates the throttled route before the stage that throttles it", () => {
+      // RouteSettings names the route by key, which CloudFormation cannot see
+      // as a reference; without DependsOn the stage can update first and fail.
+      const routes = template.findResources("AWS::ApiGatewayV2::Route");
+      const [routeId] = Object.entries(routes).find(
+        ([, r]) =>
+          (r.Properties as { RouteKey?: string }).RouteKey === "POST /api/directory-requests"
+      )!;
+      const stages = Object.values(template.findResources("AWS::ApiGatewayV2::Stage"));
+      const throttled = stages.find(
+        (s) => (s.Properties as { RouteSettings?: unknown }).RouteSettings
+      )!;
+      expect(throttled.DependsOn).toContain(routeId);
+    });
   });
 
   describe("CloudFront", () => {
