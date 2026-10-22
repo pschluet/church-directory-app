@@ -1598,10 +1598,80 @@ describe("GroupDetail", () => {
       expect(await screen.findByRole("dialog", { name: "Leave this group?" })).toBeInTheDocument();
     });
 
-    it("keeps Join in the header for someone who is not a member", async () => {
+    it("has no join controls in the header, even for someone who is not a member", async () => {
+      stub({ group: group({ myRole: null, canPost: false, canReply: false }) });
+      renderPage();
+      const heading = await screen.findByRole("heading", { name: "Youth Group" });
+      expect(
+        within(heading.closest("header")!).queryByRole("button", { name: /join/i })
+      ).not.toBeInTheDocument();
+    });
+  });
+
+  describe("joining", () => {
+    const outsider = { myRole: null, canPost: false, canReply: false, canReact: false };
+
+    it("puts Join where the message bar would be for a public group", async () => {
+      stub({ group: group(outsider) });
+      renderPage();
+      const bar = (await screen.findByText("You're previewing this group.")).closest("div")!;
+      await userEvent.click(within(bar).getByRole("button", { name: "Join" }));
+      expect(apiMock).toHaveBeenCalledWith(
+        "/groups/g1/members",
+        expect.objectContaining({ method: "POST", body: { personId: "person-me" } })
+      );
+      expect(screen.queryByRole("textbox")).not.toBeInTheDocument();
+    });
+
+    it("offers Join in place of the reply bar on a thread", async () => {
+      const root = post({ id: "root" });
+      stub({ group: group(outsider), thread: { root, replies: [] } });
+      renderPage("/groups/g1/threads/root");
+      const bar = (await screen.findByText("You're previewing this group.")).closest("div")!;
+      expect(within(bar).getByRole("button", { name: "Join" })).toBeInTheDocument();
+      expect(screen.queryByText("You cannot reply in this group.")).not.toBeInTheDocument();
+    });
+
+    it("asks to join from the members-only card of a private group", async () => {
+      stub({ group: group({ ...outsider, visibility: "PRIVATE", canRequestToJoin: true }) });
+      renderPage();
+      await screen.findByText("Members only");
+      await userEvent.click(screen.getByRole("button", { name: "Ask to join" }));
+      expect(apiMock).toHaveBeenCalledWith(
+        "/groups/g1/join-requests",
+        expect.objectContaining({ method: "POST" })
+      );
+    });
+
+    it("says a request is waiting, with nothing to press", async () => {
+      stub({ group: group({ ...outsider, visibility: "PRIVATE", pendingJoinRequestId: "jr1" }) });
+      renderPage();
+      expect(
+        await screen.findByText("Your request to join is waiting for an admin to approve it.")
+      ).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /join/i })).not.toBeInTheDocument();
+    });
+
+    it("keeps the bar for a parish admin who can post, with Join on a line above it", async () => {
       stub({ group: group({ myRole: null }) });
       renderPage();
-      expect(await screen.findByRole("button", { name: "Join" })).toBeInTheDocument();
+      const line = (await screen.findByText("You're not a member.")).parentElement!;
+      expect(within(line).getByRole("button", { name: "Join" })).toBeInTheDocument();
+      expect(screen.getByRole("textbox")).toBeInTheDocument();
+    });
+
+    it("shows Join under the Events tab too", async () => {
+      stub({ group: group(outsider) });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Events" }));
+      expect(await screen.findByText("You're previewing this group.")).toBeInTheDocument();
+    });
+
+    it("shows nothing to join for a member", async () => {
+      stub();
+      renderPage();
+      await screen.findByRole("heading", { name: "Youth Group" });
+      expect(screen.queryByRole("button", { name: /join/i })).not.toBeInTheDocument();
     });
   });
 

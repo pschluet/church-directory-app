@@ -165,6 +165,13 @@ export function GroupDetail() {
     onError: (err) => handleActionError(err, "Could not send that request"),
   });
 
+  const joinActions: JoinActions = {
+    join: () => joinMutation.mutate(),
+    joining: joinMutation.isPending,
+    requestToJoin: () => requestToJoinMutation.mutate(),
+    requesting: requestToJoinMutation.isPending,
+  };
+
   const leaveMutation = useMutation({
     mutationFn: () => api(`/groups/${groupId}/leave`, { method: "POST" }),
     onSuccess: () => {
@@ -241,83 +248,62 @@ export function GroupDetail() {
   return (
     <>
       <header className="mb-2">
-        <div className="flex items-center gap-3">
-          <h1 className="min-w-0 flex-1 truncate text-2xl font-bold text-ink md:text-3xl">
-            {postId ? "Thread" : group.title}
-          </h1>
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <h1 className="truncate text-2xl font-bold text-ink md:text-3xl">
+              {postId ? "Thread" : group.title}
+            </h1>
+            <div className="mt-0.5 flex min-w-0 text-ink-muted">
+              {postId ? (
+                // The way out of the thread, so it reads as one: a back chevron
+                // and the group's name in the accent colour.
+                <Link
+                  to={`/groups/${groupId}`}
+                  viewTransition
+                  // Reached from the feed: leaving is a back, not a second push, so
+                  // the next Back goes to where you were before the group rather
+                  // than bouncing through every feed-to-thread switch. Opened
+                  // directly (a link, a reload with no feed behind it) there is
+                  // nothing to pop, so it replaces the thread instead.
+                  replace
+                  onClick={(event) => {
+                    if (canGoBack && (location.state as { fromFeed?: boolean } | null)?.fromFeed) {
+                      event.preventDefault();
+                      goBack();
+                    }
+                  }}
+                  className="-ml-1 inline-flex min-w-0 items-center gap-0.5 rounded-md px-1 font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
+                >
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 20 20"
+                    className="h-4 w-4 shrink-0 fill-current"
+                  >
+                    <path d="M12.7 4.3a1 1 0 0 1 0 1.4L8.4 10l4.3 4.3a1 1 0 0 1-1.4 1.4l-5-5a1 1 0 0 1 0-1.4l5-5a1 1 0 0 1 1.4 0Z" />
+                  </svg>
+                  <span className="truncate">{group.title}</span>
+                </Link>
+              ) : (
+                // Styled as a link, because it is the way into group settings
+                // (members, notifications, leaving) and plain muted text hid that.
+                <button
+                  type="button"
+                  onClick={() => setShowMembers(true)}
+                  className="inline-flex items-center gap-0.5 whitespace-nowrap font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
+                >
+                  {group.memberCount} {group.memberCount === 1 ? "member" : "members"} ·{" "}
+                  {groupVisibilityLabel(group.visibility)}
+                  <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+                    <path d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" />
+                  </svg>
+                </button>
+              )}
+            </div>
+          </div>
 
           {/* Three small icons at the right of the title row, not a row of text
               tabs: the title line is then the only chrome above the conversation. */}
           {!postId && <SectionIcons tab={tab} onChange={setTab} />}
-        </div>
-        {/* The join action shares this line rather than the title row, where it
-            squeezed the title and wrapped the settings link. */}
-        <div className="mt-0.5 flex items-center justify-between gap-2 text-ink-muted">
-          {postId ? (
-            // The way out of the thread, so it reads as one: a back chevron
-            // and the group's name in the accent colour.
-            <Link
-              to={`/groups/${groupId}`}
-              viewTransition
-              // Reached from the feed: leaving is a back, not a second push, so
-              // the next Back goes to where you were before the group rather
-              // than bouncing through every feed-to-thread switch. Opened
-              // directly (a link, a reload with no feed behind it) there is
-              // nothing to pop, so it replaces the thread instead.
-              replace
-              onClick={(event) => {
-                if (canGoBack && (location.state as { fromFeed?: boolean } | null)?.fromFeed) {
-                  event.preventDefault();
-                  goBack();
-                }
-              }}
-              className="-ml-1 inline-flex min-w-0 items-center gap-0.5 rounded-md px-1 font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
-            >
-              <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 shrink-0 fill-current">
-                <path d="M12.7 4.3a1 1 0 0 1 0 1.4L8.4 10l4.3 4.3a1 1 0 0 1-1.4 1.4l-5-5a1 1 0 0 1 0-1.4l5-5a1 1 0 0 1 1.4 0Z" />
-              </svg>
-              <span className="truncate">{group.title}</span>
-            </Link>
-          ) : (
-            // Styled as a link, because it is the way into group settings
-            // (members, notifications, leaving) and plain muted text hid that.
-            <button
-              type="button"
-              onClick={() => setShowMembers(true)}
-              className="inline-flex items-center gap-0.5 whitespace-nowrap font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
-            >
-              {group.memberCount} {group.memberCount === 1 ? "member" : "members"} ·{" "}
-              {groupVisibilityLabel(group.visibility)}
-              <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
-                <path d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" />
-              </svg>
-            </button>
-          )}
-
-          {/* Only for someone not in the group yet; Leave lives in group settings. */}
-          {!group.myRole && (
-            <div className="flex shrink-0 items-center gap-2">
-              {group.visibility === "PUBLIC" && (
-                <Button
-                  className="px-3 py-1 text-sm"
-                  disabled={joinMutation.isPending}
-                  onClick={() => joinMutation.mutate()}
-                >
-                  {joinMutation.isPending ? "Joining…" : "Join"}
-                </Button>
-              )}
-              {group.canRequestToJoin && !group.pendingJoinRequestId && (
-                <Button
-                  className="px-3 py-1 text-sm"
-                  disabled={requestToJoinMutation.isPending}
-                  onClick={() => requestToJoinMutation.mutate()}
-                >
-                  Ask to join
-                </Button>
-              )}
-              {group.pendingJoinRequestId && <Badge tone="accent">Waiting for approval</Badge>}
-            </div>
-          )}
         </div>
       </header>
 
@@ -353,6 +339,7 @@ export function GroupDetail() {
           groupId={groupId}
           postId={postId}
           now={now}
+          joinActions={joinActions}
           onReport={setReporting}
           onChanged={refresh}
         />
@@ -363,6 +350,7 @@ export function GroupDetail() {
           groupId={groupId}
           now={now}
           typing={typing}
+          joinActions={joinActions}
           onReport={setReporting}
           onChanged={refresh}
         />
@@ -377,6 +365,12 @@ export function GroupDetail() {
           onReport={setReporting}
           onChanged={refresh}
         />
+      )}
+      {/* The feed and a thread put this where their message bar would be. */}
+      {!postId && tab !== "messages" && joinState(group) && (
+        <div className="mt-4">
+          <JoinBar group={group} actions={joinActions} />
+        </div>
       )}
 
       {showMembers && (
@@ -480,6 +474,119 @@ function SectionIcons({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => voi
         );
       })}
     </nav>
+  );
+}
+
+/** Join and Ask to join, run by the page and handed to wherever the bar shows. */
+interface JoinActions {
+  join: () => void;
+  joining: boolean;
+  requestToJoin: () => void;
+  requesting: boolean;
+}
+
+/**
+ * What someone outside the group can do about it: join a public group, ask to
+ * join a private one, or wait on a request already sent. Null for a member,
+ * and for anyone with no way in (an archived private group, a sign-in with no
+ * person record).
+ */
+function joinState(group: GroupDto): "join" | "request" | "pending" | null {
+  if (group.myRole) return null;
+  if (group.pendingJoinRequestId) return "pending";
+  if (group.visibility === "PUBLIC") return "join";
+  if (group.canRequestToJoin) return "request";
+  return null;
+}
+
+/** The button for a join state, or null when there is nothing to press. */
+function joinAction(
+  state: "join" | "request" | "pending",
+  actions: JoinActions
+): { label: string; busy: boolean; run: () => void } | null {
+  if (state === "join") {
+    return {
+      label: actions.joining ? "Joining…" : "Join",
+      busy: actions.joining,
+      run: actions.join,
+    };
+  }
+  if (state === "request") {
+    return {
+      label: actions.requesting ? "Sending…" : "Ask to join",
+      busy: actions.requesting,
+      run: actions.requestToJoin,
+    };
+  }
+  return null;
+}
+
+/**
+ * The way into a group for someone not in it, docked where the message bar
+ * would be. A non-member cannot post, so that is otherwise empty space, and it
+ * is where anyone looks to take part -- which keeps the header the same for
+ * members and everyone else.
+ *
+ * `compact` is a single line above the message bar, for a parish admin who can
+ * post without being a member and so gets the bar as well.
+ */
+function JoinBar({
+  group,
+  actions,
+  compact = false,
+}: {
+  group: GroupDto;
+  actions: JoinActions;
+  compact?: boolean;
+}) {
+  const state = joinState(group);
+  if (!state) return null;
+
+  const action = joinAction(state, actions);
+
+  if (compact) {
+    return (
+      <div className="mb-2 flex items-center justify-between gap-2 px-1 text-sm text-ink-muted">
+        <span className="min-w-0 truncate">
+          {state === "pending"
+            ? "Your request to join is waiting for approval."
+            : "You're not a member."}
+        </span>
+        {action && (
+          <button
+            type="button"
+            disabled={action.busy}
+            onClick={action.run}
+            className="shrink-0 rounded-md px-1 font-bold text-accent underline-offset-2 hover:underline focus-visible:underline disabled:opacity-60"
+          >
+            {action.label}
+          </button>
+        )}
+      </div>
+    );
+  }
+
+  const message =
+    state === "join"
+      ? ["You're previewing this group.", "Join to post and get updates."]
+      : state === "request"
+        ? ["This group is private.", "An admin approves requests."]
+        : ["Request sent.", "Waiting for an admin to approve it."];
+
+  return (
+    <div className="flex items-center gap-3 rounded-3xl border border-line bg-surface-muted py-2 pl-4 pr-2">
+      <p className="min-w-0 flex-1 text-sm leading-snug">
+        <span className="block font-bold text-ink">{message[0]}</span>
+        <span className="block text-ink-muted">{message[1]}</span>
+      </p>
+      {action ? (
+        <Button className="shrink-0" disabled={action.busy} onClick={action.run}>
+          {action.label}
+        </Button>
+      ) : (
+        <Badge tone="accent">Pending</Badge>
+      )}
+    </div>
   );
 }
 
@@ -700,6 +807,7 @@ function MessagesTab({
   groupId,
   now,
   typing,
+  joinActions,
   onReport,
   onChanged,
 }: {
@@ -708,6 +816,7 @@ function MessagesTab({
   now: Date;
   /** Names of the other people typing right now. */
   typing: string[];
+  joinActions: JoinActions;
   onReport: (post: GroupPostDto) => void;
   onChanged: () => Promise<unknown>;
 }) {
@@ -842,7 +951,26 @@ function MessagesTab({
   });
 
   if (!canSeeContent) {
-    return <EmptyState title="Members only">Join this group to see its messages.</EmptyState>;
+    // A private group shows nothing to a non-member, so the way in goes in
+    // this card rather than in a bar under it saying the same thing again.
+    const state = joinState(group);
+    const action = state && joinAction(state, joinActions);
+    return (
+      <EmptyState title="Members only">
+        {state === "pending"
+          ? "Your request to join is waiting for an admin to approve it."
+          : state === "request"
+            ? "Ask to join, and an admin of the group can let you in."
+            : "Join this group to see its messages."}
+        {action && (
+          <div className="mt-4">
+            <Button disabled={action.busy} onClick={action.run}>
+              {action.label}
+            </Button>
+          </div>
+        )}
+      </EmptyState>
+    );
   }
 
   async function posted(): Promise<void> {
@@ -935,15 +1063,20 @@ function MessagesTab({
           </p>
           <div className="shrink-0 border-t border-line pt-3">
             {group.canPost || editing ? (
-              <ChatComposer
-                groupId={groupId}
-                members={group.members}
-                placeholder={`Message ${group.title}`}
-                canStartEvent
-                editing={editing}
-                onEditDone={() => setEditing(null)}
-                onPosted={editing ? async () => void (await onChanged()) : posted}
-              />
+              <>
+                <JoinBar compact group={group} actions={joinActions} />
+                <ChatComposer
+                  groupId={groupId}
+                  members={group.members}
+                  placeholder={`Message ${group.title}`}
+                  canStartEvent
+                  editing={editing}
+                  onEditDone={() => setEditing(null)}
+                  onPosted={editing ? async () => void (await onChanged()) : posted}
+                />
+              </>
+            ) : joinState(group) ? (
+              <JoinBar group={group} actions={joinActions} />
             ) : group.canReply ? (
               <p className="text-sm text-ink-muted">
                 Only admins can start a conversation here. You can reply to a message.
@@ -971,6 +1104,7 @@ function ThreadView({
   groupId,
   postId,
   now,
+  joinActions,
   onReport,
   onChanged,
 }: {
@@ -978,6 +1112,7 @@ function ThreadView({
   groupId: string;
   postId: string;
   now: Date;
+  joinActions: JoinActions;
   onReport: (post: GroupPostDto) => void;
   onChanged: () => Promise<unknown>;
 }) {
@@ -1156,19 +1291,24 @@ function ThreadView({
 
       <div className="shrink-0 border-t border-line pt-3">
         {group.canReply || editing ? (
-          <ChatComposer
-            groupId={groupId}
-            members={group.members}
-            parentPostId={postId}
-            placeholder="Reply…"
-            autoFocus={focusComposer}
-            editing={editing}
-            onEditDone={() => setEditing(null)}
-            onPosted={async () => {
-              if (!editing) forceBottom.current = true;
-              await onChanged();
-            }}
-          />
+          <>
+            <JoinBar compact group={group} actions={joinActions} />
+            <ChatComposer
+              groupId={groupId}
+              members={group.members}
+              parentPostId={postId}
+              placeholder="Reply…"
+              autoFocus={focusComposer}
+              editing={editing}
+              onEditDone={() => setEditing(null)}
+              onPosted={async () => {
+                if (!editing) forceBottom.current = true;
+                await onChanged();
+              }}
+            />
+          </>
+        ) : joinState(group) ? (
+          <JoinBar group={group} actions={joinActions} />
         ) : (
           <p className="text-sm text-ink-muted">You cannot reply in this group.</p>
         )}
