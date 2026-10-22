@@ -15,12 +15,7 @@ import {
   type QueryClient,
   type QueryKey,
 } from "@tanstack/react-query";
-import {
-  fullName,
-  type GroupMemberDto,
-  type GroupPostDto,
-  type GroupPostReactionDto,
-} from "@shared";
+import { fullName, type GroupMemberDto, type ReactionDto, type ReactorDto } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import {
@@ -34,11 +29,12 @@ import { Avatar } from "./Avatar";
 import { Modal } from "./ui";
 
 /**
- * Emoji reactions on a group message, as Slack does them: pills under the
- * message with a count (yours highlighted, a click toggles yours), a tooltip
+ * Emoji reactions, as Slack does them: pills under a group message or a prayer
+ * request with a count (yours highlighted, a click toggles yours), a tooltip
  * naming who reacted, an "add reaction" pill at the end, and on a phone a long
- * press on a pill to see everyone. ChatRow in pages/GroupDetail.tsx places
- * these; the rules for who may react are the server's (`canReact`).
+ * press on a pill to see everyone. ChatRow in pages/GroupDetail.tsx and
+ * RequestCard in pages/PrayerRequests.tsx place these; the rules for who may
+ * react are the server's (`canReact`).
  */
 
 // The picker and its data are only wanted once somebody opens one.
@@ -52,24 +48,30 @@ const TOOLTIP_NAMES_MAX = 10;
 // Toggling, with the cache updated before the server answers
 // ---------------------------------------------------------------------------
 
+/** Anything that carries reactions: a group post, a prayer request. */
+export interface Reactable {
+  id: string;
+  reactions: ReactionDto[];
+}
+
 interface ReactVars {
-  postId: string;
+  targetId: string;
   emoji: string;
   add: boolean;
 }
 
 /**
- * The post with the caller's reaction added or taken away. Used for the
+ * The target with the caller's reaction added or taken away. Used for the
  * optimistic update; the server's own answer replaces it moments later.
  */
-function applyReaction(
-  post: GroupPostDto,
+function applyReaction<T extends Reactable>(
+  post: T,
   { emoji, add }: ReactVars,
   me: { appUserId: string; personId: string; name: string }
-): GroupPostDto {
+): T {
   const existing = post.reactions.find((r) => r.emoji === emoji);
   const reactor = { appUserId: me.appUserId, personId: me.personId, name: me.name };
-  let reactions: GroupPostReactionDto[];
+  let reactions: ReactionDto[];
   if (add) {
     if (existing?.reactedByMe) return post;
     reactions = existing
@@ -88,61 +90,68 @@ function applyReaction(
 }
 
 /**
- * Applies `fn` to every cached copy of a post, whatever its cache holds: the
- * feed's pages, a thread's root, its replies, or the events tab. Recognised by
- * shape rather than by key, so a new place that lists posts is covered the day
- * it exists.
+ * Applies `fn` to every cached copy of a reactable, whatever its cache holds:
+ * a group feed's pages, a thread's root, its replies, the events tab, or the
+ * prayer requests list. Recognised by shape rather than by key, so a new place
+ * that lists them is covered the day it exists.
  */
-function mapCachedPosts(data: unknown, fn: (post: GroupPostDto) => GroupPostDto): unknown {
+function mapCachedReactables(data: unknown, fn: (target: Reactable) => Reactable): unknown {
   if (!data || typeof data !== "object") return data;
   const d = data as Record<string, unknown>;
-  if (Array.isArray(d.pages)) return { ...d, pages: d.pages.map((p) => mapCachedPosts(p, fn)) };
-  for (const key of ["posts", "replies", "events"]) {
+  if (Array.isArray(d.pages))
+    return { ...d, pages: d.pages.map((p) => mapCachedReactables(p, fn)) };
+  for (const key of ["posts", "replies", "events", "prayerRequests"]) {
     const list = d[key];
     if (Array.isArray(list) && list.every((p) => p && typeof p === "object" && "reactions" in p)) {
-      return { ...d, [key]: (list as GroupPostDto[]).map(fn) };
+      return { ...d, [key]: (list as Reactable[]).map(fn) };
     }
   }
-  if (typeof d.id === "string" && Array.isArray(d.reactions))
-    return fn(d as unknown as GroupPostDto);
+  if (typeof d.id === "string" && Array.isArray(d.reactions)) return fn(d as unknown as Reactable);
   return data;
 }
 
-function patchPost(
+function patchCached(
   queryClient: QueryClient,
   keys: QueryKey[],
-  postId: string,
-  patch: (post: GroupPostDto) => GroupPostDto
+  targetId: string,
+  patch: (target: Reactable) => Reactable
 ): void {
   for (const queryKey of keys) {
     queryClient.setQueriesData({ queryKey }, (data: unknown) =>
-      mapCachedPosts(data, (post) => (post.id === postId ? patch(post) : post))
+      mapCachedReactables(data, (target) => (target.id === targetId ? patch(target) : target))
     );
   }
 }
 
+interface ReactionToggleConfig {
+  mutationKey: QueryKey;
+  /** Every cache that may hold a copy of the target, patched optimistically. */
+  cacheKeys: QueryKey[];
+  /** The resource for one emoji on one target: PUT adds it, DELETE removes it. */
+  path: (targetId: string, emoji: string) => string;
+  /** Refetched when the server refuses, so the page catches up with why. */
+  onErrorInvalidate: QueryKey;
+}
+
 /**
- * Add or remove the caller's reaction on a post. The pill changes at once and
- * is put right if the server refuses. `react` works out add-or-remove from the
- * post it is handed, so every control -- pill, toolbar, picker -- toggles the
- * same way: using an emoji you already used takes it back, as in Slack.
+ * Add or remove the caller's reaction. The pill changes at once and is put
+ * right if the server refuses. `react` works out add-or-remove from the target
+ * it is handed, so every control -- pill, toolbar, picker -- toggles the same
+ * way: using an emoji you already used takes it back, as in Slack.
  */
-export function useReactionToggle(groupId: string) {
+function useReactionToggle({
+  mutationKey,
+  cacheKeys: keys,
+  path,
+  onErrorInvalidate,
+}: ReactionToggleConfig) {
   const queryClient = useQueryClient();
-  const { me, organizationId } = useMe();
-  const keys = [
-    qk.groupPosts(organizationId, groupId) as QueryKey,
-    qk.groupEvents(organizationId, groupId) as QueryKey,
-  ];
-  const mutationKey = ["group-react", groupId];
+  const { me } = useMe();
 
   const mutation = useMutation({
     mutationKey,
-    mutationFn: ({ postId, emoji, add }: ReactVars) =>
-      api<GroupPostDto>(
-        `/groups/${groupId}/posts/${postId}/reactions/${encodeURIComponent(emoji)}`,
-        { method: add ? "PUT" : "DELETE" }
-      ),
+    mutationFn: ({ targetId, emoji, add }: ReactVars) =>
+      api<Reactable>(path(targetId, emoji), { method: add ? "PUT" : "DELETE" }),
     onMutate: async (vars) => {
       await Promise.all(keys.map((queryKey) => queryClient.cancelQueries({ queryKey })));
       const previous = keys.flatMap((queryKey) => queryClient.getQueriesData({ queryKey }));
@@ -152,7 +161,7 @@ export function useReactionToggle(groupId: string) {
           personId: me.person.id,
           name: fullName(me.person),
         };
-        patchPost(queryClient, keys, vars.postId, (post) => applyReaction(post, vars, who));
+        patchCached(queryClient, keys, vars.targetId, (target) => applyReaction(target, vars, who));
       }
       return { previous };
     },
@@ -160,29 +169,54 @@ export function useReactionToggle(groupId: string) {
       // With several taps in flight, an early answer would briefly undo the
       // later ones; the last to land has the final word.
       if (queryClient.isMutating({ mutationKey }) > 1) return;
-      patchPost(queryClient, keys, vars.postId, (post) => ({
-        ...post,
+      patchCached(queryClient, keys, vars.targetId, (target) => ({
+        ...target,
         reactions: server.reactions,
       }));
     },
     onError: (_error, _vars, context) => {
       for (const [queryKey, data] of context?.previous ?? [])
         queryClient.setQueryData(queryKey, data);
-      void queryClient.invalidateQueries({ queryKey: qk.group(organizationId, groupId) });
+      void queryClient.invalidateQueries({ queryKey: onErrorInvalidate });
     },
   });
 
   const { mutate } = mutation;
   const react = useCallback(
-    (post: GroupPostDto, emoji: string) => {
-      const add = !post.reactions.some((r) => r.emoji === emoji && r.reactedByMe);
+    (target: Reactable, emoji: string) => {
+      const add = !target.reactions.some((r) => r.emoji === emoji && r.reactedByMe);
       if (add) recordReactionUse(emoji);
-      mutate({ postId: post.id, emoji, add });
+      mutate({ targetId: target.id, emoji, add });
     },
     [mutate]
   );
 
   return { react, error: mutation.error, reset: mutation.reset };
+}
+
+export type ReactionToggle = ReturnType<typeof useReactionToggle>;
+
+/** Reactions on a group's posts, wherever its pages cache them. */
+export function useGroupReactionToggle(groupId: string): ReactionToggle {
+  const { organizationId } = useMe();
+  return useReactionToggle({
+    mutationKey: ["group-react", groupId],
+    cacheKeys: [qk.groupPosts(organizationId, groupId), qk.groupEvents(organizationId, groupId)],
+    path: (postId, emoji) =>
+      `/groups/${groupId}/posts/${postId}/reactions/${encodeURIComponent(emoji)}`,
+    onErrorInvalidate: qk.group(organizationId, groupId),
+  });
+}
+
+/** Reactions on prayer requests. The feed key's prefix covers the review queue too. */
+export function usePrayerRequestReactionToggle(): ReactionToggle {
+  const { organizationId } = useMe();
+  return useReactionToggle({
+    mutationKey: ["prayer-request-react"],
+    cacheKeys: [qk.prayerRequests(organizationId)],
+    path: (id, emoji) => `/prayer-requests/${id}/reactions/${encodeURIComponent(emoji)}`,
+    onErrorInvalidate: qk.prayerRequests(organizationId),
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -389,7 +423,7 @@ export function QuickReactions({
   onReact,
   buttonClassName,
 }: {
-  post: GroupPostDto;
+  post: Reactable;
   count: number;
   onReact: (emoji: string) => void;
   buttonClassName: string;
@@ -427,11 +461,7 @@ function joinNames(names: string[]): string {
 }
 
 /** "You (click to remove), Alice, and Bob" -- the people behind a pill, you first, as Slack lists them. */
-function reactorNames(
-  reaction: GroupPostReactionDto,
-  canReact: boolean,
-  mePersonId: string | null
-): string {
+function reactorNames(reaction: ReactionDto, canReact: boolean, mePersonId: string | null): string {
   const names = reaction.reactors.filter((r) => r.personId !== mePersonId).map((r) => r.name);
   const shown = names.slice(0, TOOLTIP_NAMES_MAX);
   if (names.length > shown.length) {
@@ -448,7 +478,7 @@ function PillTooltip({
   canReact,
   mePersonId,
 }: {
-  reaction: GroupPostReactionDto;
+  reaction: ReactionDto;
   anchor: HTMLElement;
   canReact: boolean;
   mePersonId: string | null;
@@ -499,7 +529,7 @@ function ReactionPill({
   onToggle,
   onLongPress,
 }: {
-  reaction: GroupPostReactionDto;
+  reaction: ReactionDto;
   canReact: boolean;
   mePersonId: string | null;
   onToggle: () => void;
@@ -598,26 +628,31 @@ function ReactionPill({
 }
 
 /**
- * The row of pills under a message. Nothing at all when there are none -- the
- * way to add the first is the hover toolbar or the long-press drawer, and the
- * "add reaction" pill only appears beside reactions that already exist.
+ * The row of pills under a message or a request. On a group message, nothing at
+ * all when there are none -- the way to add the first is the hover toolbar or
+ * the long-press drawer, and the "add reaction" pill only appears beside
+ * reactions that already exist. A prayer request has neither, so it passes
+ * `showAddWhenEmpty` and the "add reaction" pill stands on its own.
  */
 export function ReactionBar({
   post,
-  groupId,
+  toggle,
   canReact,
   onShowReactions,
+  showAddWhenEmpty = false,
 }: {
-  post: GroupPostDto;
-  groupId: string;
+  post: Reactable;
+  /** The owner's toggle, so an error from its toolbar shows here too. */
+  toggle: ReactionToggle;
   canReact: boolean;
   /** A long press on a pill: the row opens the sheet of who reacted. */
   onShowReactions: () => void;
+  showAddWhenEmpty?: boolean;
 }) {
   const { me } = useMe();
-  const { react, error, reset } = useReactionToggle(groupId);
+  const { react, error, reset } = toggle;
 
-  if (post.reactions.length === 0) return null;
+  if (post.reactions.length === 0 && !(showAddWhenEmpty && canReact)) return null;
   const mePersonId = me?.person?.id ?? null;
 
   return (
@@ -669,21 +704,19 @@ export function ReactionsSheet({
   members,
   onClose,
 }: {
-  post: GroupPostDto;
-  members: GroupMemberDto[];
+  post: Reactable;
+  /** A group's members, to find each reactor's photo; a prayer request's reactors carry their own. */
+  members?: GroupMemberDto[];
   onClose: () => void;
 }) {
   const { me } = useMe();
   const [tab, setTab] = useState<string>("all");
   const total = post.reactions.reduce((sum, r) => sum + r.reactors.length, 0);
-  const thumbOf = (appUserId: string) =>
-    members.find((m) => m.appUserId === appUserId)?.thumbUrl ?? null;
+  const thumbOf = (reactor: ReactorDto) =>
+    members?.find((m) => m.appUserId === reactor.appUserId)?.thumbUrl ?? reactor.thumbUrl ?? null;
 
   // One line per person under "All", in the order they first reacted.
-  const people = new Map<
-    string,
-    { appUserId: string; personId: string; name: string; emojis: string[] }
-  >();
+  const people = new Map<string, ReactorDto & { emojis: string[] }>();
   for (const reaction of post.reactions) {
     for (const reactor of reaction.reactors) {
       const entry = people.get(reactor.personId) ?? { ...reactor, emojis: [] };
@@ -742,7 +775,7 @@ export function ReactionsSheet({
           {rows.map((row) => (
             <li key={row.personId} className="flex items-start gap-3 py-3">
               <Avatar
-                thumbUrl={thumbOf(row.appUserId)}
+                thumbUrl={thumbOf(row)}
                 person={{ firstName: row.name, lastName: null }}
                 size="sm"
               />

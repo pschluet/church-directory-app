@@ -754,8 +754,18 @@ export interface PrayerRequestDto {
    */
   canDecide: boolean;
   canDelete: boolean;
+  /** May add or remove the caller's own emoji reactions: posted requests only. */
+  canReact: boolean;
   /** True when the caller wrote it; what puts a row in the "Yours" section. */
   isMine: boolean;
+  /** In the order each emoji was first used; always empty until it is posted. */
+  reactions: ReactionDto[];
+}
+
+/** What an open prayer requests page polls: see V28__prayer_request_reactions.sql. */
+export interface PrayerRequestsLiveDto {
+  /** Changes whenever anything on the page does; only ever compared for difference. */
+  activityAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1111,8 +1121,11 @@ export const groupRsvpSchema = z.object({
 });
 export type GroupRsvp = z.infer<typeof groupRsvpSchema>;
 
-/** Most different emoji one post can carry, as Slack caps it -- keeps a row of pills sane. */
-export const GROUP_REACTION_MAX_EMOJI = 20;
+/**
+ * Most different emoji one group post or prayer request can carry, as Slack
+ * caps it -- keeps a row of pills sane.
+ */
+export const REACTION_MAX_EMOJI = 20;
 
 const EMOJI_GRAPHEME =
   /^(?:\p{Extended_Pictographic}|\p{Regional_Indicator}|[0-9#*]\uFE0F?\u20E3)/u;
@@ -1127,7 +1140,7 @@ export function isSingleEmoji(value: string): boolean {
   return [...new Intl.Segmenter().segment(value)].length === 1 && EMOJI_GRAPHEME.test(value);
 }
 
-export const groupReactionEmojiSchema = z
+export const reactionEmojiSchema = z
   .string()
   .max(32)
   .refine(isSingleEmoji, { message: "That is not a single emoji" });
@@ -1274,12 +1287,24 @@ export interface GroupPostMentionDto {
   name: string;
 }
 
-/** One emoji on a post, with everyone who put it there, earliest first. */
-export interface GroupPostReactionDto {
+/**
+ * Somebody who reacted. A group post's reactors carry no photo -- the group page
+ * already has its member list to find one in -- while a prayer request's do,
+ * since that page has no list of people to look them up from.
+ */
+export interface ReactorDto extends GroupPostMentionDto {
+  thumbUrl?: string | null;
+}
+
+/**
+ * One emoji on a group post or a prayer request, with everyone who put it
+ * there, earliest first.
+ */
+export interface ReactionDto {
   emoji: string;
   /** Whether the caller is among `reactors` -- what highlights the pill and makes a click remove. */
   reactedByMe: boolean;
-  reactors: GroupPostMentionDto[];
+  reactors: ReactorDto[];
 }
 
 export interface GroupPostDto {
@@ -1302,7 +1327,7 @@ export interface GroupPostDto {
   /** Whether the post says "@everyone"; false for a deleted post. */
   mentionsEveryone: boolean;
   /** In the order each emoji was first used; empty for a deleted post. */
-  reactions: GroupPostReactionDto[];
+  reactions: ReactionDto[];
   event: GroupEventDto | null;
   /** How many replies exist, whether or not this response included them. */
   replyCount: number;

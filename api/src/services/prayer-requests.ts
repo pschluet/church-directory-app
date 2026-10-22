@@ -2,6 +2,7 @@ import type { Caller } from "../auth";
 import { type Queryable, one } from "../db";
 import { photoUrls } from "../photos";
 import { fullName, type PrayerRequestDto, type PrayerRequestStatus } from "../types";
+import { type ReactionRow, reactionsSubselect, toReactionDtos } from "./reactions";
 
 /**
  * Reading prayer requests, and deciding who may see which of them.
@@ -49,6 +50,7 @@ export interface PrayerRequestRow {
   decided_at: Date | string | null;
   rejection_reason: string | null;
   images: PrayerRequestImageRow[] | null;
+  reactions: ReactionRow[];
 }
 
 interface PrayerRequestImageRow {
@@ -72,7 +74,8 @@ interface PrayerRequestImageRow {
  * attachments and leaves the caller to stitch them back together, which for a
  * list endpoint means either doing that by hand or issuing a second query per
  * row. `order by position` inside the aggregate is what preserves the order the
- * author chose.
+ * author chose. Reactions come the same way, with each reactor's photo -- the
+ * page has no member list to find one in, unlike a group's.
  */
 export const PRAYER_REQUEST_SELECT = `
   select pr.id,
@@ -105,7 +108,10 @@ export const PRAYER_REQUEST_SELECT = `
                   )
              from prayer_request_images i
             where i.prayer_request_id = pr.id
-         ) as images
+         ) as images,
+         ${reactionsSubselect("prayer_request_reactions", "prayer_request_id", "pr.id", {
+           withPhotos: true,
+         })} as reactions
     from prayer_requests pr
     join persons_resolved a on a.id = pr.author_person_id
     left join persons_resolved d on d.id = pr.decided_by_person_id
@@ -134,6 +140,19 @@ export function canDeletePrayerRequest(
   if (row.organization_id !== caller.organizationId) return false;
   if (caller.isAdmin) return true;
   return caller.personId !== null && caller.personId === row.author_person_id;
+}
+
+/**
+ * Reacting is for a posted request only: a pending or declined one is seen by
+ * its author and the reviewers alone, and is not something the parish responds
+ * to. It also needs a directory record, as reactors are listed by name.
+ */
+export function canReactToPrayerRequest(
+  caller: Caller,
+  row: Pick<PrayerRequestRow, "organization_id" | "status">
+): boolean {
+  if (row.organization_id !== caller.organizationId) return false;
+  return row.status === "APPROVED" && caller.personId !== null;
 }
 
 export function toPrayerRequest(row: PrayerRequestRow, caller: Caller): PrayerRequestDto {
@@ -174,7 +193,9 @@ export function toPrayerRequest(row: PrayerRequestRow, caller: Caller): PrayerRe
     }),
     canDecide: canDecidePrayerRequest(caller, row),
     canDelete: canDeletePrayerRequest(caller, row),
+    canReact: canReactToPrayerRequest(caller, row),
     isMine,
+    reactions: toReactionDtos(row.reactions, caller.personId),
   };
 }
 

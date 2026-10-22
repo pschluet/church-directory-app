@@ -18,6 +18,12 @@ import { useAttachmentPicker } from "../components/useAttachmentPicker";
 import { Avatar } from "../components/Avatar";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import {
+  ReactionBar,
+  ReactionsSheet,
+  usePrayerRequestReactionToggle,
+} from "../components/Reactions";
+import { usePrayerRequestsLive } from "../components/usePrayerRequestsLive";
+import {
   Badge,
   Button,
   ConfirmDialog,
@@ -67,9 +73,10 @@ export function PrayerRequests() {
   const [actionError, setActionError] = useState<string | null>(null);
 
   /*
-   * Nothing on this page polls. It updates three ways: a push, forwarded to
-   * open tabs by the service worker (see useRealtimeRefresh); coming back to
-   * the app; and the refresh button.
+   * While the page is open it polls, as an open group does (see
+   * usePrayerRequestsLive), so new requests, decisions and reactions arrive on
+   * their own. A push forwarded by the service worker (see useRealtimeRefresh)
+   * and coming back to the app refresh it too.
    *
    * `refetchOnWindowFocus` is on for these two and the bell's inbox, and
    * nowhere else in the app -- the default in lib/queryClient.ts is off. The
@@ -77,6 +84,8 @@ export function PrayerRequests() {
    * could show a badge reading "1 new" above a list that does not contain it.
    * It only fires when the data is already stale (30s) or was invalidated.
    */
+  usePrayerRequestsLive();
+
   const feedQuery = useQuery({
     queryKey: qk.prayerRequests(organizationId),
     queryFn: ({ signal }) => api<Feed>("/prayer-requests", { signal }),
@@ -110,9 +119,8 @@ export function PrayerRequests() {
    * The server answers 409 on a request that has already been reviewed and 404
    * on one that is gone; both mean "your copy of this list is out of date".
    * Refreshing makes the stale row disappear, which is what the caller wanted
-   * to happen to it anyway. This matters more now that nothing polls: the
-   * window in which a reviewer can be looking at a decided queue used to be a
-   * minute and is now open-ended.
+   * to happen to it anyway. The poll makes this rare, but two reviewers can
+   * still press within the same couple of seconds.
    */
   function handleActionError(err: unknown, fallback: string): void {
     if (err instanceof ApiError && (err.status === 409 || err.status === 404)) {
@@ -180,12 +188,10 @@ export function PrayerRequests() {
 
   const error = actionError ?? feedQuery.error?.message ?? null;
   const canPost = Boolean(me?.appUser.personId);
-  const fetching = feedQuery.isFetching || queueQuery.isFetching;
   /*
-   * One clock for every relative time on this page -- the cards and the
-   * "Updated" label alike. Without it they freeze at the moment they were
-   * rendered, which is how a page left open came to disagree with the bell
-   * about when the same request was posted.
+   * One clock for every relative time on this page. Without it they freeze at
+   * the moment they were rendered, which is how a page left open came to
+   * disagree with the bell about when the same request was posted.
    */
   const now = useNow();
 
@@ -194,17 +200,7 @@ export function PrayerRequests() {
       <PageHeading
         title="Prayer Requests"
         subtitle={`${posted.length} ${posted.length === 1 ? "request" : "requests"} from the last month`}
-        actions={
-          <>
-            <RefreshButton
-              busy={fetching}
-              updatedAt={feedQuery.dataUpdatedAt}
-              now={now}
-              onRefresh={() => void refresh()}
-            />
-            {canPost && <Button onClick={() => setComposing(true)}>Ask for prayers</Button>}
-          </>
-        }
+        actions={canPost && <Button onClick={() => setComposing(true)}>Ask for prayers</Button>}
       />
 
       {error && <ErrorNotice message={error} onRetry={() => void feedQuery.refetch()} />}
@@ -327,82 +323,6 @@ export function PrayerRequests() {
   );
 }
 
-/**
- * Refresh, and how stale the list is.
- *
- * The button exists because nothing polls: a member without notifications
- * enabled has no other way to pull in what has been posted since they opened
- * the page. The timestamp beside it exists because the button alone implies the
- * data *might* be old without saying whether that means three seconds or three
- * hours.
- *
- * Icon-only, inline SVG, on the same footing as MenuButton -- the app ships no
- * icon package. `aria-label` because there is no text to read.
- */
-function RefreshButton({
-  busy,
-  updatedAt,
-  now,
-  onRefresh,
-}: {
-  busy: boolean;
-  /** `dataUpdatedAt`; 0 before the first fetch lands. */
-  updatedAt: number;
-  now: Date;
-  onRefresh: () => void;
-}) {
-  return (
-    <span className="flex items-center gap-2">
-      {updatedAt > 0 && (
-        // Rendered once, so it ages while the page sits open. The focus
-        // refetch re-renders it on return, which is when anyone looks.
-        // The `·` separator rather than "Updated <label>", because
-        // formatPostedAt capitalises its relative labels and falls back to a
-        // date -- lowercasing it would turn "4 May" into "4 may".
-        <span className="text-sm text-ink-muted">
-          Updated · {formatPostedAt(new Date(updatedAt).toISOString(), now)}
-        </span>
-      )}
-      <button
-        type="button"
-        aria-label="Refresh"
-        onClick={onRefresh}
-        // Disabled while in flight, so a double tap cannot queue two rounds.
-        disabled={busy}
-        className="tap-target inline-flex items-center justify-center rounded-md text-ink-muted transition hover:bg-surface-muted hover:text-primary disabled:cursor-not-allowed disabled:opacity-60"
-      >
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 20 20"
-          className={`h-5 w-5 fill-current ${busy ? "animate-spin" : ""}`}
-        >
-          {/*
-            A circular arrow. The ring is *stroked*, not filled: a filled arc
-            path closes across its own chord and renders as a blob rather than a
-            ring. It runs from 0 degrees the long way round to -45, leaving the
-            gap at the top right for the head.
-          */}
-          <path
-            d="M16 10a6 6 0 1 1-1.76-4.24"
-            fill="none"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-          />
-          {/*
-            The head, declared pointing straight down about the origin and then
-            rotated onto the arc's tangent -- the same trick as the gear's teeth
-            in SettingsLink, so the geometry is arithmetic rather than a
-            hand-fitted path. Transforms apply right to left: rotate, then move
-            to the arc's end at (14.24, 5.76).
-          */}
-          <path d="M-2.2 0h4.4l-2.2 3.2z" transform="translate(14.24 5.76) rotate(-45)" />
-        </svg>
-      </button>
-    </span>
-  );
-}
-
 /** The status of one of the caller's own requests. Posted rows need no badge. */
 function StatusBadge({ request }: { request: PrayerRequestDto }) {
   if (request.status === "PENDING") return <Badge tone="accent">Waiting for review</Badge>;
@@ -480,6 +400,9 @@ function RequestCard({
   now: Date;
   onDelete: () => void;
 }) {
+  const reactionToggle = usePrayerRequestReactionToggle();
+  const [reactionsOpen, setReactionsOpen] = useState(false);
+
   return (
     <li className="flex items-start gap-3 rounded-lg border border-line bg-surface p-4">
       <AuthorAvatar request={request} />
@@ -534,7 +457,19 @@ function RequestCard({
         )}
 
         <ImageStrip images={request.images} title={request.title} />
+
+        {/* Under everything else, as under a group message. Only a posted
+            request can have any, and only a posted one offers to add one. */}
+        <ReactionBar
+          post={request}
+          toggle={reactionToggle}
+          canReact={request.canReact}
+          showAddWhenEmpty
+          onShowReactions={() => setReactionsOpen(true)}
+        />
       </div>
+
+      {reactionsOpen && <ReactionsSheet post={request} onClose={() => setReactionsOpen(false)} />}
     </li>
   );
 }

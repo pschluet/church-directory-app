@@ -1,4 +1,4 @@
-import { Hono } from "hono";
+import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
 import { requireOrganizationId, requireRole, type AppEnv } from "../auth";
 import { one, type Queryable } from "../db";
@@ -14,6 +14,7 @@ import {
   PRAYER_REQUEST_SELECT,
   PRAYER_REQUEST_WINDOW,
   canDeletePrayerRequest,
+  canReactToPrayerRequest,
   loadPrayerRequestRow,
   toPrayerRequest,
   type PrayerRequestRow,
@@ -21,9 +22,12 @@ import {
 import {
   prayerRequestCreateSchema,
   prayerRequestRejectSchema,
+  REACTION_MAX_EMOJI,
+  reactionEmojiSchema,
   uuidSchema,
   type NotificationType,
   type PrayerRequestDto,
+  type PrayerRequestsLiveDto,
 } from "../types";
 
 /**
@@ -169,6 +173,25 @@ routes.get("/pending", requireRole("PRAYER_REQUEST_ADMIN"), async (c) => {
   );
 
   return c.json({ prayerRequests: rows.map((row) => toPrayerRequest(row, caller)) });
+});
+
+/**
+ * The poll behind a live page -- see V28__prayer_request_reactions.sql. One
+ * primary-key lookup, asked every couple of seconds while the page is open.
+ */
+routes.get("/live", async (c) => {
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+
+  const row = await one<{ activity_at: Date | string }>(
+    db,
+    "select prayer_requests_activity_at as activity_at from organizations where id = $1",
+    [organizationId]
+  );
+  const body: PrayerRequestsLiveDto = {
+    activityAt: new Date(row?.activity_at ?? 0).toISOString(),
+  };
+  return c.json(body);
 });
 
 routes.post("/", async (c) => {
@@ -385,5 +408,70 @@ routes.delete("/:id", async (c) => {
 
   return c.body(null, 204);
 });
+
+// ---------------------------------------------------------------------------
+// Reactions
+// ---------------------------------------------------------------------------
+
+/**
+ * The checks both reaction writes share, then the request's fresh DTO -- the
+ * same shape as the group post reaction routes in routes/groups.ts. The emoji
+ * travels in the path (percent-encoded; Hono hands it back decoded) so adding
+ * and removing are one resource under PUT and DELETE, each safe to repeat.
+ */
+async function reactionWrite(
+  c: Context<AppEnv>,
+  write: (ctx: { db: Queryable; id: string; appUserId: string; emoji: string }) => Promise<void>
+) {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const parsedEmoji = reactionEmojiSchema.safeParse(c.req.param("emoji"));
+  if (!parsedEmoji.success) throw new HTTPException(400, { message: "That is not a single emoji" });
+
+  const request = await loadPrayerRequestRow(db, id, organizationId);
+  if (!request) throw new HTTPException(404, { message: "Prayer request not found" });
+  if (!canReactToPrayerRequest(caller, request)) {
+    throw new HTTPException(403, { message: "Only a posted prayer request can be reacted to" });
+  }
+
+  await write({ db, id, appUserId: caller.appUserId, emoji: parsedEmoji.data });
+
+  const updated = await loadPrayerRequestRow(db, id, organizationId);
+  return c.json(toPrayerRequest(updated!, caller));
+}
+
+routes.put("/:id/reactions/:emoji", (c) =>
+  reactionWrite(c, async ({ db, id, appUserId, emoji }) => {
+    // The cap is on *different* emoji: adding to a pill that exists is always fine.
+    const existing = await db.query<{ emoji: string }>(
+      "select distinct emoji from prayer_request_reactions where prayer_request_id = $1",
+      [id]
+    );
+    const emojis = existing.rows.map((r) => r.emoji);
+    if (!emojis.includes(emoji) && emojis.length >= REACTION_MAX_EMOJI) {
+      throw new HTTPException(409, {
+        message: `A prayer request can have at most ${REACTION_MAX_EMOJI} different reactions`,
+      });
+    }
+    await db.query(
+      `insert into prayer_request_reactions (prayer_request_id, app_user_id, emoji)
+       values ($1, $2, $3)
+       on conflict do nothing`,
+      [id, appUserId, emoji]
+    );
+  })
+);
+
+routes.delete("/:id/reactions/:emoji", (c) =>
+  reactionWrite(c, async ({ db, id, appUserId, emoji }) => {
+    await db.query(
+      `delete from prayer_request_reactions
+        where prayer_request_id = $1 and app_user_id = $2 and emoji = $3`,
+      [id, appUserId, emoji]
+    );
+  })
+);
 
 export default routes;

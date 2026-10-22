@@ -26,7 +26,12 @@ const meState = {
 
 vi.mock("../src/context/MeContext", () => ({
   useMe: () => ({
-    me: { appUser: { personId: meState.personId } } as unknown as MeDto,
+    me: {
+      appUser: { id: "user-me", personId: meState.personId },
+      person: meState.personId
+        ? { id: meState.personId, firstName: "Me", lastName: "Myself" }
+        : null,
+    } as unknown as MeDto,
     canApprovePrayerRequests: meState.canApprove,
     organizationId: "org-1",
   }),
@@ -50,7 +55,9 @@ function request(overrides: Partial<PrayerRequestDto> = {}): PrayerRequestDto {
     images: [],
     canDecide: false,
     canDelete: false,
+    canReact: true,
     isMine: false,
+    reactions: [],
     ...overrides,
   };
 }
@@ -60,6 +67,10 @@ function stubFeed(feed: PrayerRequestDto[], queue: PrayerRequestDto[] = []) {
   apiMock.mockImplementation((path: string) => {
     if (path === "/prayer-requests") return Promise.resolve({ prayerRequests: feed });
     if (path === "/prayer-requests/pending") return Promise.resolve({ prayerRequests: queue });
+    if (path === "/prayer-requests/live") return Promise.resolve({ activityAt: "stamp-1" });
+    // A reaction write answers with the request; tests that care override this.
+    const reacted = feed.find((r) => path.startsWith(`/prayer-requests/${r.id}/reactions/`));
+    if (reacted) return Promise.resolve(reacted);
     return Promise.resolve({});
   });
 }
@@ -473,51 +484,49 @@ describe("PrayerRequests", () => {
     });
   });
 
-  describe("refreshing", () => {
+  describe("staying live", () => {
     /*
-     * The page does not poll -- see the bell's comment and the plan's costing --
-     * so this button is the only way a member without notifications enabled
-     * pulls in what has been posted since they opened it.
+     * The page polls a stamp while it is open, as an open group does, so the
+     * refresh button and its "Updated" label are gone.
      */
-    it("re-reads the page and the bell in one tap", async () => {
+    it("has no manual refresh button or 'Updated' text any more", async () => {
       stubFeed([request()]);
       renderWithProviders(<PrayerRequests />);
       await screen.findByText("For Fr. John");
-
-      const before = apiMock.mock.calls.length;
-      await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
-
-      await waitFor(() => expect(apiMock.mock.calls.length).toBeGreaterThan(before));
-      const after = apiMock.mock.calls.slice(before).map(([path]) => path);
-      expect(after).toContain("/prayer-requests");
+      expect(screen.queryByRole("button", { name: "Refresh" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/^Updated/)).not.toBeInTheDocument();
     });
 
-    it("says how old the list is, since nothing refreshes it on its own", async () => {
-      stubFeed([request()]);
-      renderWithProviders(<PrayerRequests />);
-      expect(await screen.findByText(/Updated · Just now/)).toBeInTheDocument();
-    });
-
-    it("ages the freshness label instead of saying Just now forever", async () => {
-      /*
-       * The reported bug, and the worst instance of it: a label whose whole job
-       * is to say how old the data is, frozen at "Just now" because nothing
-       * re-renders it. Reported alongside a page claiming a request was posted
-       * an hour ago while the bell said two -- same data, two render times, one
-       * of the clocks stopped.
-       */
+    it("refetches the page when the stamp moves, and not before", async () => {
       vi.useFakeTimers({ shouldAdvanceTime: true });
       try {
-        stubFeed([request()]);
-        renderWithProviders(<PrayerRequests />);
-        expect(await screen.findByText(/Updated · Just now/)).toBeInTheDocument();
-
-        await act(async () => {
-          await vi.advanceTimersByTimeAsync(5 * 60_000);
+        let stamp = "stamp-1";
+        let title = "For Fr. John";
+        apiMock.mockImplementation((path: string) => {
+          if (path === "/prayer-requests/live") return Promise.resolve({ activityAt: stamp });
+          if (path === "/prayer-requests") {
+            return Promise.resolve({ prayerRequests: [request({ title })] });
+          }
+          return Promise.resolve({ prayerRequests: [] });
         });
+        renderWithProviders(<PrayerRequests />);
+        await screen.findByText("For Fr. John");
+        const feedCalls = () =>
+          apiMock.mock.calls.filter(([path]) => path === "/prayer-requests").length;
+        const before = feedCalls();
 
-        expect(screen.getByText(/Updated · 5 minutes ago/)).toBeInTheDocument();
-        expect(screen.queryByText(/Updated · Just now/)).not.toBeInTheDocument();
+        // The same stamp again: nothing changed, so nothing is refetched.
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2500);
+        });
+        expect(feedCalls()).toBe(before);
+
+        stamp = "stamp-2";
+        title = "For the Smith family";
+        await act(async () => {
+          await vi.advanceTimersByTimeAsync(2500);
+        });
+        expect(await screen.findByText("For the Smith family")).toBeInTheDocument();
       } finally {
         vi.useRealTimers();
       }
@@ -546,11 +555,116 @@ describe("PrayerRequests", () => {
         vi.useRealTimers();
       }
     });
+  });
 
-    it("has an accessible name, being icon-only", async () => {
-      stubFeed([]);
+  describe("reactions", () => {
+    const reactor = (personId: string, name: string) => ({
+      appUserId: `user-${personId}`,
+      personId,
+      name,
+      thumbUrl: null,
+    });
+    const pray = (
+      overrides: Partial<PrayerRequestDto["reactions"][number]> = {}
+    ): PrayerRequestDto["reactions"][number] => ({
+      emoji: "🙏",
+      reactedByMe: false,
+      reactors: [reactor("person-ann", "Ann Lee")],
+      ...overrides,
+    });
+
+    it("offers to add one on a posted request, with none there yet", async () => {
+      stubFeed([request()]);
       renderWithProviders(<PrayerRequests />);
-      expect(await screen.findByRole("button", { name: "Refresh" })).toBeInTheDocument();
+      await screen.findByText("For Fr. John");
+      expect(screen.getByRole("button", { name: "Add reaction" })).toBeInTheDocument();
+    });
+
+    it("offers nothing on a request that is not posted", async () => {
+      stubFeed([
+        request({
+          id: "pr-mine",
+          status: "PENDING",
+          postedAt: null,
+          isMine: true,
+          canReact: false,
+        }),
+      ]);
+      renderWithProviders(<PrayerRequests />);
+      await screen.findByText("Waiting for review");
+      expect(screen.queryByRole("button", { name: "Add reaction" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("group", { name: "Reactions" })).not.toBeInTheDocument();
+    });
+
+    it("shows the pills, and adds mine to someone else's at a tap", async () => {
+      stubFeed([request({ reactions: [pray()] })]);
+      const feedAnswer = apiMock.getMockImplementation()!;
+      // The server answers with the request as it now stands.
+      apiMock.mockImplementation((path: string, init?: unknown) =>
+        path.includes("/reactions/")
+          ? Promise.resolve(
+              request({
+                reactions: [
+                  pray({
+                    reactedByMe: true,
+                    reactors: [reactor("person-ann", "Ann Lee"), reactor("person-me", "Me Myself")],
+                  }),
+                ],
+              })
+            )
+          : feedAnswer(path, init)
+      );
+      renderWithProviders(<PrayerRequests />);
+
+      const pill = await screen.findByRole("button", { name: "1 person reacted with 🙏" });
+      expect(pill).toHaveAttribute("aria-pressed", "false");
+      await userEvent.click(pill);
+
+      expect(apiMock).toHaveBeenCalledWith(
+        `/prayer-requests/pr-1/reactions/${encodeURIComponent("🙏")}`,
+        { method: "PUT" }
+      );
+      // Optimistically, before the server answers.
+      expect(
+        await screen.findByRole("button", { name: "2 people reacted with 🙏" })
+      ).toHaveAttribute("aria-pressed", "true");
+    });
+
+    it("takes mine back when I tap a pill I am on", async () => {
+      stubFeed([
+        request({
+          reactions: [pray({ reactedByMe: true, reactors: [reactor("person-me", "Me Myself")] })],
+        }),
+      ]);
+      renderWithProviders(<PrayerRequests />);
+
+      await userEvent.click(
+        await screen.findByRole("button", { name: "1 person reacted with 🙏" })
+      );
+      expect(apiMock).toHaveBeenCalledWith(
+        `/prayer-requests/pr-1/reactions/${encodeURIComponent("🙏")}`,
+        { method: "DELETE" }
+      );
+    });
+
+    it("names who reacted when you hover a pill", async () => {
+      stubFeed([
+        request({
+          reactions: [
+            pray({
+              reactedByMe: true,
+              reactors: [reactor("person-ann", "Ann Lee"), reactor("person-me", "Me Myself")],
+            }),
+          ],
+        }),
+      ]);
+      renderWithProviders(<PrayerRequests />);
+      await userEvent.hover(
+        await screen.findByRole("button", { name: "2 people reacted with 🙏" })
+      );
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(
+        "You (click to remove) and Ann Lee"
+      );
     });
   });
 

@@ -136,6 +136,11 @@ export const qk = {
   auditActorsByIds: (orgId: string | null, ids: string[]) =>
     [...qk.auditLog(orgId), "actors", "by-id", { ids: [...ids].sort() }] as const,
 
+  /**
+   * The prayer requests page's poll. A sibling of `prayerRequests` rather than
+   * under it, so the refetch a changed stamp sets off does not sweep the poll.
+   */
+  prayerRequestsLive: (orgId: string | null) => [...qk.org(orgId), "prayer-requests-live"] as const,
   prayerRequests: (orgId: string | null) => [...qk.org(orgId), "prayer-requests"] as const,
   /**
    * Nested under the feed, so approving something can invalidate both the page

@@ -61,13 +61,13 @@ import {
   groupPostCreateSchema,
   groupPostReportSchema,
   groupPostUpdateSchema,
-  groupReactionEmojiSchema,
+  reactionEmojiSchema,
   groupRsvpSchema,
   groupSettingsSchema,
   groupUpdateSchema,
   groupVisibilityChangeSchema,
   GROUP_POST_MAX_ATTACHMENTS,
-  GROUP_REACTION_MAX_EMOJI,
+  REACTION_MAX_EMOJI,
   fullName,
   photoAttachSchema,
   uuidSchema,
@@ -1606,7 +1606,7 @@ async function reactionWrite(
   const organizationId = requireOrganizationId(c);
   const id = uuidSchema.parse(c.req.param("id"));
   const postId = uuidSchema.parse(c.req.param("postId"));
-  const parsedEmoji = groupReactionEmojiSchema.safeParse(c.req.param("emoji"));
+  const parsedEmoji = reactionEmojiSchema.safeParse(c.req.param("emoji"));
   if (!parsedEmoji.success) throw new HTTPException(400, { message: "That is not a single emoji" });
 
   const group = await loadGroupRow(db, id, organizationId);
@@ -1632,9 +1632,9 @@ routes.put("/:id/posts/:postId/reactions/:emoji", (c) =>
       [postId]
     );
     const emojis = existing.rows.map((r) => r.emoji);
-    if (!emojis.includes(emoji) && emojis.length >= GROUP_REACTION_MAX_EMOJI) {
+    if (!emojis.includes(emoji) && emojis.length >= REACTION_MAX_EMOJI) {
       throw new HTTPException(409, {
-        message: `A post can have at most ${GROUP_REACTION_MAX_EMOJI} different reactions`,
+        message: `A post can have at most ${REACTION_MAX_EMOJI} different reactions`,
       });
     }
     await db.query(

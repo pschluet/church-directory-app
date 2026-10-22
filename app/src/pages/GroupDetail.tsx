@@ -66,7 +66,7 @@ import {
   QuickReactions,
   ReactionBar,
   ReactionsSheet,
-  useReactionToggle,
+  useGroupReactionToggle,
 } from "../components/Reactions";
 import { isEmojiOnly } from "../lib/emoji";
 import {
@@ -1312,7 +1312,8 @@ function ChatRow({
   });
 
   const isDeleted = post.deletedAt !== null;
-  const { react } = useReactionToggle(groupId);
+  const reactionToggle = useGroupReactionToggle(groupId);
+  const { react } = reactionToggle;
   /** The emoji picker opened from the hover toolbar, which keeps the toolbar and row lit. */
   const [pickerOpen, setPickerOpen] = useState(false);
   const [reactionsOpen, setReactionsOpen] = useState(false);
@@ -1546,7 +1547,7 @@ function ChatRow({
             <AttachmentStrip attachments={post.attachments} onMediaLoad={onMediaLoad} />
             <ReactionBar
               post={post}
-              groupId={groupId}
+              toggle={reactionToggle}
               canReact={canReact}
               onShowReactions={() => setReactionsOpen(true)}
             />
