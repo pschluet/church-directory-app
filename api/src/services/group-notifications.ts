@@ -27,13 +27,14 @@ export const EFFECTIVE_GROUP_PREF =
  * one. Someone @ mentioned in a post gets a GROUP_MENTION, never also a
  * GROUP_POST for the same post, even if their preference is "all posts";
  * otherwise being mentioned would mean two notifications about one post
- * instead of one.
+ * instead of one. An @everyone post mentions every member, so it sends no
+ * GROUP_POST at all.
  */
 
 /**
  * Everyone subscribed to "all posts" in this group, except whoever wrote it
  * and anyone this post already mentions (they get `fanOutGroupMention`
- * instead). `on conflict do nothing` against notifications_one_per_group_post_idx
+ * instead) -- which, for an @everyone post, is everybody. `on conflict do nothing` against notifications_one_per_group_post_idx
  * makes a retried request idempotent.
  */
 export async function fanOutGroupPost(
@@ -44,8 +45,10 @@ export async function fanOutGroupPost(
     organizationId: string;
     actingAppUserId: string;
     mentionedAppUserIds: string[];
+    everyone: boolean;
   }
 ): Promise<string[]> {
+  if (options.everyone) return [];
   const { rows } = await q.query<{ app_user_id: string }>(
     `insert into notifications (app_user_id, organization_id, type, group_id, group_post_id)
      select gm.app_user_id, $2, 'GROUP_POST', $1, $3
@@ -74,7 +77,8 @@ export async function fanOutGroupPost(
  * Everyone this post @ mentions, except the author, and except anyone who has
  * turned this group's notifications off entirely. A "mentions only"
  * preference is exactly the case this exists for -- mentioning someone is the
- * one thing that preference still delivers.
+ * one thing that preference still delivers. With `everyone` (an @everyone
+ * post) that is every member, whatever `mentionedAppUserIds` says.
  */
 export async function fanOutGroupMention(
   q: Queryable,
@@ -84,9 +88,10 @@ export async function fanOutGroupMention(
     organizationId: string;
     actingAppUserId: string;
     mentionedAppUserIds: string[];
+    everyone: boolean;
   }
 ): Promise<string[]> {
-  if (options.mentionedAppUserIds.length === 0) return [];
+  if (!options.everyone && options.mentionedAppUserIds.length === 0) return [];
   const { rows } = await q.query<{ app_user_id: string }>(
     `insert into notifications (app_user_id, organization_id, type, group_id, group_post_id)
      select gm.app_user_id, $2, 'GROUP_MENTION', $1, $3
@@ -94,7 +99,7 @@ export async function fanOutGroupMention(
        join app_users u on u.id = gm.app_user_id
        ${GROUP_PREF_JOIN}
       where gm.group_id = $1
-        and gm.app_user_id = any($5::uuid[])
+        and ($6::boolean or gm.app_user_id = any($5::uuid[]))
         and ${EFFECTIVE_GROUP_PREF} <> 'NONE'
         and u.status = 'ACTIVE'
         and gm.app_user_id <> $4
@@ -106,6 +111,7 @@ export async function fanOutGroupMention(
       options.groupPostId,
       options.actingAppUserId,
       options.mentionedAppUserIds,
+      options.everyone,
     ]
   );
   return rows.map((row) => row.app_user_id);

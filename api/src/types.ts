@@ -976,6 +976,8 @@ export const POST_RETENTION_YEARS = 5;
 export const GROUP_TITLE_MAX = 150;
 export const GROUP_DESCRIPTION_MAX = 2000;
 export const GROUP_POST_BODY_MAX = 4000;
+/** "@everyone" in a post's text mentions every member of the group; see V27. */
+export const GROUP_MENTION_EVERYONE = "everyone";
 export const GROUP_EVENT_LOCATION_MAX = 200;
 export const GROUP_EVENT_TITLE_MAX = 150;
 export const GROUP_EVENT_DESCRIPTION_MAX = 2000;
@@ -1058,6 +1060,7 @@ export const groupPostCreateSchema = z
     body: trimmedOptional(GROUP_POST_BODY_MAX),
     parentPostId: uuidSchema.nullable().optional(),
     mentionedAppUserIds: z.array(uuidSchema).max(50).default([]),
+    mentionsEveryone: z.boolean().default(false),
     attachments: z.array(groupPostAttachmentSchema).max(GROUP_POST_MAX_ATTACHMENTS).default([]),
     event: groupEventFieldsSchema.optional(),
   })
@@ -1096,6 +1099,8 @@ export const groupPostUpdateSchema = z.object({
   addAttachments: z.array(groupPostAttachmentSchema).max(GROUP_POST_MAX_ATTACHMENTS).optional(),
   /** Absent leaves mentions alone, so an event-only edit cannot wipe them. */
   mentionedAppUserIds: z.array(uuidSchema).max(50).optional(),
+  /** Absent leaves @everyone alone, for the same reason. */
+  mentionsEveryone: z.boolean().optional(),
   event: groupEventFieldsSchema.optional(),
 });
 export type GroupPostUpdate = z.infer<typeof groupPostUpdateSchema>;
@@ -1294,6 +1299,8 @@ export interface GroupPostDto {
   createdAt: string;
   attachments: GroupPostAttachmentDto[];
   mentions: GroupPostMentionDto[];
+  /** Whether the post says "@everyone"; false for a deleted post. */
+  mentionsEveryone: boolean;
   /** In the order each emoji was first used; empty for a deleted post. */
   reactions: GroupPostReactionDto[];
   event: GroupEventDto | null;
