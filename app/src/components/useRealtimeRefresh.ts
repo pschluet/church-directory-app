@@ -23,8 +23,9 @@ import { useMe } from "../context/MeContext";
  *
  * It follows that members who have not enabled notifications get no pushed
  * updates for the bell or the other pages -- the refetch on window focus is the
- * whole mechanism there. A group that is *open* is the exception: it polls
- * itself (see useGroupLive), so it does not depend on push at all.
+ * whole mechanism there. An *open* group or prayer requests page is the
+ * exception: each polls itself (see useGroupLive and usePrayerRequestsLive), so
+ * it does not depend on push at all.
  *
  * Mounted once, in AppShell. Not in NotificationBell, which AppShell renders
  * *twice* (a phone copy beside the hamburger and a desktop copy in the account

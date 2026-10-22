@@ -686,6 +686,169 @@ describe.skipIf(!hasDb)("prayer requests", () => {
     });
   });
 
+  describe("reactions", () => {
+    const reactionPath = (id: string, emoji: string) =>
+      `/api/prayer-requests/${id}/reactions/${encodeURIComponent(emoji)}`;
+
+    async function posted(): Promise<string> {
+      const id = await submit();
+      await as(reviewer).call("POST", `/api/prayer-requests/${id}/approve`);
+      return id;
+    }
+
+    it("adds, lists who reacted, and removes", async () => {
+      const id = await posted();
+
+      const first = await as(member).call("PUT", reactionPath(id, "🙏"));
+      expect(first.status).toBe(200);
+      expect(first.body.reactions).toEqual([
+        {
+          emoji: "🙏",
+          reactedByMe: true,
+          reactors: [
+            expect.objectContaining({
+              personId: member.personId,
+              name: "Boris User",
+              thumbUrl: null,
+            }),
+          ],
+        },
+      ]);
+
+      await as(author).call("PUT", reactionPath(id, "🙏"));
+      await as(author).call("PUT", reactionPath(id, "❤️"));
+
+      // Everyone who can see it sees who reacted, in the order they did.
+      const { body } = await as(reviewer).call("GET", "/api/prayer-requests");
+      const request = body.prayerRequests.find((r: { id: string }) => r.id === id);
+      expect(request.canReact).toBe(true);
+      expect(
+        request.reactions.map(
+          (r: { emoji: string; reactedByMe: boolean; reactors: { name: string }[] }) => [
+            r.emoji,
+            r.reactedByMe,
+            r.reactors.map((m) => m.name),
+          ]
+        )
+      ).toEqual([
+        ["🙏", false, ["Boris User", "Anna Petrova"]],
+        ["❤️", false, ["Anna Petrova"]],
+      ]);
+
+      const removed = await as(member).call("DELETE", reactionPath(id, "🙏"));
+      expect(removed.status).toBe(200);
+      expect(removed.body.reactions[0].reactedByMe).toBe(false);
+      expect(removed.body.reactions[0].reactors.map((m: { name: string }) => m.name)).toEqual([
+        "Anna Petrova",
+      ]);
+    });
+
+    it("is idempotent both ways", async () => {
+      const id = await posted();
+      await as(member).call("PUT", reactionPath(id, "🙏"));
+      const again = await as(member).call("PUT", reactionPath(id, "🙏"));
+      expect(again.body.reactions[0].reactors).toHaveLength(1);
+
+      await as(member).call("DELETE", reactionPath(id, "🙏"));
+      const gone = await as(member).call("DELETE", reactionPath(id, "🙏"));
+      expect(gone.status).toBe(200);
+      expect(gone.body.reactions).toEqual([]);
+    });
+
+    it("refuses a request that is not posted", async () => {
+      const pending = await submit();
+      const pendingAttempt = await as(author).call("PUT", reactionPath(pending, "🙏"));
+      expect(pendingAttempt.status).toBe(403);
+
+      const rejected = await submit();
+      await as(reviewer).call("POST", `/api/prayer-requests/${rejected}/reject`, {});
+      const rejectedAttempt = await as(author).call("PUT", reactionPath(rejected, "🙏"));
+      expect(rejectedAttempt.status).toBe(403);
+
+      const { body } = await as(author).call("GET", "/api/prayer-requests");
+      for (const request of body.prayerRequests) expect(request.canReact).toBe(false);
+    });
+
+    it("404s on another parish's request", async () => {
+      const id = await posted();
+      const { status } = await as(outsider).call("PUT", reactionPath(id, "🙏"));
+      expect(status).toBe(404);
+    });
+
+    it("refuses anything but a single emoji", async () => {
+      const id = await posted();
+      for (const value of ["hi", "🙏🙏"]) {
+        const { status } = await as(member).call("PUT", reactionPath(id, value));
+        expect(status).toBe(400);
+      }
+    });
+
+    it("caps the number of different emoji, but not people on one", async () => {
+      const id = await posted();
+      const emojis = [..."😀😁😂🤣😃😄😅😆😉😊😋😎😍😘🥰😗😙😚🙂🤗"];
+      expect(emojis).toHaveLength(20);
+      for (const emoji of emojis) {
+        expect((await as(member).call("PUT", reactionPath(id, emoji))).status).toBe(200);
+      }
+      expect((await as(member).call("PUT", reactionPath(id, "🙏"))).status).toBe(409);
+      expect((await as(author).call("PUT", reactionPath(id, "😀"))).status).toBe(200);
+    });
+
+    it("goes with the request when it is deleted", async () => {
+      const id = await posted();
+      await as(member).call("PUT", reactionPath(id, "🙏"));
+      await as(author).call("DELETE", `/api/prayer-requests/${id}`);
+      const { rows } = await db().query<{ count: string }>(
+        "select count(*)::text as count from prayer_request_reactions"
+      );
+      expect(rows[0]!.count).toBe("0");
+    });
+  });
+
+  describe("the live stamp", () => {
+    const stamp = async (who: CreatedUser = member): Promise<string> => {
+      const { status, body } = await as(who).call("GET", "/api/prayer-requests/live");
+      expect(status).toBe(200);
+      return body.activityAt;
+    };
+
+    it("moves on every change to the page, and only then", async () => {
+      const seen: string[] = [await stamp()];
+      const moved = async () => {
+        const next = await stamp();
+        expect(seen).not.toContain(next);
+        seen.push(next);
+      };
+
+      expect(await stamp()).toBe(seen[0]);
+
+      const id = await submit();
+      await moved();
+      await as(reviewer).call("POST", `/api/prayer-requests/${id}/approve`);
+      await moved();
+      await as(member).call(
+        "PUT",
+        `/api/prayer-requests/${id}/reactions/${encodeURIComponent("🙏")}`
+      );
+      await moved();
+      await as(member).call(
+        "DELETE",
+        `/api/prayer-requests/${id}/reactions/${encodeURIComponent("🙏")}`
+      );
+      await moved();
+      await as(author).call("DELETE", `/api/prayer-requests/${id}`);
+      await moved();
+
+      expect(await stamp()).toBe(seen[seen.length - 1]);
+    });
+
+    it("is kept per parish", async () => {
+      const before = await stamp(outsider);
+      await submit();
+      expect(await stamp(outsider)).toBe(before);
+    });
+  });
+
   describe("presigning an attachment", () => {
     it("hands back a key scoped to the caller's own person record", async () => {
       const { status, body } = await as(author).call("POST", "/api/uploads/prayer-request-image", {

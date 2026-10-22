@@ -4,7 +4,7 @@ import {
   ROLES,
   daysInMonth,
   formatPhone,
-  groupReactionEmojiSchema,
+  reactionEmojiSchema,
   hasRole,
   isLeapYear,
   isRealDate,
@@ -326,15 +326,15 @@ describe("photoAttachSchema", () => {
   });
 });
 
-describe("groupReactionEmojiSchema", () => {
+describe("reactionEmojiSchema", () => {
   it.each(["🔥", "👍🏽", "👨‍👩‍👧", "🇺🇸", "1️⃣", "#️⃣", "❤️", "🏳️‍🌈"])("accepts %s", (emoji) => {
-    expect(groupReactionEmojiSchema.safeParse(emoji).success).toBe(true);
+    expect(reactionEmojiSchema.safeParse(emoji).success).toBe(true);
   });
 
   it.each(["", "a", "1", "#", "hi", "🔥🔥", "🔥a", " 🔥", "x".repeat(40)])(
     "refuses %j",
     (value) => {
-      expect(groupReactionEmojiSchema.safeParse(value).success).toBe(false);
+      expect(reactionEmojiSchema.safeParse(value).success).toBe(false);
     }
   );
 });
