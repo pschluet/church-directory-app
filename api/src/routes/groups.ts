@@ -1182,10 +1182,17 @@ routes.post("/:id/posts", async (c) => {
   const postId = await db.transaction(async (tx) => {
     const created = await one<{ id: string }>(
       tx,
-      `insert into group_posts (group_id, author_person_id, parent_post_id, kind, body)
-       values ($1, $2, $3, $4, $5)
+      `insert into group_posts (group_id, author_person_id, parent_post_id, kind, body, mentions_everyone)
+       values ($1, $2, $3, $4, $5, $6)
        returning id`,
-      [id, caller.personId, payload.parentPostId ?? null, payload.kind, payload.body ?? null]
+      [
+        id,
+        caller.personId,
+        payload.parentPostId ?? null,
+        payload.kind,
+        payload.body ?? null,
+        payload.mentionsEveryone,
+      ]
     );
     if (!created) throw new HTTPException(500, { message: "Could not create that post" });
 
@@ -1221,6 +1228,7 @@ routes.post("/:id/posts", async (c) => {
       organizationId,
       actingAppUserId: caller.appUserId,
       mentionedAppUserIds: payload.mentionedAppUserIds,
+      everyone: payload.mentionsEveryone,
     });
     notifiedMention = await fanOutGroupMention(tx, {
       groupId: id,
@@ -1228,6 +1236,7 @@ routes.post("/:id/posts", async (c) => {
       organizationId,
       actingAppUserId: caller.appUserId,
       mentionedAppUserIds: payload.mentionedAppUserIds,
+      everyone: payload.mentionsEveryone,
     });
 
     // Their message is here; "typing" ends now rather than after the window.
@@ -1381,7 +1390,40 @@ routes.patch("/:id/posts/:postId", async (c) => {
           organizationId,
           actingAppUserId: caller.appUserId,
           mentionedAppUserIds: added,
+          everyone: false,
         });
+      }
+    }
+
+    /*
+     * @everyone follows the same rule: only turning it on notifies, and only
+     * those not already told about this post by a mention -- the unique index
+     * behind `on conflict do nothing` sees to that. Every unread "new post" is
+     * retracted, since everyone now has (or already had) the mention instead.
+     */
+    if (
+      payload.mentionsEveryone !== undefined &&
+      payload.mentionsEveryone !== row.mentions_everyone
+    ) {
+      await tx.query("update group_posts set mentions_everyone = $2 where id = $1", [
+        postId,
+        payload.mentionsEveryone,
+      ]);
+      if (payload.mentionsEveryone) {
+        await tx.query(
+          `delete from notifications
+            where group_post_id = $1 and type = 'GROUP_POST' and read_at is null`,
+          [postId]
+        );
+        const notifiedEveryone = await fanOutGroupMention(tx, {
+          groupId: id,
+          groupPostId: postId,
+          organizationId,
+          actingAppUserId: caller.appUserId,
+          mentionedAppUserIds: [],
+          everyone: true,
+        });
+        notifiedMention = [...new Set([...notifiedMention, ...notifiedEveryone])];
       }
     }
   });

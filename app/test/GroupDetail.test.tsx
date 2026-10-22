@@ -155,6 +155,7 @@ function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
     attachments: [],
     reactions: [],
     mentions: [],
+    mentionsEveryone: false,
     event: null,
     replyCount: 0,
     lastReplyAt: null,
@@ -398,6 +399,21 @@ describe("GroupDetail", () => {
     });
   });
 
+  it("picks out @everyone in a post that mentions the whole group", async () => {
+    stub({
+      pages: [
+        {
+          posts: [post({ body: "Reminder @everyone: bring snacks", mentionsEveryone: true })],
+          nextCursor: null,
+        },
+      ],
+    });
+    renderPage();
+    const everyone = await screen.findByText("@everyone");
+    expect(everyone).toHaveClass("text-accent");
+    expect(everyone.closest("a")).toBeNull();
+  });
+
   describe("the message bar", () => {
     it("sends on Enter, and keeps Shift+Enter for a new line", async () => {
       stub();
@@ -443,6 +459,45 @@ describe("GroupDetail", () => {
           expect.objectContaining({
             method: "POST",
             body: expect.objectContaining({ mentionedAppUserIds: ["user-ann"] }),
+          })
+        )
+      );
+    });
+
+    it("offers @everyone in the mention list and sends it as a flag", async () => {
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+
+      await userEvent.type(bar, "hi @ev");
+      expect(screen.getByRole("button", { name: /Notify everyone in this group/ })).toBeVisible();
+      await userEvent.keyboard("{Enter}");
+      expect(bar).toHaveValue("hi @everyone ");
+
+      await userEvent.keyboard("{Enter}");
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith(
+          "/groups/g1/posts",
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({ mentionsEveryone: true, mentionedAppUserIds: [] }),
+          })
+        )
+      );
+    });
+
+    it("does not send @everyone when the text no longer says it", async () => {
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+
+      await userEvent.type(bar, "email me at me@everyone.org{Enter}");
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith(
+          "/groups/g1/posts",
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({ mentionsEveryone: false }),
           })
         )
       );
@@ -1622,6 +1677,7 @@ describe("GroupDetail", () => {
             body: {
               body: "Hello @Bo Park ",
               mentionedAppUserIds: ["user-bo"],
+              mentionsEveryone: false,
               removeAttachmentIds: [],
               addAttachments: [],
             },

@@ -54,6 +54,7 @@ For a Private group, non-members see the title, description, image, and a member
 - Any member can reply to a post. Replies appear in an expandable thread under the original post. Replies are one level deep — you can reply to a top-level post, but you cannot reply to a reply.
 - Posts support plain text with clickable links; there's no rich text formatting.
 - Members can @ mention other members of the group, which notifies the person mentioned. You can only mention people who are already in the group.
+- Members can type @everyone to mention every member of the group at once. It notifies everyone a mention would, including members set to "only when I'm mentioned"; members who turned the group's notifications off are not notified.
 - Posts can include attachments: photos and documents (PDF, Word, Excel, PowerPoint, plain text, and CSV files). Video attachments are planned for a future phase and are not supported in this release. Each attachment is capped at 25MB.
 - **Reactions.** Members can react to any message, reply or event with an emoji, as in Slack:
   - Reactions show as small pills under the message, each with its emoji and a count. The ones you've added are highlighted; clicking a pill adds your reaction or, if it's already yours, takes it back. Hovering a pill names everyone who reacted ("You (click to remove), Ann Lee, and Bo Park reacted with :fire:"); on a touch screen, a long press on a pill lists them, with a tab per emoji.

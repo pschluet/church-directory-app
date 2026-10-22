@@ -33,6 +33,7 @@ export const GROUP_POST_SELECT = `
          p.parent_post_id,
          p.kind,
          p.body,
+         p.mentions_everyone,
          p.edited_at,
          p.deleted_at,
          (p.deleted_by_person_id = p.author_person_id) as deleted_by_self,
@@ -155,6 +156,7 @@ export interface GroupPostRow {
   parent_post_id: string | null;
   kind: GroupPostKind;
   body: string | null;
+  mentions_everyone: boolean;
   edited_at: Date | string | null;
   deleted_at: Date | string | null;
   deleted_by_self: boolean | null;
@@ -236,6 +238,7 @@ export function toGroupPostDto(
           personId: m.personId,
           name: fullName({ firstName: m.firstName, lastName: m.lastName }),
         })),
+    mentionsEveryone: !isDeleted && row.mentions_everyone,
     // A tombstone keeps no reactions, as it keeps no attachments.
     reactions: isDeleted
       ? []

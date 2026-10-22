@@ -16,6 +16,7 @@ import {
   GROUP_DESCRIPTION_MAX,
   GROUP_EVENT_LOCATION_MAX,
   GROUP_EVENT_TITLE_MAX,
+  GROUP_MENTION_EVERYONE,
   GROUP_NOTIFICATION_PREFS,
   GROUP_NOTIFICATION_PREF_LABELS,
   GROUP_POST_BODY_MAX,
@@ -1492,6 +1493,7 @@ function ChatRow({
           <EventBlock
             event={post.event}
             mentions={post.mentions}
+            mentionsEveryone={post.mentionsEveryone}
             postId={post.id}
             groupId={groupId}
             onChanged={onChanged}
@@ -1516,6 +1518,7 @@ function ChatRow({
               <EventBlock
                 event={post.event}
                 mentions={post.mentions}
+                mentionsEveryone={post.mentionsEveryone}
                 postId={post.id}
                 groupId={groupId}
                 onChanged={onChanged}
@@ -1529,7 +1532,11 @@ function ChatRow({
                   isEmojiOnly(post.body) ? "text-3xl leading-tight" : "leading-snug"
                 }`}
               >
-                <MentionText text={post.body} mentions={post.mentions} />
+                <MentionText
+                  text={post.body}
+                  mentions={post.mentions}
+                  mentionsEveryone={post.mentionsEveryone}
+                />
                 {!header && post.editedAt && (
                   <span className="text-xs text-ink-muted"> (edited)</span>
                 )}
@@ -1768,41 +1775,44 @@ function escapeRegExp(value: string): string {
  * sides, so "@Maria" in "email@Maria.com" or deleting the name after typing
  * it both behave the way you'd expect without any separate tracked state.
  */
+function mentionsName(text: string, name: string): boolean {
+  return new RegExp(`(^|\\s)@${escapeRegExp(name)}(?=$|[^\\p{L}\\p{N}_])`, "u").test(text);
+}
+
 function findMentionedAppUserIds(
   text: string,
   candidates: { appUserId: string; name: string }[]
 ): string[] {
-  const found: string[] = [];
-  for (const candidate of candidates) {
-    const pattern = new RegExp(
-      `(^|\\s)@${escapeRegExp(candidate.name)}(?=$|[^\\p{L}\\p{N}_])`,
-      "u"
-    );
-    if (pattern.test(text)) found.push(candidate.appUserId);
-  }
-  return found;
+  return candidates.filter((c) => mentionsName(text, c.name)).map((c) => c.appUserId);
+}
+
+/** Whether `text` still says "@everyone", by the same word-boundary rule. */
+function hasEveryoneMention(text: string): boolean {
+  return mentionsName(text, GROUP_MENTION_EVERYONE);
 }
 
 /**
  * Renders `text` with every @ mention in `mentions` picked out in color, each a
- * link to that person's page.
+ * link to that person's page -- and "@everyone", when the post has it, in the
+ * same color with nowhere to link to.
  */
 function MentionText({
   text,
   mentions,
+  mentionsEveryone = false,
 }: {
   text: string;
   mentions: { appUserId: string; personId: string; name: string }[];
+  mentionsEveryone?: boolean;
 }) {
-  if (mentions.length === 0) return <>{text}</>;
+  if (mentions.length === 0 && !mentionsEveryone) return <>{text}</>;
 
   // Longest name first, so one mentioned name that happens to be a prefix of
   // another (e.g. two people sharing a first name) doesn't steal the match.
   const names = [...mentions].sort((a, b) => b.name.length - a.name.length);
-  const pattern = new RegExp(
-    `(^|\\s)(@(?:${names.map((m) => escapeRegExp(m.name)).join("|")})(?=$|[^\\p{L}\\p{N}_]))`,
-    "gu"
-  );
+  const alternatives = names.map((m) => escapeRegExp(m.name));
+  if (mentionsEveryone) alternatives.push(GROUP_MENTION_EVERYONE);
+  const pattern = new RegExp(`(^|\\s)(@(?:${alternatives.join("|")})(?=$|[^\\p{L}\\p{N}_]))`, "gu");
 
   const parts: ReactNode[] = [];
   let lastIndex = 0;
@@ -1892,6 +1902,9 @@ function getCaretCoordinates(
   return coordinates;
 }
 
+/** One row in the @ mention list: a member, or the whole group. */
+type MentionOption = { kind: "everyone" } | { kind: "member"; member: GroupMemberDto };
+
 /** The members a post may @ mention: everyone in the group but the person writing. */
 function useMentionable(members: GroupMemberDto[]): GroupMemberDto[] {
   const { me } = useMe();
@@ -1979,10 +1992,20 @@ function MentionTextarea({
     setPendingCursor(null);
   }, [pendingCursor]);
 
-  const matches =
+  // "@everyone" leads the list while what's typed could still become it, and
+  // only when there is someone besides the writer for it to reach.
+  const matches: MentionOption[] =
     query === null
       ? []
-      : members.filter((m) => m.name.toLowerCase().includes(query.text.toLowerCase())).slice(0, 6);
+      : [
+          ...(members.length > 0 && GROUP_MENTION_EVERYONE.startsWith(query.text.toLowerCase())
+            ? [{ kind: "everyone" } as const]
+            : []),
+          ...members
+            .filter((m) => m.name.toLowerCase().includes(query.text.toLowerCase()))
+            .slice(0, 6)
+            .map((member) => ({ kind: "member", member }) as const),
+        ];
 
   function detectMention(text: string, cursor: number): void {
     let i = cursor - 1;
@@ -2007,11 +2030,11 @@ function MentionTextarea({
     detectMention(event.currentTarget.value, event.currentTarget.selectionStart);
   }
 
-  function pick(member: GroupMemberDto): void {
+  function pick(option: MentionOption): void {
     if (!query) return;
     const before = value.slice(0, query.atIndex);
     const after = value.slice(query.atIndex + 1 + query.text.length);
-    const inserted = `@${member.name} `;
+    const inserted = `@${option.kind === "everyone" ? GROUP_MENTION_EVERYONE : option.member.name} `;
     onChange(`${before}${inserted}${after}`.slice(0, maxLength));
     setQuery(null);
     setCaret(null);
@@ -2076,19 +2099,28 @@ function MentionTextarea({
               : { top: caret.top + caret.height, left: caret.left }
           }
         >
-          {matches.map((member, index) => (
-            <li key={member.appUserId}>
+          {matches.map((option, index) => (
+            <li key={option.kind === "everyone" ? "@everyone" : option.member.appUserId}>
               <button
                 type="button"
                 onMouseDown={(event) => {
                   event.preventDefault();
-                  pick(member);
+                  pick(option);
                 }}
                 className={`block w-full px-3 py-1.5 text-left text-sm ${
                   index === highlighted ? "bg-surface-muted text-primary" : "text-ink"
                 }`}
               >
-                {member.name}
+                {option.kind === "everyone" ? (
+                  <>
+                    @{GROUP_MENTION_EVERYONE}
+                    <span className="block text-xs text-ink-muted">
+                      Notify everyone in this group
+                    </span>
+                  </>
+                ) : (
+                  option.member.name
+                )}
               </button>
             </li>
           ))}
@@ -2168,6 +2200,7 @@ function EventEditForm({
         method: "PATCH",
         body: {
           mentionedAppUserIds: findMentionedAppUserIds(description, mentionable),
+          mentionsEveryone: hasEveryoneMention(description),
           event: {
             eventTitle,
             eventDescription: description || undefined,
@@ -2427,6 +2460,7 @@ function ChatComposer({
         body: {
           body,
           mentionedAppUserIds: findMentionedAppUserIds(body, mentionable),
+          mentionsEveryone: hasEveryoneMention(body),
           removeAttachmentIds: removedIds,
           addAttachments: picker.attachments,
         },
@@ -2457,6 +2491,7 @@ function ChatComposer({
           body,
           parentPostId,
           mentionedAppUserIds: findMentionedAppUserIds(body, mentionable),
+          mentionsEveryone: hasEveryoneMention(body),
           attachments: picker.attachments,
         },
       });
@@ -2677,6 +2712,7 @@ function EventComposerModal({
         body: {
           kind: "EVENT",
           mentionedAppUserIds: findMentionedAppUserIds(description, mentionable),
+          mentionsEveryone: hasEveryoneMention(description),
           attachments: [],
           event: {
             eventTitle,
@@ -2834,6 +2870,7 @@ function EventMeta({ icon, children }: { icon: ReactNode; children: ReactNode })
 function EventBlock({
   event,
   mentions,
+  mentionsEveryone,
   postId,
   groupId,
   onChanged,
@@ -2842,6 +2879,7 @@ function EventBlock({
 }: {
   event: NonNullable<GroupPostDto["event"]>;
   mentions: GroupPostDto["mentions"];
+  mentionsEveryone: boolean;
   postId: string;
   groupId: string;
   onChanged: () => Promise<unknown>;
@@ -2917,7 +2955,11 @@ function EventBlock({
           )}
           {event.description && (
             <p className="whitespace-pre-line break-words pt-1 text-sm leading-snug text-ink-muted">
-              <MentionText text={event.description} mentions={mentions} />
+              <MentionText
+                text={event.description}
+                mentions={mentions}
+                mentionsEveryone={mentionsEveryone}
+              />
             </p>
           )}
         </div>

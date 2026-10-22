@@ -1196,6 +1196,123 @@ describe.skipIf(!hasDb)("groups", () => {
     });
   });
 
+  describe("@everyone", () => {
+    // Three members besides the author: `member` follows the ALL default,
+    // `outsider` joins and sets MENTIONS, `parishAdmin` joins and sets NONE.
+    async function joinedByAll(): Promise<string> {
+      const groupId = await createGroup(creator, "PUBLIC");
+      for (const u of [member, outsider, parishAdmin]) {
+        await as(creator).call("POST", `/api/groups/${groupId}/members`, { personId: u.personId });
+      }
+      await as(outsider).call("PUT", `/api/groups/${groupId}/notification-preference`, {
+        notificationPref: "MENTIONS",
+      });
+      await as(parishAdmin).call("PUT", `/api/groups/${groupId}/notification-preference`, {
+        notificationPref: "NONE",
+      });
+      return groupId;
+    }
+    const count = async (u: CreatedUser, type: string) =>
+      (await as(u).call("GET", "/api/notifications")).body.notifications.filter(
+        (n: { type: string }) => n.type === type
+      ).length;
+
+    it("mentions every member but those who turned the group off, and never the author", async () => {
+      const groupId = await joinedByAll();
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Reminder @everyone",
+        mentionsEveryone: true,
+      });
+      expect(post.status).toBe(201);
+      expect(post.body.mentionsEveryone).toBe(true);
+
+      expect(await count(member, "GROUP_MENTION")).toBe(1);
+      expect(await count(member, "GROUP_POST")).toBe(0);
+      expect(await count(outsider, "GROUP_MENTION")).toBe(1);
+      expect(await count(parishAdmin, "GROUP_MENTION")).toBe(0);
+      expect(await count(creator, "GROUP_MENTION")).toBe(0);
+    });
+
+    it("sends one notification to a member also mentioned by name", async () => {
+      const groupId = await joinedByAll();
+      await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "@everyone and especially @Mo Member",
+        mentionedAppUserIds: [member.appUserId],
+        mentionsEveryone: true,
+      });
+      expect(await count(member, "GROUP_MENTION")).toBe(1);
+    });
+
+    it("is off by default", async () => {
+      const groupId = await joinedByAll();
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Hi" });
+      expect(post.body.mentionsEveryone).toBe(false);
+      expect(await count(member, "GROUP_POST")).toBe(1);
+      expect(await count(outsider, "GROUP_MENTION")).toBe(0);
+    });
+
+    it("notifies on being added in an edit, once, and can be taken back out", async () => {
+      const groupId = await joinedByAll();
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hi @Mo Member",
+        mentionedAppUserIds: [member.appUserId],
+      });
+      const url = `/api/groups/${groupId}/posts/${post.body.id}`;
+      expect(await count(outsider, "GROUP_MENTION")).toBe(0);
+
+      const add = await as(creator).call("PATCH", url, {
+        body: "Hi @Mo Member and @everyone",
+        mentionedAppUserIds: [member.appUserId],
+        mentionsEveryone: true,
+      });
+      expect(add.status).toBe(200);
+      expect(add.body.mentionsEveryone).toBe(true);
+      expect(await count(outsider, "GROUP_MENTION")).toBe(1);
+      // Already mentioned by name: no second ring.
+      expect(await count(member, "GROUP_MENTION")).toBe(1);
+      expect(await count(parishAdmin, "GROUP_MENTION")).toBe(0);
+
+      // Saying it again is not new.
+      await as(creator).call("PATCH", url, {
+        body: "Hi @Mo Member and @everyone!",
+        mentionsEveryone: true,
+      });
+      expect(await count(outsider, "GROUP_MENTION")).toBe(1);
+
+      // Omitted leaves it alone; false clears it.
+      const kept = await as(creator).call("PATCH", url, { body: "Hi @everyone" });
+      expect(kept.body.mentionsEveryone).toBe(true);
+      const cleared = await as(creator).call("PATCH", url, { body: "Hi", mentionsEveryone: false });
+      expect(cleared.body.mentionsEveryone).toBe(false);
+    });
+
+    it("retracts an unread new-post notification when an edit adds it", async () => {
+      const groupId = await joinedByAll();
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Hi" });
+      expect(await count(member, "GROUP_POST")).toBe(1);
+
+      await as(creator).call("PATCH", `/api/groups/${groupId}/posts/${post.body.id}`, {
+        body: "Hi @everyone",
+        mentionsEveryone: true,
+      });
+      expect(await count(member, "GROUP_POST")).toBe(0);
+      expect(await count(member, "GROUP_MENTION")).toBe(1);
+    });
+
+    it("is not reported on a deleted post", async () => {
+      const groupId = await joinedByAll();
+      const post = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hi @everyone",
+        mentionsEveryone: true,
+      });
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${post.body.id}`);
+      const feed = await as(creator).call("GET", `/api/groups/${groupId}/posts`);
+      const found = feed.body.posts.find((p: { id: string }) => p.id === post.body.id);
+      expect(found.deletedAt).not.toBeNull();
+      expect(found.mentionsEveryone).toBe(false);
+    });
+  });
+
   describe("people ids and editing mentions", () => {
     async function joined(): Promise<string> {
       const groupId = await createGroup(creator, "PUBLIC");
