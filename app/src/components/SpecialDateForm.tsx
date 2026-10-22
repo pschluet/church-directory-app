@@ -8,7 +8,7 @@ import {
 import { api } from "../lib/api";
 import { MONTH_NAMES, showYearCountLabel } from "../lib/format";
 import { PersonPicker, type PickedPerson } from "./PersonPicker";
-import { Button, Field, inputClass } from "./ui";
+import { Button, Field, Select, inputClass } from "./ui";
 
 /**
  * Adding or editing a special date.
@@ -109,11 +109,9 @@ export function SpecialDateForm({
       }}
     >
       <Field label="Occasion" hint={selectedType.help}>
-        <select
-          className={inputClass}
+        <Select
           value={type}
-          onChange={(event) => {
-            const next = event.target.value as SpecialDateType;
+          onChange={(next) => {
             setType(next);
             // A name day is a day only, so a year would be rejected.
             if (next === "FEAST_DAY") {
@@ -121,42 +119,28 @@ export function SpecialDateForm({
               setShowYearCount(false);
             }
           }}
-        >
-          {TYPE_OPTIONS.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
+          options={TYPE_OPTIONS}
+        />
       </Field>
 
       <div className="grid gap-4 sm:grid-cols-3">
         <Field label="Month">
-          <select
-            className={inputClass}
-            value={month}
-            onChange={(event) => setMonth(Number(event.target.value))}
-          >
-            {MONTH_NAMES.map((name, index) => (
-              <option key={name} value={index + 1}>
-                {name}
-              </option>
-            ))}
-          </select>
+          <Select
+            value={String(month)}
+            onChange={(value) => setMonth(Number(value))}
+            options={MONTH_NAMES.map((name, index) => ({ value: String(index + 1), label: name }))}
+          />
         </Field>
 
         <Field label="Day">
-          <select
-            className={inputClass}
-            value={Math.min(day, maxDay)}
-            onChange={(event) => setDay(Number(event.target.value))}
-          >
-            {Array.from({ length: maxDay }, (_, i) => i + 1).map((value) => (
-              <option key={value} value={value}>
-                {value}
-              </option>
-            ))}
-          </select>
+          <Select
+            value={String(Math.min(day, maxDay))}
+            onChange={(value) => setDay(Number(value))}
+            options={Array.from({ length: maxDay }, (_, i) => ({
+              value: String(i + 1),
+              label: String(i + 1),
+            }))}
+          />
         </Field>
 
         {type !== "FEAST_DAY" && (

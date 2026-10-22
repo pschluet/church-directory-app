@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { PersonDto, PersonSummaryDto } from "@shared";
 import { PersonForm } from "../src/components/PersonForm";
-import { renderWithProviders } from "./utils";
+import { renderWithProviders, chooseOption } from "./utils";
 
 const PERSON_ID = "11111111-1111-4111-8111-111111111111";
 const PARENT_ID = "22222222-2222-4222-8222-222222222222";
@@ -163,7 +163,7 @@ describe("PersonForm", () => {
 
   it("shows the picker set to their current family when the list is supplied", async () => {
     renderForm({ families: FAMILIES });
-    expect(screen.getByLabelText(/^family/i)).toHaveValue(HADDAD_ID);
+    expect(screen.getByLabelText(/^family/i)).toHaveTextContent("Haddad");
   });
 
   it("sends the family unchanged when it was not touched", async () => {
@@ -175,7 +175,7 @@ describe("PersonForm", () => {
 
   it("moves someone to another family", async () => {
     renderForm({ families: FAMILIES });
-    await userEvent.selectOptions(screen.getByLabelText(/^family/i), NASSIF_ID);
+    await chooseOption(screen.getByLabelText(/^family/i), NASSIF_ID);
     await save();
 
     await waitFor(() => expect(api).toHaveBeenCalled());
@@ -184,7 +184,7 @@ describe("PersonForm", () => {
 
   it("sends null when they are taken out of every family", async () => {
     renderForm({ families: FAMILIES });
-    await userEvent.selectOptions(screen.getByLabelText(/^family/i), "");
+    await chooseOption(screen.getByLabelText(/^family/i), "");
     await save();
 
     await waitFor(() => expect(api).toHaveBeenCalled());
@@ -199,7 +199,7 @@ describe("PersonForm", () => {
       families: FAMILIES,
     });
 
-    await userEvent.selectOptions(screen.getByLabelText(/^family/i), NASSIF_ID);
+    await chooseOption(screen.getByLabelText(/^family/i), NASSIF_ID);
 
     // The toggles go read-only rather than offering sources from the old family.
     expect(screen.getByLabelText(/same last name as/i)).toBeDisabled();

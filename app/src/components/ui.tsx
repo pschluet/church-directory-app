@@ -595,6 +595,346 @@ export function MenuItem({
   );
 }
 
+export interface SelectOption<T extends string = string> {
+  value: T;
+  label: string;
+}
+
+/**
+ * A dropdown, in place of a native `<select>`.
+ *
+ * The native control's open state is whatever the OS draws -- a grey system
+ * list on a desktop, a full-screen wheel on a phone -- and none of it can be
+ * styled, so it was the one part of every form that did not look like this app.
+ * This draws its own list in the same panel MenuButton and LookupPicker use.
+ *
+ * It follows the WAI-ARIA "select-only combobox" pattern: focus stays on the
+ * button, the arrow keys move a highlight through the list and
+ * `aria-activedescendant` points at it, and typing a letter jumps to the first
+ * option that starts with it, as a native select does.
+ *
+ * The list is portalled and fixed to the button, because most of these live in
+ * a Modal whose own scroll area would otherwise clip it. For the same reason it
+ * closes if anything outside it scrolls, since a fixed panel would not follow.
+ */
+export function Select<T extends string>({
+  value,
+  onChange,
+  options,
+  placeholder,
+  disabled = false,
+  required = false,
+  compact = false,
+  className = "",
+  "aria-label": ariaLabel,
+}: {
+  value: T;
+  onChange: (value: T) => void;
+  options: SelectOption<T>[];
+  /** Shown, muted, while the value matches no option -- "Choose a church…". */
+  placeholder?: string;
+  disabled?: boolean;
+  /** Blocks the form from submitting while the value is empty, as on a select. */
+  required?: boolean;
+  /** Sized to its content and a row of text, for a control sitting inline. */
+  compact?: boolean;
+  className?: string;
+  "aria-label"?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const [fixedAt, setFixedAt] = useState<{
+    top?: number;
+    bottom?: number;
+    left: number;
+    minWidth: number;
+  } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const typeahead = useRef({ text: "", at: 0 });
+  const listId = useId();
+  const optionId = (index: number) => `${listId}-option-${index}`;
+
+  const selectedIndex = options.findIndex((option) => option.value === value);
+  const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
+
+  function show(index = selectedIndex >= 0 ? selectedIndex : 0): void {
+    if (disabled || options.length === 0) return;
+    setActiveIndex(index);
+    setOpen(true);
+  }
+
+  function close(): void {
+    setOpen(false);
+    setFixedAt(null);
+  }
+
+  function choose(index: number): void {
+    const option = options[index];
+    close();
+    buttonRef.current?.focus();
+    if (option && option.value !== value) onChange(option.value);
+  }
+
+  /*
+   * Placed below the button unless there is more room above, as MenuButton is.
+   * The side is chosen once, on opening, so the list does not jump from one to
+   * the other while it follows the button.
+   */
+  const flipRef = useRef(false);
+  function place(choose: boolean): void {
+    const button = buttonRef.current;
+    const list = listRef.current;
+    if (!button || !list) return;
+    const box = button.getBoundingClientRect();
+    const listBox = list.getBoundingClientRect();
+    const GAP = 4;
+    if (choose) {
+      const roomBelow = window.innerHeight - box.bottom;
+      flipRef.current = roomBelow < listBox.height + GAP && box.top > roomBelow;
+    }
+    const listWidth = Math.max(box.width, listBox.width);
+    const left = Math.max(8, Math.min(box.left, window.innerWidth - listWidth - 8));
+    setFixedAt(
+      flipRef.current
+        ? { bottom: window.innerHeight - box.top + GAP, left, minWidth: box.width }
+        : { top: box.bottom + GAP, left, minWidth: box.width }
+    );
+  }
+
+  useLayoutEffect(() => {
+    if (open) place(true);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (buttonRef.current?.contains(target) || listRef.current?.contains(target)) return;
+      close();
+    };
+    /*
+     * A fixed list does not move with the page, so it follows the button
+     * instead. Closing on scroll was the alternative, and the wrong one: a
+     * scroll still settling as the list opens -- momentum on a phone, or a
+     * dialog bringing the focused button into view -- shut it again at once.
+     */
+    let frame = 0;
+    const onScroll = (event: Event) => {
+      if (listRef.current?.contains(event.target as Node)) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const box = buttonRef.current?.getBoundingClientRect();
+        // Gone off screen entirely: there is nothing left to anchor to.
+        if (!box || box.bottom < 0 || box.top > window.innerHeight) close();
+        else place(false);
+      });
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", close);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [open]);
+
+  /*
+   * Keeps the highlighted option in view as the arrow keys move it. By hand
+   * rather than with scrollIntoView, which would also scroll the page -- and on
+   * the first render the list is still parked off screen, waiting to be placed.
+   */
+  useEffect(() => {
+    const list = listRef.current;
+    const option = open && activeIndex >= 0 ? document.getElementById(optionId(activeIndex)) : null;
+    if (!list || !option) return;
+    if (option.offsetTop < list.scrollTop) list.scrollTop = option.offsetTop;
+    else if (option.offsetTop + option.offsetHeight > list.scrollTop + list.clientHeight)
+      list.scrollTop = option.offsetTop + option.offsetHeight - list.clientHeight;
+  });
+
+  function onKeyDown(event: React.KeyboardEvent): void {
+    if (disabled) return;
+    const last = options.length - 1;
+
+    if (!open) {
+      if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) {
+        event.preventDefault();
+        show();
+      }
+      return;
+    }
+
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        setActiveIndex((index) => Math.min(last, index + 1));
+        return;
+      case "ArrowUp":
+        event.preventDefault();
+        setActiveIndex((index) => Math.max(0, index - 1));
+        return;
+      case "Home":
+        event.preventDefault();
+        setActiveIndex(0);
+        return;
+      case "End":
+        event.preventDefault();
+        setActiveIndex(last);
+        return;
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        choose(activeIndex);
+        return;
+      case "Escape":
+        // Stopped here so a Modal underneath does not close along with the list.
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+        return;
+      case "Tab":
+        close();
+        return;
+    }
+
+    if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
+      // Letters typed within half a second of each other build one search, so
+      // "ma" reaches March past May, as on a native select.
+      const now = Date.now();
+      const text =
+        now - typeahead.current.at < 500 ? typeahead.current.text + event.key : event.key;
+      typeahead.current = { text: text.toLowerCase(), at: now };
+      const match = options.findIndex((option) =>
+        option.label.toLowerCase().startsWith(typeahead.current.text)
+      );
+      if (match >= 0) setActiveIndex(match);
+    }
+  }
+
+  const sizing = compact
+    ? "tap-target rounded-md border border-line bg-surface pl-3 pr-2 py-1"
+    : `${inputClass} pr-2`;
+
+  return (
+    <span className={`relative min-w-0 ${compact ? "inline-flex" : "flex"} ${className}`}>
+      <button
+        ref={buttonRef}
+        type="button"
+        role="combobox"
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listId}
+        aria-activedescendant={open && activeIndex >= 0 ? optionId(activeIndex) : undefined}
+        aria-required={required || undefined}
+        disabled={disabled}
+        onClick={() => (open ? close() : show())}
+        onKeyDown={onKeyDown}
+        className={`${sizing} flex w-full min-w-0 items-center justify-between gap-2 text-left transition hover:border-accent disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-line ${
+          open ? "border-accent" : ""
+        }`}
+      >
+        {/*
+         * Every label stacked in one grid cell, all but the current one hidden,
+         * so a compact control is as wide as its longest option -- as a native
+         * select is -- and does not change width as the choice changes. Still
+         * free to shrink and truncate when there is not that much room.
+         */}
+        <span className="grid min-w-0 grid-cols-[minmax(0,max-content)]">
+          <span className={`col-start-1 row-start-1 truncate ${selected ? "" : "text-ink-muted"}`}>
+            {selected?.label ?? placeholder ?? "\u00a0"}
+          </span>
+          {compact &&
+            [placeholder, ...options.map((option) => option.label)].map((label, index) => (
+              <span
+                key={index}
+                aria-hidden="true"
+                className="invisible col-start-1 row-start-1 h-0 truncate"
+              >
+                {label}
+              </span>
+            ))}
+        </span>
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 20 20"
+          className={`h-5 w-5 shrink-0 fill-current text-ink-muted transition-transform duration-150 motion-reduce:transition-none ${
+            open ? "rotate-180 text-accent" : ""
+          }`}
+        >
+          <path d="M5.3 7.3a1 1 0 0 1 1.4 0L10 10.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4Z" />
+        </svg>
+      </button>
+
+      {required && (
+        // Something for the browser's constraint validation to hold on to: a
+        // button takes no part in it. Focus is handed straight to the button,
+        // which is where the browser sends it when it reports this as empty.
+        <input
+          tabIndex={-1}
+          aria-hidden="true"
+          required
+          value={value}
+          onChange={() => {}}
+          onFocus={() => buttonRef.current?.focus()}
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-px w-full opacity-0"
+        />
+      )}
+
+      {open &&
+        createPortal(
+          <div
+            ref={listRef}
+            id={listId}
+            role="listbox"
+            aria-label={ariaLabel}
+            style={{
+              position: "fixed",
+              ...(fixedAt ?? { top: -9999, left: 0, minWidth: 0 }),
+            }}
+            className="z-[60] max-h-72 max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-md border border-line bg-surface py-1 text-left shadow-lg ring-1 ring-ink/5 motion-safe:animate-[select-in_120ms_ease-out]"
+          >
+            {options.map((option, index) => {
+              const isSelected = index === selectedIndex;
+              return (
+                // As in LookupPicker: options are not focusable, focus stays on
+                // the button and aria-activedescendant points here.
+                // biome-ignore lint/a11y/useFocusableInteractive: see above
+                <div
+                  key={option.value}
+                  id={optionId(index)}
+                  role="option"
+                  aria-selected={isSelected}
+                  data-value={option.value}
+                  // mousedown would move focus off the button before the click.
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => choose(index)}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  className={`tap-target flex cursor-pointer items-center gap-2 px-3 py-2 ${
+                    index === activeIndex ? "bg-surface-muted" : ""
+                  } ${isSelected ? "font-bold text-primary" : "text-ink"}`}
+                >
+                  <span className="flex-1 whitespace-nowrap">{option.label}</span>
+                  <svg
+                    aria-hidden="true"
+                    viewBox="0 0 20 20"
+                    className={`h-4 w-4 shrink-0 fill-current ${isSelected ? "" : "invisible"}`}
+                  >
+                    <path d="M16.7 5.3a1 1 0 0 1 0 1.4l-8 8a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.4L8 12.6l7.3-7.3a1 1 0 0 1 1.4 0Z" />
+                  </svg>
+                </div>
+              );
+            })}
+          </div>,
+          document.body
+        )}
+    </span>
+  );
+}
+
 export function Modal({
   title,
   onClose,

@@ -288,3 +288,11 @@
   overflow-x: hidden !important;
   overflow-y: auto !important;
 }
+
+/* The dropdown list in Select, dropping into place from its button. */
+@keyframes select-in {
+  from {
+    opacity: 0;
+    translate: 0 -4px;
+  }
+}

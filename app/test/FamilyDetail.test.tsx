@@ -2,7 +2,7 @@ import { describe, expect, it, vi, beforeEach } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
-import { renderWithProviders } from "./utils";
+import { renderWithProviders, chooseOption } from "./utils";
 import type { FamilyDto, FamilyMemberDto, MeDto, UpcomingDatesDto } from "@shared";
 import { FamilyDetail } from "../src/pages/FamilyDetail";
 
@@ -400,7 +400,7 @@ describe("FamilyDetail", () => {
 
       await openFamilyMenu();
       await userEvent.click(screen.getByRole("menuitem", { name: /add an existing person/i }));
-      await userEvent.selectOptions(await screen.findByRole("combobox"), "person-9");
+      await chooseOption(await screen.findByRole("combobox"), "person-9");
       await userEvent.click(screen.getByRole("button", { name: "Add" }));
 
       await waitFor(() =>

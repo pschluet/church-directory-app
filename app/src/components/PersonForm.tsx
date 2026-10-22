@@ -12,7 +12,7 @@ import {
 import { api, ApiError } from "../lib/api";
 import { InheritToggle, inheritanceCandidates } from "./InheritToggle";
 import { AddressAutocomplete } from "./AddressAutocomplete";
-import { Button, Field, inputClass } from "./ui";
+import { Button, Field, Select, inputClass } from "./ui";
 import { SuggestInput } from "./SuggestInput";
 import { useMe } from "../context/MeContext";
 import { qk } from "../lib/queryKeys";
@@ -313,18 +313,14 @@ export function PersonForm({
               : "Moving someone clears the details they share with their current family, and the details their relatives share from them."
           }
         >
-          <select
-            className={inputClass}
+          <Select
             value={form.familyId}
-            onChange={(e) => set("familyId", e.target.value)}
-          >
-            <option value="">No family</option>
-            {families.map((family) => (
-              <option key={family.id} value={family.id}>
-                {family.name}
-              </option>
-            ))}
-          </select>
+            onChange={(value) => set("familyId", value)}
+            options={[
+              { value: "", label: "No family" },
+              ...families.map((family) => ({ value: family.id, label: family.name })),
+            ]}
+          />
         </Field>
       )}
 

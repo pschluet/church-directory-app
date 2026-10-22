@@ -22,6 +22,7 @@ import {
   MenuItem,
   Modal,
   PageHeading,
+  Select,
   Spinner,
   inputClass,
 } from "../components/ui";
@@ -630,18 +631,15 @@ function AddExistingMemberModal({
             {familyName} by mistake.
           </p>
           <Field label="Person">
-            <select
-              className={inputClass}
+            <Select
               value={personId}
-              onChange={(event) => setPersonId(event.target.value)}
-            >
-              <option value="">Choose someone</option>
-              {candidates.map((candidate) => (
-                <option key={candidate.id} value={candidate.id}>
-                  {candidate.name}
-                </option>
-              ))}
-            </select>
+              onChange={setPersonId}
+              placeholder="Choose someone"
+              options={candidates.map((candidate) => ({
+                value: candidate.id,
+                label: candidate.name,
+              }))}
+            />
           </Field>
           {errorNotice}
           {buttons("Add")}

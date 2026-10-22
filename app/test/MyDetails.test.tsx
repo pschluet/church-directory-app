@@ -4,6 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { MemoryRouter, Route, Routes } from "react-router";
 import type { MeDto } from "@shared";
 import { MyDetails } from "../src/pages/MyDetails";
+import { chooseOption } from "./utils";
 
 const api = vi.fn();
 vi.mock("../src/lib/api", () => ({
@@ -132,7 +133,7 @@ describe("MyDetails", () => {
       api.mockResolvedValue({});
       renderPage();
 
-      await userEvent.selectOptions(screen.getByLabelText(/church/i), "org-2");
+      await chooseOption(screen.getByLabelText(/church/i), "org-2");
       await userEvent.type(screen.getByLabelText(/first name/i), "Paul");
       await userEvent.type(screen.getByLabelText(/last name/i), "Schlueter");
       await userEvent.click(screen.getByRole("button", { name: /join this church/i }));

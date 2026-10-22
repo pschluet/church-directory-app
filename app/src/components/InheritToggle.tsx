@@ -1,4 +1,5 @@
 import type { InheritableAttribute, PersonSummaryDto } from "@shared";
+import { Select } from "./ui";
 
 /**
  * "A Person that is a member of a family can choose to inherit the following
@@ -46,20 +47,18 @@ export function InheritToggle({
         <span className="text-ink-muted">Same {label} as</span>
       </label>
 
-      <select
+      <Select
+        compact
         aria-label={`Whose ${label} to use`}
         value={sourceId ?? ""}
         disabled={!checked || disabled}
-        onChange={(event) => onChange(event.target.value || null)}
-        className="tap-target rounded-md border border-line bg-surface px-2 py-1 disabled:opacity-50"
-      >
-        {!checked && <option value="">choose…</option>}
-        {candidates.map((candidate) => (
-          <option key={candidate.id} value={candidate.id}>
-            {candidate.firstName} {candidate.lastName ?? ""}
-          </option>
-        ))}
-      </select>
+        onChange={(value) => onChange(value || null)}
+        placeholder="choose…"
+        options={candidates.map((candidate) => ({
+          value: candidate.id,
+          label: `${candidate.firstName} ${candidate.lastName ?? ""}`.trim(),
+        }))}
+      />
     </div>
   );
 }

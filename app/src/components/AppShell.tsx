@@ -9,6 +9,7 @@ import { NotificationBell } from "./NotificationBell";
 import { SettingsLink } from "./SettingsLink";
 import { usePushRegistration } from "./usePushRegistration";
 import { useRealtimeRefresh } from "./useRealtimeRefresh";
+import { Select } from "./ui";
 
 /**
  * The frame every page sits in, following allsaintsorthodox.org's structure:
@@ -297,19 +298,19 @@ export function AppShell() {
 
             {isSuperAdmin && me && me.availableOrganizations.length > 0 && (
               <div className="mt-3 border-t border-line pt-3 md:mt-2">
+                {/* biome-ignore lint/a11y/noLabelWithoutControl: the control is Select's button */}
                 <label className="flex items-center gap-2 text-sm text-ink-muted">
                   <span className="font-bold">Viewing</span>
-                  <select
+                  <Select
+                    compact
+                    className="flex-1 md:flex-none"
                     value={me.organization?.id ?? ""}
-                    onChange={(event) => void switchOrganization(event.target.value)}
-                    className="tap-target flex-1 rounded-md border border-line bg-surface px-2 py-1 md:flex-none"
-                  >
-                    {me.availableOrganizations.map((org) => (
-                      <option key={org.id} value={org.id}>
-                        {org.name}
-                      </option>
-                    ))}
-                  </select>
+                    onChange={(value) => void switchOrganization(value)}
+                    options={me.availableOrganizations.map((org) => ({
+                      value: org.id,
+                      label: org.name,
+                    }))}
+                  />
                 </label>
               </div>
             )}

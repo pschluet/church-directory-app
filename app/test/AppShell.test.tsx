@@ -6,7 +6,7 @@ import { NavStackProvider } from "../src/components/NavStack";
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { MeDto, Role } from "@shared";
 import { AppShell } from "../src/components/AppShell";
-import { testQueryClient } from "./utils";
+import { testQueryClient, chooseOption } from "./utils";
 
 /*
  * The contexts are stubbed rather than exercised: this file is about the shell's
@@ -180,7 +180,7 @@ describe("AppShell navigation", () => {
     expect(screen.getByRole("link", { name: "Churches" })).toBeInTheDocument();
 
     const select = screen.getByLabelText(/viewing/i);
-    await userEvent.selectOptions(select, "org-2");
+    await chooseOption(select, "org-2");
     expect(switchOrganization).toHaveBeenCalledWith("org-2");
   });
 

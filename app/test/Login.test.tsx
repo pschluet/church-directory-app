@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Login } from "../src/pages/Login";
-import { renderWithProviders } from "./utils";
+import { renderWithProviders, chooseOption, openOptions } from "./utils";
 
 const apiMock = vi.fn();
 vi.mock("../src/lib/api", () => ({
@@ -44,6 +44,7 @@ describe("Login: request to be added", () => {
 
   it("opens a dialog listing the churches", async () => {
     await open();
+    await openOptions(await screen.findByRole("combobox", { name: "Church" }));
     expect(await screen.findByRole("option", { name: "All Saints" })).toBeInTheDocument();
     expect(screen.getByRole("option", { name: "St. George" })).toBeInTheDocument();
     expect(apiMock).toHaveBeenCalledWith("/directory-requests/churches", {
@@ -62,7 +63,7 @@ describe("Login: request to be added", () => {
 
   it("will not send until every field is filled", async () => {
     await open();
-    await screen.findByRole("option", { name: "All Saints" });
+    await screen.findByRole("combobox", { name: "Church" });
     const send = screen.getByRole("button", { name: "Send request" });
     expect(send).toBeDisabled();
 
@@ -70,17 +71,17 @@ describe("Login: request to be added", () => {
     await userEvent.type(screen.getByLabelText("Last name"), "Lopez");
     await userEvent.type(screen.getAllByLabelText("Email address").at(-1)!, "maria@example.com");
     expect(send).toBeDisabled();
-    await userEvent.selectOptions(screen.getByLabelText("Church"), "org-2");
+    await chooseOption(screen.getByLabelText("Church"), "org-2");
     expect(send).toBeEnabled();
   });
 
   it("sends the request signed out and says what happens next", async () => {
     await open();
-    await screen.findByRole("option", { name: "All Saints" });
+    await screen.findByRole("combobox", { name: "Church" });
     await userEvent.type(screen.getByLabelText("First name"), "Maria");
     await userEvent.type(screen.getByLabelText("Last name"), "Lopez");
     await userEvent.type(screen.getAllByLabelText("Email address").at(-1)!, "maria@example.com");
-    await userEvent.selectOptions(screen.getByLabelText("Church"), "org-1");
+    await chooseOption(screen.getByLabelText("Church"), "org-1");
     await userEvent.click(screen.getByRole("button", { name: "Send request" }));
 
     await waitFor(() =>
