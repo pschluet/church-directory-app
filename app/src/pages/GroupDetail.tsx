@@ -241,67 +241,74 @@ export function GroupDetail() {
   return (
     <>
       <header className="mb-2">
-        <div className="flex items-start gap-3">
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h1 className="min-w-0 truncate text-2xl font-bold text-ink md:text-3xl">
-                {postId ? "Thread" : group.title}
-              </h1>
-            </div>
-            <p className="mt-0.5 text-ink-muted">
-              {postId ? (
-                // The way out of the thread, so it reads as one: a back chevron
-                // and the group's name in the accent colour.
-                <Link
-                  to={`/groups/${groupId}`}
-                  viewTransition
-                  // Reached from the feed: leaving is a back, not a second push, so
-                  // the next Back goes to where you were before the group rather
-                  // than bouncing through every feed-to-thread switch. Opened
-                  // directly (a link, a reload with no feed behind it) there is
-                  // nothing to pop, so it replaces the thread instead.
-                  replace
-                  onClick={(event) => {
-                    if (canGoBack && (location.state as { fromFeed?: boolean } | null)?.fromFeed) {
-                      event.preventDefault();
-                      goBack();
-                    }
-                  }}
-                  className="-ml-1 inline-flex items-center gap-0.5 rounded-md px-1 font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
-                >
-                  <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
-                    <path d="M12.7 4.3a1 1 0 0 1 0 1.4L8.4 10l4.3 4.3a1 1 0 0 1-1.4 1.4l-5-5a1 1 0 0 1 0-1.4l5-5a1 1 0 0 1 1.4 0Z" />
-                  </svg>
-                  {group.title}
-                </Link>
-              ) : (
-                // Styled as a link, because it is the way into group settings
-                // (members, notifications, leaving) and plain muted text hid that.
-                <button
-                  type="button"
-                  onClick={() => setShowMembers(true)}
-                  className="inline-flex items-center gap-0.5 font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
-                >
-                  {group.memberCount} {group.memberCount === 1 ? "member" : "members"} ·{" "}
-                  {groupVisibilityLabel(group.visibility)}
-                  <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
-                    <path d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" />
-                  </svg>
-                </button>
-              )}
-            </p>
-          </div>
+        <div className="flex items-center gap-3">
+          <h1 className="min-w-0 flex-1 truncate text-2xl font-bold text-ink md:text-3xl">
+            {postId ? "Thread" : group.title}
+          </h1>
+
+          {/* Three small icons at the right of the title row, not a row of text
+              tabs: the title line is then the only chrome above the conversation. */}
+          {!postId && <SectionIcons tab={tab} onChange={setTab} />}
+        </div>
+        {/* The join action shares this line rather than the title row, where it
+            squeezed the title and wrapped the settings link. */}
+        <div className="mt-0.5 flex items-center justify-between gap-2 text-ink-muted">
+          {postId ? (
+            // The way out of the thread, so it reads as one: a back chevron
+            // and the group's name in the accent colour.
+            <Link
+              to={`/groups/${groupId}`}
+              viewTransition
+              // Reached from the feed: leaving is a back, not a second push, so
+              // the next Back goes to where you were before the group rather
+              // than bouncing through every feed-to-thread switch. Opened
+              // directly (a link, a reload with no feed behind it) there is
+              // nothing to pop, so it replaces the thread instead.
+              replace
+              onClick={(event) => {
+                if (canGoBack && (location.state as { fromFeed?: boolean } | null)?.fromFeed) {
+                  event.preventDefault();
+                  goBack();
+                }
+              }}
+              className="-ml-1 inline-flex min-w-0 items-center gap-0.5 rounded-md px-1 font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
+            >
+              <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 shrink-0 fill-current">
+                <path d="M12.7 4.3a1 1 0 0 1 0 1.4L8.4 10l4.3 4.3a1 1 0 0 1-1.4 1.4l-5-5a1 1 0 0 1 0-1.4l5-5a1 1 0 0 1 1.4 0Z" />
+              </svg>
+              <span className="truncate">{group.title}</span>
+            </Link>
+          ) : (
+            // Styled as a link, because it is the way into group settings
+            // (members, notifications, leaving) and plain muted text hid that.
+            <button
+              type="button"
+              onClick={() => setShowMembers(true)}
+              className="inline-flex items-center gap-0.5 whitespace-nowrap font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
+            >
+              {group.memberCount} {group.memberCount === 1 ? "member" : "members"} ·{" "}
+              {groupVisibilityLabel(group.visibility)}
+              <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+                <path d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" />
+              </svg>
+            </button>
+          )}
 
           {/* Only for someone not in the group yet; Leave lives in group settings. */}
           {!group.myRole && (
-            <div className="flex flex-wrap items-center justify-end gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               {group.visibility === "PUBLIC" && (
-                <Button disabled={joinMutation.isPending} onClick={() => joinMutation.mutate()}>
+                <Button
+                  className="px-3 py-1 text-sm"
+                  disabled={joinMutation.isPending}
+                  onClick={() => joinMutation.mutate()}
+                >
                   {joinMutation.isPending ? "Joining…" : "Join"}
                 </Button>
               )}
               {group.canRequestToJoin && !group.pendingJoinRequestId && (
                 <Button
+                  className="px-3 py-1 text-sm"
                   disabled={requestToJoinMutation.isPending}
                   onClick={() => requestToJoinMutation.mutate()}
                 >
@@ -311,10 +318,6 @@ export function GroupDetail() {
               {group.pendingJoinRequestId && <Badge tone="accent">Waiting for approval</Badge>}
             </div>
           )}
-
-          {/* Three small icons at the right of the title row, not a row of text
-              tabs: the title line is then the only chrome above the conversation. */}
-          {!postId && <SectionIcons tab={tab} onChange={setTab} />}
         </div>
       </header>
 
@@ -1981,7 +1984,9 @@ function MentionTextarea({
     const el = textareaRef.current;
     if (!autoGrow || !el) return;
     el.style.height = "auto";
-    el.style.height = `${el.scrollHeight}px`;
+    // Empty, the scroll height is the placeholder's, which wraps on a long
+    // group name; the rows height keeps the empty box one line.
+    if (value !== "") el.style.height = `${el.scrollHeight}px`;
   }, [autoGrow, value]);
 
   useEffect(() => {
@@ -2081,7 +2086,7 @@ function MentionTextarea({
         aria-label={ariaLabel}
         className={
           bare
-            ? "block max-h-40 w-full resize-none overflow-y-auto bg-transparent px-1 py-2.5 text-ink outline-none placeholder:text-ink-muted"
+            ? "block max-h-40 w-full resize-none overflow-y-auto bg-transparent px-1 py-2.5 text-ink outline-none placeholder:text-transparent"
             : `${inputClass} ${minHeightClass}`
         }
         value={value}
@@ -2092,6 +2097,17 @@ function MentionTextarea({
         onSelect={handleSelect}
         onBlur={() => window.setTimeout(() => setQuery(null), 150)}
       />
+      {/* A textarea's own placeholder wraps rather than ellipsising, so in the
+          composer it is drawn here on one line instead. The real one stays,
+          transparent, for screen readers. */}
+      {bare && value === "" && (
+        <span
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 top-0 truncate px-1 py-2.5 text-ink-muted"
+        >
+          {placeholder}
+        </span>
+      )}
       {query && caret && matches.length > 0 && (
         <ul
           className="absolute z-20 max-h-48 w-56 overflow-y-auto rounded-md border border-line bg-surface py-1 shadow-lg"
