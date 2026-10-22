@@ -79,6 +79,7 @@ import {
   MenuButton,
   MenuItem,
   Modal,
+  Select,
   Spinner,
   inputClass,
   useNow,
@@ -3574,25 +3575,25 @@ function NotificationPrefPanel({
   return (
     <div className="border-t border-line pt-4">
       <p className="mb-1 font-bold text-ink">Your notifications for this group</p>
-      <select
+      <Select
         aria-label="Your notifications for this group"
-        className={inputClass}
         value={notificationPref ?? ""}
-        onChange={(event) => {
-          const pref = (event.target.value || null) as GroupNotificationPref | null;
+        onChange={(value) => {
+          const pref = (value || null) as GroupNotificationPref | null;
           setNotificationPref(pref);
           savePref.mutate(pref);
         }}
-      >
-        <option value="">
-          Use my default ({GROUP_NOTIFICATION_PREF_LABELS[group.notificationPrefDefault]})
-        </option>
-        {GROUP_NOTIFICATION_PREFS.map((pref) => (
-          <option key={pref} value={pref}>
-            {GROUP_NOTIFICATION_PREF_LABELS[pref]}
-          </option>
-        ))}
-      </select>
+        options={[
+          {
+            value: "",
+            label: `Use my default (${GROUP_NOTIFICATION_PREF_LABELS[group.notificationPrefDefault]})`,
+          },
+          ...GROUP_NOTIFICATION_PREFS.map((pref) => ({
+            value: pref,
+            label: GROUP_NOTIFICATION_PREF_LABELS[pref],
+          })),
+        ]}
+      />
       <p className="mt-1 text-sm text-ink-muted">
         Your default for every group is in{" "}
         <Link to="/settings" className="font-bold text-accent hover:underline">

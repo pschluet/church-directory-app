@@ -19,7 +19,15 @@ import { useMe } from "../context/MeContext";
 import { MAPS_PROVIDERS, forgetPreferredProvider, preferredProvider } from "../lib/maps";
 import { AddressAutocomplete } from "../components/AddressAutocomplete";
 import { Link } from "../components/nav";
-import { Button, ErrorNotice, Field, PageHeading, Spinner, inputClass } from "../components/ui";
+import {
+  Button,
+  ErrorNotice,
+  Field,
+  PageHeading,
+  Select,
+  Spinner,
+  inputClass,
+} from "../components/ui";
 
 /**
  * Notification settings.
@@ -270,24 +278,19 @@ export function Settings() {
           <h3 className="mb-2 text-sm font-bold uppercase tracking-wide text-ink-muted">
             Group messages
           </h3>
+          {/* biome-ignore lint/a11y/noLabelWithoutControl: the control is Select's button */}
           <label className="block">
             <span className="block font-bold text-ink">By default, tell me about</span>
-            <select
-              className={`${inputClass} mt-1 sm:max-w-xs`}
+            <Select
+              className="mt-1 sm:max-w-xs"
               value={groupNotificationPref}
               disabled={saving}
-              onChange={(event) =>
-                savePreferences.mutate({
-                  groupNotificationPref: event.target.value as GroupNotificationPref,
-                })
-              }
-            >
-              {GROUP_NOTIFICATION_PREFS.map((pref) => (
-                <option key={pref} value={pref}>
-                  {GROUP_NOTIFICATION_PREF_LABELS[pref]}
-                </option>
-              ))}
-            </select>
+              onChange={(pref) => savePreferences.mutate({ groupNotificationPref: pref })}
+              options={GROUP_NOTIFICATION_PREFS.map((pref) => ({
+                value: pref,
+                label: GROUP_NOTIFICATION_PREF_LABELS[pref],
+              }))}
+            />
             <span className="mt-1 block text-sm text-ink-muted">
               Applies to every group. To treat one group differently, change it from that group's
               member list.
@@ -318,24 +321,19 @@ export function Settings() {
                       </span>
                     )}
                     <span className="flex items-center gap-2">
-                      <select
+                      <Select
+                        compact
                         aria-label={`Notifications for ${exception.groupTitle}`}
-                        className={`${inputClass} w-auto`}
                         value={exception.notificationPref}
                         disabled={saving}
-                        onChange={(event) =>
-                          saveException.mutate({
-                            groupId: exception.groupId,
-                            pref: event.target.value as GroupNotificationPref,
-                          })
+                        onChange={(pref) =>
+                          saveException.mutate({ groupId: exception.groupId, pref })
                         }
-                      >
-                        {GROUP_NOTIFICATION_PREFS.map((pref) => (
-                          <option key={pref} value={pref}>
-                            {GROUP_NOTIFICATION_PREF_LABELS[pref]}
-                          </option>
-                        ))}
-                      </select>
+                        options={GROUP_NOTIFICATION_PREFS.map((pref) => ({
+                          value: pref,
+                          label: GROUP_NOTIFICATION_PREF_LABELS[pref],
+                        }))}
+                      />
                       <Button
                         variant="ghost"
                         aria-label={`Use your default for ${exception.groupTitle}`}

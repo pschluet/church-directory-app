@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { DirectoryRequestChurchDto } from "@shared";
 import { api } from "../lib/api";
-import { Button, Field, Modal, Spinner, inputClass } from "./ui";
+import { Button, Field, Modal, Select, Spinner, inputClass } from "./ui";
 
 /**
  * "Request to be added", from the sign-in page.
@@ -133,19 +133,13 @@ export function RequestAccessModal({
           {churchesQuery.isPending ? (
             <Spinner label="Loading churches" />
           ) : (
-            <select
-              className={inputClass}
+            <Select
               required
               value={organizationId}
-              onChange={(event) => setOrganizationId(event.target.value)}
-            >
-              <option value="">Choose a church…</option>
-              {churches.map((church) => (
-                <option key={church.id} value={church.id}>
-                  {church.name}
-                </option>
-              ))}
-            </select>
+              onChange={setOrganizationId}
+              placeholder="Choose a church…"
+              options={churches.map((church) => ({ value: church.id, label: church.name }))}
+            />
           )}
         </Field>
 

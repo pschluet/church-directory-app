@@ -3,6 +3,7 @@ import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { InheritableAttribute, PersonSummaryDto } from "@shared";
 import { InheritToggle, inheritanceCandidates } from "../src/components/InheritToggle";
+import { chooseOption } from "./utils";
 
 function person(id: string, firstName: string, lastName: string | null): PersonSummaryDto {
   return {
@@ -95,7 +96,7 @@ describe("InheritToggle", () => {
       />
     );
 
-    await userEvent.selectOptions(screen.getByRole("combobox"), "maria");
+    await chooseOption(screen.getByRole("combobox"), "maria");
     expect(onChange).toHaveBeenCalledWith("maria");
   });
 

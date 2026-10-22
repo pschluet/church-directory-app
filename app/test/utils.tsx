@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
-import { render } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
@@ -41,4 +42,21 @@ export function renderWithProviders(
       </QueryClientProvider>
     ),
   };
+}
+
+/** Opens a `Select` and returns its list. */
+export async function openOptions(trigger: HTMLElement): Promise<HTMLElement> {
+  await userEvent.click(trigger);
+  return screen.getByRole("listbox");
+}
+
+/**
+ * Picks an option from a `Select` by its value -- what `userEvent.selectOptions`
+ * did for the native `<select>` it replaced.
+ */
+export async function chooseOption(trigger: HTMLElement, value: string): Promise<void> {
+  const list = await openOptions(trigger);
+  const option = list.querySelector<HTMLElement>(`[role="option"][data-value="${value}"]`);
+  if (!option) throw new Error(`No option with the value "${value}"`);
+  await userEvent.click(option);
 }

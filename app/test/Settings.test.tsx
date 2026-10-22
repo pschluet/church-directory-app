@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { MeDto } from "@shared";
 import { Settings } from "../src/pages/Settings";
-import { renderWithProviders } from "./utils";
+import { renderWithProviders, chooseOption } from "./utils";
 
 /**
  * The notification settings page.
@@ -367,7 +367,7 @@ describe("Settings", () => {
 
     it("saves the default on its own, leaving the other switches out of the payload", async () => {
       renderWithProviders(<Settings />);
-      await userEvent.selectOptions(
+      await chooseOption(
         await screen.findByRole("combobox", { name: /By default, tell me about/ }),
         "MENTIONS"
       );
@@ -401,7 +401,7 @@ describe("Settings", () => {
     it("changes an exception right from the settings page", async () => {
       withExceptions();
       renderWithProviders(<Settings />);
-      await userEvent.selectOptions(
+      await chooseOption(
         await screen.findByRole("combobox", { name: "Notifications for Youth Group" }),
         "ALL"
       );

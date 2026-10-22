@@ -16,7 +16,7 @@ import { localDayIso } from "../src/lib/format";
 import { resetRecentReactions } from "../src/lib/emoji";
 import { GroupDetail } from "../src/pages/GroupDetail";
 import type { GroupAttachmentPicker } from "../src/components/useGroupAttachmentPicker";
-import { renderWithProviders } from "./utils";
+import { renderWithProviders, chooseOption } from "./utils";
 import { Route, Routes, useLocation, useNavigationType } from "react-router";
 
 /*
@@ -1935,12 +1935,14 @@ describe("GroupDetail", () => {
       const select = await screen.findByRole("combobox", {
         name: "Your notifications for this group",
       });
-      expect(select).toHaveValue("NONE");
+      expect(select).toHaveTextContent("Nothing");
+      await userEvent.click(select);
       expect(
         screen.getByRole("option", { name: "Use my default (Only when I'm mentioned)" })
       ).toBeInTheDocument();
+      await userEvent.click(select);
 
-      await userEvent.selectOptions(select, "");
+      await chooseOption(select, "");
       await waitFor(() =>
         expect(apiMock).toHaveBeenCalledWith("/groups/g1/notification-preference", {
           method: "PUT",

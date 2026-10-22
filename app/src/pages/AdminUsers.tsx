@@ -26,6 +26,7 @@ import {
   MenuItem,
   Modal,
   PageHeading,
+  Select,
   Spinner,
   inputClass,
 } from "../components/ui";
@@ -760,18 +761,18 @@ function InviteModal({
 
         <div className="grid gap-4 md:grid-cols-2">
           <Field label="Role">
-            <select
-              className={inputClass}
+            <Select
               value={role}
-              onChange={(event) => setRole(event.target.value as Role)}
-            >
-              <option value="USER">{roleLabel("USER")}</option>
-              <option value="PRAYER_REQUEST_ADMIN">{roleLabel("PRAYER_REQUEST_ADMIN")}</option>
-              <option value="ADMIN">{roleLabel("ADMIN")}</option>
-              {canInviteSuperAdmin && (
-                <option value="SUPER_ADMIN">{roleLabel("SUPER_ADMIN")}</option>
-              )}
-            </select>
+              onChange={setRole}
+              options={(
+                [
+                  "USER",
+                  "PRAYER_REQUEST_ADMIN",
+                  "ADMIN",
+                  ...(canInviteSuperAdmin ? ["SUPER_ADMIN"] : []),
+                ] as Role[]
+              ).map((value) => ({ value, label: roleLabel(value) }))}
+            />
           </Field>
 
           {showChurchPicker && (
@@ -783,35 +784,30 @@ function InviteModal({
                   : undefined
               }
             >
-              <select
-                className={inputClass}
+              <Select
                 value={organizationId}
-                onChange={(event) => setOrganizationId(event.target.value)}
-              >
-                <option value="">{role === "SUPER_ADMIN" ? "No church" : "My own church"}</option>
-                {organizations.map((organization) => (
-                  <option key={organization.id} value={organization.id}>
-                    {organization.name}
-                  </option>
-                ))}
-              </select>
+                onChange={setOrganizationId}
+                options={[
+                  { value: "", label: role === "SUPER_ADMIN" ? "No church" : "My own church" },
+                  ...organizations.map((organization) => ({
+                    value: organization.id,
+                    label: organization.name,
+                  })),
+                ]}
+              />
             </Field>
           )}
 
           {role !== "SUPER_ADMIN" && families.length > 0 && (
             <Field label="Family (optional)">
-              <select
-                className={inputClass}
+              <Select
                 value={familyId}
-                onChange={(event) => setFamilyId(event.target.value)}
-              >
-                <option value="">No family yet</option>
-                {families.map((family) => (
-                  <option key={family.id} value={family.id}>
-                    {family.name}
-                  </option>
-                ))}
-              </select>
+                onChange={setFamilyId}
+                options={[
+                  { value: "", label: "No family yet" },
+                  ...families.map((family) => ({ value: family.id, label: family.name })),
+                ]}
+              />
             </Field>
           )}
         </div>
@@ -903,21 +899,15 @@ function MoveChurchModal({
         </p>
 
         <Field label="Move to">
-          <select
-            className={inputClass}
+          <Select
             value={organizationId}
-            onChange={(event) => setOrganizationId(event.target.value)}
+            onChange={setOrganizationId}
             required
-          >
-            <option value="">Choose a church…</option>
-            {organizations
+            placeholder="Choose a church…"
+            options={organizations
               .filter((organization) => organization.id !== user.organizationId)
-              .map((organization) => (
-                <option key={organization.id} value={organization.id}>
-                  {organization.name}
-                </option>
-              ))}
-          </select>
+              .map((organization) => ({ value: organization.id, label: organization.name }))}
+          />
         </Field>
 
         {needsName && (

@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SpecialDateForm } from "../src/components/SpecialDateForm";
-import { renderWithProviders } from "./utils";
+import { renderWithProviders, chooseOption, openOptions } from "./utils";
 
 const api = vi.fn();
 vi.mock("../src/lib/api", () => ({
@@ -28,6 +28,17 @@ function renderForm() {
  * "enter a year first" help text.
  */
 const yearInput = () => screen.getByRole("textbox", { name: /year/i });
+
+/** The days the Day dropdown offers, read by opening it and closing it again. */
+async function dayOptions(): Promise<string[]> {
+  const list = await openOptions(screen.getByRole("combobox", { name: "Day" }));
+  const days = Array.from(
+    list.querySelectorAll('[role="option"]'),
+    (option) => option.textContent ?? ""
+  );
+  await userEvent.keyboard("{Escape}");
+  return days;
+}
 
 describe("SpecialDateForm", () => {
   it("keeps the age checkbox disabled until a year is entered", async () => {
@@ -57,7 +68,7 @@ describe("SpecialDateForm", () => {
 
   it("asks who the anniversary is with, and requires a year", async () => {
     renderForm();
-    await userEvent.selectOptions(screen.getByLabelText(/occasion/i), "ANNIVERSARY");
+    await chooseOption(screen.getByLabelText(/occasion/i), "ANNIVERSARY");
 
     expect(screen.getByRole("combobox", { name: /married to/i })).toBeInTheDocument();
     expect(yearInput()).toBeRequired();
@@ -70,7 +81,7 @@ describe("SpecialDateForm", () => {
    */
   it("refuses an anniversary with nobody on the other end", async () => {
     renderForm();
-    await userEvent.selectOptions(screen.getByLabelText(/occasion/i), "ANNIVERSARY");
+    await chooseOption(screen.getByLabelText(/occasion/i), "ANNIVERSARY");
     await userEvent.type(yearInput(), "2010");
     await userEvent.click(screen.getByRole("button", { name: /add date/i }));
 
@@ -81,7 +92,7 @@ describe("SpecialDateForm", () => {
   it("drops the year entirely for a name day", async () => {
     renderForm();
     await userEvent.type(yearInput(), "1985");
-    await userEvent.selectOptions(screen.getByLabelText(/occasion/i), "FEAST_DAY");
+    await chooseOption(screen.getByLabelText(/occasion/i), "FEAST_DAY");
 
     expect(screen.queryByRole("textbox", { name: /year/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("checkbox", { name: /show/i })).not.toBeInTheDocument();
@@ -90,23 +101,24 @@ describe("SpecialDateForm", () => {
 
   it("offers 29 February for a recurring date but not in a common year", async () => {
     renderForm();
-    await userEvent.selectOptions(screen.getByLabelText(/month/i), "2");
+    await chooseOption(screen.getByLabelText(/month/i), "2");
 
     // No year given: the date recurs, so the 29th is valid.
-    expect(screen.getByRole("option", { name: "29" })).toBeInTheDocument();
+    expect(await dayOptions()).toContain("29");
 
     await userEvent.type(yearInput(), "2027");
-    expect(screen.queryByRole("option", { name: "29" })).not.toBeInTheDocument();
+    expect(await dayOptions()).not.toContain("29");
 
     await userEvent.clear(yearInput());
     await userEvent.type(yearInput(), "2028");
-    expect(screen.getByRole("option", { name: "29" })).toBeInTheDocument();
+    expect(await dayOptions()).toContain("29");
   });
 
   it("never offers 31 April", async () => {
     renderForm();
-    await userEvent.selectOptions(screen.getByLabelText(/month/i), "4");
-    expect(screen.getByRole("option", { name: "30" })).toBeInTheDocument();
-    expect(screen.queryByRole("option", { name: "31" })).not.toBeInTheDocument();
+    await chooseOption(screen.getByLabelText(/month/i), "4");
+    const days = await dayOptions();
+    expect(days).toContain("30");
+    expect(days).not.toContain("31");
   });
 });

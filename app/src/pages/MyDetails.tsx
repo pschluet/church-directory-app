@@ -3,7 +3,15 @@ import { Navigate } from "react-router";
 import type { MeDto, OrganizationMoveDto } from "@shared";
 import { api } from "../lib/api";
 import { useMe } from "../context/MeContext";
-import { Button, ErrorNotice, Field, PageHeading, Spinner, inputClass } from "../components/ui";
+import {
+  Button,
+  ErrorNotice,
+  Field,
+  PageHeading,
+  Select,
+  Spinner,
+  inputClass,
+} from "../components/ui";
 
 /**
  * "My Details" is the signed-in person's own record, so rather than duplicating
@@ -111,18 +119,15 @@ function AdoptParish({ me, onAdopted }: { me: MeDto; onAdopted: () => Promise<vo
         </p>
 
         <Field label="Church">
-          <select
-            className={inputClass}
+          <Select
             value={organizationId}
-            onChange={(event) => setOrganizationId(event.target.value)}
+            onChange={setOrganizationId}
             required
-          >
-            {me.availableOrganizations.map((organization) => (
-              <option key={organization.id} value={organization.id}>
-                {organization.name}
-              </option>
-            ))}
-          </select>
+            options={me.availableOrganizations.map((organization) => ({
+              value: organization.id,
+              label: organization.name,
+            }))}
+          />
         </Field>
 
         <div className="grid gap-4 md:grid-cols-2">
