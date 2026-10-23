@@ -73,17 +73,20 @@ function toAppUser(row: AppUserRow): AppUserDto {
   };
 }
 
-/** Admins see their own organization; super admins see everyone. */
+/**
+ * The accounts in the organization being viewed -- for an admin their own, for
+ * a super admin whichever parish they have switched to. A super admin used to
+ * get every account in every parish here, which made one parish's page a place
+ * to manage all of them. A super admin with no parish of their own is in no
+ * parish's list.
+ */
 routes.get("/users", async (c) => {
-  const caller = c.get("caller");
-  const db = c.get("db");
-
-  const { rows } = caller.isSuperAdmin
-    ? await db.query<AppUserRow>(`${APP_USER_SELECT} order by u.email`)
-    : await db.query<AppUserRow>(
-        `${APP_USER_SELECT} where u.organization_id = $1 order by u.email`,
-        [caller.homeOrganizationId]
-      );
+  const organizationId = requireOrganizationId(c);
+  const { rows } = await c
+    .get("db")
+    .query<AppUserRow>(`${APP_USER_SELECT} where u.organization_id = $1 order by u.email`, [
+      organizationId,
+    ]);
 
   return c.json({ users: rows.map(toAppUser) });
 });
@@ -93,12 +96,21 @@ routes.post("/users", async (c) => {
   const db = c.get("db");
   const payload = inviteUserSchema.parse(await c.req.json());
 
-  // A non-super-admin invite always lands in the inviter's own organization,
-  // regardless of what the client asked for.
+  /*
+   * Into the organization being viewed, so the new account appears on the list
+   * it was invited from. A super admin invite may instead belong to no parish
+   * at all; nothing may name some third one.
+   */
+  const activeOrganizationId = requireOrganizationId(c);
+  if (payload.organizationId && payload.organizationId !== activeOrganizationId) {
+    // An admin cannot switch parish at all, so for them this is a refusal
+    // rather than a misstep.
+    throw caller.isSuperAdmin
+      ? new HTTPException(400, { message: "Switch to that church to invite someone into it" })
+      : new HTTPException(403, { message: "You can only invite people into your own church" });
+  }
   const organizationId =
-    payload.role === "SUPER_ADMIN"
-      ? (payload.organizationId ?? null)
-      : (payload.organizationId ?? caller.homeOrganizationId);
+    payload.role === "SUPER_ADMIN" && !payload.organizationId ? null : activeOrganizationId;
 
   const created = await inviteAccount(db, caller, {
     email: payload.email,
@@ -132,15 +144,13 @@ routes.patch("/users/:id", async (c) => {
   );
   if (!target) throw new HTTPException(404, { message: "Account not found" });
 
-  // An admin may only touch accounts inside their own organization, and may not
-  // promote anyone to super admin.
-  if (!caller.isSuperAdmin) {
-    if (target.organization_id !== caller.homeOrganizationId) {
-      throw new HTTPException(404, { message: "Account not found" });
-    }
-    if (target.role === "SUPER_ADMIN") {
-      throw new HTTPException(403, { message: "Only a super admin can change a super admin" });
-    }
+  // Only accounts inside the organization being viewed, a super admin's
+  // included; and an admin may not touch a super admin at all.
+  if (target.organization_id !== requireOrganizationId(c)) {
+    throw new HTTPException(404, { message: "Account not found" });
+  }
+  if (!caller.isSuperAdmin && target.role === "SUPER_ADMIN") {
+    throw new HTTPException(403, { message: "Only a super admin can change a super admin" });
   }
   if (payload.role) {
     assertCanGrantRole(caller, payload.role, payload.organizationId ?? target.organization_id);
@@ -148,19 +158,6 @@ routes.patch("/users/:id", async (c) => {
   if (payload.organizationId !== undefined && !caller.isSuperAdmin) {
     throw new HTTPException(403, {
       message: "Only a super admin can move someone between organizations",
-    });
-  }
-  // Only super admins may be parish-less, so demoting one requires giving them
-  // a parish in the same request. Without this the CHECK constraint rejects the
-  // write and the caller gets an unexplained 400.
-  if (
-    payload.role &&
-    payload.role !== "SUPER_ADMIN" &&
-    target.role === "SUPER_ADMIN" &&
-    (payload.organizationId ?? target.organization_id) === null
-  ) {
-    throw new HTTPException(400, {
-      message: "Choose a church for this person before changing them from a super administrator",
     });
   }
   if (target.id === caller.appUserId && payload.status === "DISABLED") {
@@ -177,7 +174,7 @@ routes.patch("/users/:id", async (c) => {
     sets.push(`status = $${values.length + 1}`);
     values.push(payload.status);
   }
-  if (payload.organizationId === null && target.organization_id !== null) {
+  if (payload.organizationId === null) {
     // Only a super admin may be parish-less, and their record would then be
     // orphaned in a parish they no longer belong to.
     throw new HTTPException(400, {
@@ -187,10 +184,7 @@ routes.patch("/users/:id", async (c) => {
 
   let move: Awaited<ReturnType<typeof setAccountOrganization>> | null = null;
 
-  // One transaction, and the church move goes first. Demoting a super admin who
-  // has no church only becomes legal once they have one, so applying `role`
-  // first would leave the row briefly violating
-  // app_users_org_required_unless_super_admin and fail the whole request.
+  // One transaction, so a move and a role change land together or not at all.
   //
   // organization_id is deliberately absent from the SET list above: moving an
   // account between parishes has to carry its directory record, its special
@@ -281,8 +275,9 @@ routes.delete("/users/:id", async (c) => {
   );
   if (!target) throw new HTTPException(404, { message: "Account not found" });
   // 404 and not 403, so another parish's account is indistinguishable from one
-  // that does not exist -- the same shape as every other handler here.
-  if (!caller.isSuperAdmin && target.organization_id !== caller.homeOrganizationId) {
+  // that does not exist -- the same shape as every other handler here. Scoped
+  // to the parish being viewed, for a super admin too.
+  if (target.organization_id !== requireOrganizationId(c)) {
     throw new HTTPException(404, { message: "Account not found" });
   }
   if (!caller.isSuperAdmin && target.role === "SUPER_ADMIN") {
@@ -352,8 +347,7 @@ routes.put("/users/:id/email", async (c) => {
     "select id, email::text as email, organization_id from app_users where id = $1",
     [id]
   );
-  if (!target) throw new HTTPException(404, { message: "Account not found" });
-  if (!caller.isSuperAdmin && target.organization_id !== caller.homeOrganizationId) {
+  if (!target || target.organization_id !== requireOrganizationId(c)) {
     throw new HTTPException(404, { message: "Account not found" });
   }
 

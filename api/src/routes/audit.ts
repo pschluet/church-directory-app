@@ -397,10 +397,9 @@ routes.get("/filters", async (c) => {
  * pickers elsewhere in the app.
  *
  * Restricted to actors that appear in *this* log, which is the point and the
- * reason `/admin/users` cannot serve it. That endpoint is scoped to the
- * caller's home organization -- so a super admin who acted in this parish is
- * missing from it -- and for a super admin caller it returns every account in
- * every parish, most of whom have never touched this one.
+ * reason `/admin/users` cannot serve it. That endpoint lists the accounts
+ * belonging to this parish -- so a super admin from elsewhere who acted here is
+ * missing from it -- and most of them have never touched the log.
  *
  * `actorId` resolves specific ids instead of searching, for the chips that have
  * to name whoever a shared or reloaded URL already selected. Same question,

@@ -224,14 +224,19 @@ describe("AdminUsers", () => {
       expect(api.mock.calls.length).toBe(before);
     });
 
-    it("matches the role and status words that are on screen", async () => {
+    it("searches name and email only, not role or status", async () => {
       mockLoad([], [], [USER, OTHER]);
       renderPage();
       await screen.findByText("Layla Haddad");
 
+      // Boris is a disabled administrator, but those have filters of their own.
       await userEvent.type(box(), "disabled");
-      await waitFor(() => expect(screen.queryByText("Layla Haddad")).not.toBeInTheDocument());
-      expect(screen.getByText("Boris Popov")).toBeInTheDocument();
+      expect(await screen.findByText(/no accounts match/i)).toBeInTheDocument();
+
+      await userEvent.clear(box());
+      await userEvent.type(box(), "layla@");
+      await waitFor(() => expect(screen.queryByText("Boris Popov")).not.toBeInTheDocument());
+      expect(screen.getByText("Layla Haddad")).toBeInTheDocument();
     });
 
     it("narrows with every term rather than widening", async () => {
@@ -239,13 +244,13 @@ describe("AdminUsers", () => {
       renderPage();
       await screen.findByText("Layla Haddad");
 
-      await userEvent.type(box(), "boris administrator");
+      await userEvent.type(box(), "boris popov");
       await waitFor(() => expect(screen.queryByText("Layla Haddad")).not.toBeInTheDocument());
       expect(screen.getByText("Boris Popov")).toBeInTheDocument();
 
-      // Both terms have to match: Boris is an administrator, Layla is not.
+      // Both terms have to match.
       await userEvent.clear(box());
-      await userEvent.type(box(), "boris member");
+      await userEvent.type(box(), "boris haddad");
       await waitFor(() => expect(screen.queryByText("Boris Popov")).not.toBeInTheDocument());
     });
 
@@ -260,6 +265,124 @@ describe("AdminUsers", () => {
       await userEvent.clear(box());
       expect(await screen.findByText("Layla Haddad")).toBeInTheDocument();
       expect(screen.getByText("Boris Popov")).toBeInTheDocument();
+    });
+  });
+
+  describe("the role and status filters", () => {
+    const BORIS = {
+      ...USER,
+      id: "user-2",
+      email: "boris@example.com",
+      personId: "person-9",
+      personName: "Boris Popov",
+      role: "ADMIN",
+      status: "DISABLED",
+    } as unknown as AppUserDto;
+    const NINA = {
+      ...USER,
+      id: "user-3",
+      email: "nina@example.com",
+      personId: "person-10",
+      personName: "Nina Petrova",
+      role: "PRAYER_REQUEST_ADMIN",
+      status: "INVITED",
+    } as unknown as AppUserDto;
+
+    const pick = async (filter: RegExp, ...options: RegExp[]) => {
+      await userEvent.click(screen.getByRole("combobox", { name: filter }));
+      for (const option of options) {
+        await userEvent.click(screen.getByRole("option", { name: option }));
+      }
+    };
+
+    it("says what they are filtering by", async () => {
+      mockLoad([], [], [USER, BORIS, NINA]);
+      renderPage();
+      await screen.findByText("Layla Haddad");
+      expect(screen.getByRole("combobox", { name: /filter by role/i })).toHaveTextContent(
+        "All roles"
+      );
+      expect(screen.getByRole("combobox", { name: /filter by status/i })).toHaveTextContent(
+        "All statuses"
+      );
+    });
+
+    it("shows only the roles chosen, and stays open for more", async () => {
+      mockLoad([], [], [USER, BORIS, NINA]);
+      renderPage();
+      await screen.findByText("Layla Haddad");
+
+      await pick(/filter by role/i, /^administrator$/i);
+      await waitFor(() => expect(screen.queryByText("Layla Haddad")).not.toBeInTheDocument());
+      expect(screen.getByText("Boris Popov")).toBeInTheDocument();
+      expect(screen.queryByText("Nina Petrova")).not.toBeInTheDocument();
+
+      // Still open: a second choice widens the filter.
+      expect(screen.getByRole("listbox", { name: /filter by role/i })).toHaveAttribute(
+        "aria-multiselectable",
+        "true"
+      );
+      await userEvent.click(screen.getByRole("option", { name: /^member$/i }));
+      expect(await screen.findByText("Layla Haddad")).toBeInTheDocument();
+      expect(screen.getByText("Boris Popov")).toBeInTheDocument();
+      expect(screen.queryByText("Nina Petrova")).not.toBeInTheDocument();
+      expect(screen.getByRole("combobox", { name: /filter by role/i })).toHaveTextContent(
+        "2 roles"
+      );
+    });
+
+    it("combines status with role and search", async () => {
+      mockLoad([], [], [USER, BORIS, NINA]);
+      renderPage();
+      await screen.findByText("Layla Haddad");
+
+      await pick(/filter by status/i, /^disabled$/i, /^invited$/i);
+      await userEvent.keyboard("{Escape}");
+      await waitFor(() => expect(screen.queryByText("Layla Haddad")).not.toBeInTheDocument());
+      expect(screen.getByText("Boris Popov")).toBeInTheDocument();
+      expect(screen.getByText("Nina Petrova")).toBeInTheDocument();
+
+      await userEvent.type(
+        screen.getByRole("searchbox", { name: /search people and accounts/i }),
+        "nina"
+      );
+      await waitFor(() => expect(screen.queryByText("Boris Popov")).not.toBeInTheDocument());
+      expect(screen.getByText("Nina Petrova")).toBeInTheDocument();
+    });
+
+    it("reads the filters from the URL and offers a way out when nothing matches", async () => {
+      mockLoad([], [], [USER, BORIS]);
+      renderWithProviders(<AdminUsers />, {
+        initialEntries: ["/admin/users?role=SUPER_ADMIN&status=ACTIVE"],
+      });
+      expect(await screen.findByText(/no accounts match these filters/i)).toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: /clear filters/i }));
+      expect(await screen.findByText("Layla Haddad")).toBeInTheDocument();
+      expect(screen.getByText("Boris Popov")).toBeInTheDocument();
+    });
+  });
+
+  describe("inviting", () => {
+    it("invites into the church being viewed, with no church to pick", async () => {
+      mockLoad([]);
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: /invite someone/i }));
+
+      expect(screen.queryByText(/^church$/i)).not.toBeInTheDocument();
+      await userEvent.type(screen.getByLabelText(/first name/i), "Anna");
+      await userEvent.type(screen.getByLabelText(/email address/i), "anna@example.com");
+      await userEvent.click(screen.getByRole("button", { name: /send invitation/i }));
+
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith(
+          "/admin/users",
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({ email: "anna@example.com", organizationId: "org-1" }),
+          })
+        )
+      );
     });
   });
 

@@ -136,13 +136,17 @@ describe.skipIf(!hasDb)("account management", () => {
     });
 
     it("gives a super admin invited with a church a record in it", async () => {
-      const { status, body } = await as(superAdmin).call("POST", "/api/admin/users", {
-        email: "super-with-parish@test.example",
-        firstName: "Super",
-        lastName: "Parishioner",
-        role: "SUPER_ADMIN",
-        organizationId: orgId,
-      });
+      const { status, body } = await as(superAdmin).call(
+        "POST",
+        `/api/admin/users?orgId=${orgId}`,
+        {
+          email: "super-with-parish@test.example",
+          firstName: "Super",
+          lastName: "Parishioner",
+          role: "SUPER_ADMIN",
+          organizationId: orgId,
+        }
+      );
       expect(status).toBe(201);
       expect(body.organizationId).toBe(orgId);
       expect(body.personId).not.toBeNull();
@@ -150,13 +154,58 @@ describe.skipIf(!hasDb)("account management", () => {
     });
 
     it("gives a super admin no directory record until they have an organization", async () => {
-      const { body } = await as(superAdmin).call("POST", "/api/admin/users", {
+      const { body } = await as(superAdmin).call("POST", `/api/admin/users?orgId=${orgId}`, {
         email: "super2@test.example",
         firstName: "Super",
         role: "SUPER_ADMIN",
+        organizationId: null,
       });
       expect(body.organizationId).toBeNull();
       expect(body.personId).toBeNull();
+    });
+
+    it("puts the invitation in the church being viewed", async () => {
+      const { status, body } = await as(superAdmin).call(
+        "POST",
+        `/api/admin/users?orgId=${otherOrgId}`,
+        { email: "viewed@test.example", firstName: "Viewed", role: "USER" }
+      );
+      expect(status).toBe(201);
+      expect(body.organizationId).toBe(otherOrgId);
+    });
+
+    it("refuses to invite into a church other than the one being viewed", async () => {
+      for (const role of ["USER", "SUPER_ADMIN"]) {
+        const { status } = await as(superAdmin).call("POST", `/api/admin/users?orgId=${orgId}`, {
+          email: `elsewhere-${role.toLowerCase()}@test.example`,
+          firstName: "Elsewhere",
+          role,
+          organizationId: otherOrgId,
+        });
+        expect(status).toBe(400);
+      }
+    });
+  });
+
+  describe("listing accounts", () => {
+    beforeEach(async () => {
+      await createUser(db(), { organizationId: orgId, email: "here@test.example" });
+      await createUser(db(), { organizationId: otherOrgId, email: "there@test.example" });
+    });
+
+    const emails = (body: any): string[] => body.users.map((u: any) => u.email);
+
+    it("shows an admin their own church", async () => {
+      const { body } = await as(admin).call("GET", `/api/admin/users?orgId=${otherOrgId}`);
+      expect(emails(body)).toEqual(["admin@test.example", "here@test.example"]);
+    });
+
+    it("shows a super admin only the church being viewed", async () => {
+      const here = await as(superAdmin).call("GET", `/api/admin/users?orgId=${orgId}`);
+      expect(emails(here.body)).toEqual(["admin@test.example", "here@test.example"]);
+
+      const there = await as(superAdmin).call("GET", `/api/admin/users?orgId=${otherOrgId}`);
+      expect(emails(there.body)).toEqual(["there@test.example"]);
     });
   });
 
@@ -194,7 +243,7 @@ describe.skipIf(!hasDb)("account management", () => {
     it("lets a super admin move someone between organizations, record and all", async () => {
       const { status, body } = await as(superAdmin).call(
         "PATCH",
-        `/api/admin/users/${target.appUserId}`,
+        `/api/admin/users/${target.appUserId}?orgId=${orgId}`,
         { organizationId: otherOrgId }
       );
       expect(status).toBe(200);
@@ -211,33 +260,35 @@ describe.skipIf(!hasDb)("account management", () => {
       expect(rows[0]!.family_id).toBeNull();
     });
 
-    it("refuses to demote a super admin who has no church", async () => {
-      // Only super admins may be church-less, so the demotion would violate the
-      // CHECK constraint. It used to surface as an unexplained 400.
-      const { status, body } = await as(superAdmin).call(
+    it("only lets a super admin change accounts in the church being viewed", async () => {
+      // target is in All Saints; viewing St. George it is not there to change.
+      const elsewhere = await as(superAdmin).call(
         "PATCH",
-        `/api/admin/users/${superAdmin.appUserId}`,
-        { role: "ADMIN" }
+        `/api/admin/users/${target.appUserId}?orgId=${otherOrgId}`,
+        { status: "DISABLED" }
       );
-      expect(status).toBe(400);
-      expect(body.error).toMatch(/choose a church/i);
+      expect(elsewhere.status).toBe(404);
+
+      const here = await as(superAdmin).call(
+        "PATCH",
+        `/api/admin/users/${target.appUserId}?orgId=${orgId}`,
+        { status: "DISABLED" }
+      );
+      expect(here.status).toBe(200);
     });
 
-    it("allows the demotion when a church is given in the same request", async () => {
+    it("leaves a parish-less super admin out of every church's reach", async () => {
       const other = await createUser(db(), {
         organizationId: null,
         role: "SUPER_ADMIN",
-        email: "demote-me@test.example",
+        email: "parishless@test.example",
       });
-      const { status, body } = await as(superAdmin).call(
+      const { status } = await as(superAdmin).call(
         "PATCH",
-        `/api/admin/users/${other.appUserId}`,
-        { role: "ADMIN", organizationId: orgId, firstName: "Demoted" }
+        `/api/admin/users/${other.appUserId}?orgId=${orgId}`,
+        { role: "ADMIN" }
       );
-      expect(status).toBe(200);
-      expect(body.role).toBe("ADMIN");
-      expect(body.organizationName).toBe("All Saints");
-      expect(body.personName).toBe("Demoted");
+      expect(status).toBe(404);
     });
 
     it("stops an admin touching a super admin", async () => {
@@ -423,14 +474,13 @@ describe.skipIf(!hasDb)("account management", () => {
       expect(await appUserRows(admin.appUserId)).toHaveLength(1);
     });
 
-    it("deletes an account that has no directory record", async () => {
-      // A super admin with no parish gets no persons row at all, so the person
-      // half of this is simply absent rather than missing.
-      const { status } = await as(superAdmin).call(
+    it("only lets a super admin delete accounts in the church being viewed", async () => {
+      const elsewhere = await as(superAdmin).call(
         "DELETE",
-        `/api/admin/users/${superAdmin.appUserId}`
+        `/api/admin/users/${target.appUserId}?orgId=${otherOrgId}`
       );
-      expect(status).toBe(400); // self
+      expect(elsewhere.status).toBe(404);
+      expect(await appUserRows(target.appUserId)).toHaveLength(1);
 
       const parishless = await createUser(db(), {
         organizationId: null,
@@ -438,9 +488,19 @@ describe.skipIf(!hasDb)("account management", () => {
         email: "parishless@test.example",
       });
       expect(
-        (await as(superAdmin).call("DELETE", `/api/admin/users/${parishless.appUserId}`)).status
+        (
+          await as(superAdmin).call(
+            "DELETE",
+            `/api/admin/users/${parishless.appUserId}?orgId=${orgId}`
+          )
+        ).status
+      ).toBe(404);
+      expect(await appUserRows(parishless.appUserId)).toHaveLength(1);
+
+      expect(
+        (await as(superAdmin).call("DELETE", `/api/admin/users/${target.appUserId}?orgId=${orgId}`))
+          .status
       ).toBe(204);
-      expect(await appUserRows(parishless.appUserId)).toHaveLength(0);
     });
 
     it("records who did it, against an id that no longer exists", async () => {

@@ -239,7 +239,7 @@ describe.skipIf(!hasDb)("parish membership", () => {
     });
 
     const move = () =>
-      as(superAdmin).call("PATCH", `/api/admin/users/${mover.appUserId}`, {
+      as(superAdmin).call("PATCH", `/api/admin/users/${mover.appUserId}?orgId=${allSaints}`, {
         organizationId: stGeorge,
       });
 
@@ -345,34 +345,12 @@ describe.skipIf(!hasDb)("parish membership", () => {
       expect(status).toBe(200);
     });
 
-    it("creates a record when the account never had one", async () => {
-      const orgless = await createUser(db(), {
-        organizationId: null,
-        role: "SUPER_ADMIN",
-        email: "orgless@test.example",
-      });
-
-      const withoutName = await as(superAdmin).call(
-        "PATCH",
-        `/api/admin/users/${orgless.appUserId}`,
-        { organizationId: stGeorge }
-      );
-      expect(withoutName.status).toBe(400);
-
-      const withName = await as(superAdmin).call("PATCH", `/api/admin/users/${orgless.appUserId}`, {
-        organizationId: stGeorge,
-        firstName: "New",
-        lastName: "Admin",
-      });
-      expect(withName.status).toBe(200);
-      expect(withName.body.move.created).toBe(true);
-      expect(withName.body.personName).toBe("New Admin");
-    });
-
     it("refuses to strip a parish off an account entirely", async () => {
-      const { status } = await as(superAdmin).call("PATCH", `/api/admin/users/${mover.appUserId}`, {
-        organizationId: null,
-      });
+      const { status } = await as(superAdmin).call(
+        "PATCH",
+        `/api/admin/users/${mover.appUserId}?orgId=${allSaints}`,
+        { organizationId: null }
+      );
       expect(status).toBe(400);
     });
   });

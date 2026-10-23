@@ -2,6 +2,8 @@ import { useId, useMemo, useState } from "react";
 import { useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
+  ROLES,
+  USER_STATUSES,
   roleLabel,
   userStatusLabel,
   type AppUserDto,
@@ -25,6 +27,7 @@ import {
   MenuButton,
   MenuItem,
   Modal,
+  MultiSelect,
   PageHeading,
   Select,
   Spinner,
@@ -46,12 +49,16 @@ import { formatPostedAt } from "../lib/format";
  * action labels could not fit and an `overflow-hidden` wrapper clipped the rest
  * with no way to scroll to it.
  *
- * The search box filters the accounts already loaded rather than calling
- * /directory/search. That endpoint returns people, not accounts: no role, no
- * status, and nothing for an account with no directory record -- a parish-less
- * super admin -- or for anyone whose sign-in address was changed, since it
- * matches on persons.email. GET /admin/users already returns everything in
- * scope, so there is nothing to fetch.
+ * Only the accounts in the church being viewed -- an administrator's own, or
+ * whichever one a super admin has switched to -- and only those can be changed
+ * from here. The server holds to the same scope.
+ *
+ * The search box (name and email) and the role and status filters all narrow
+ * the accounts already loaded rather than calling /directory/search. That
+ * endpoint returns people, not accounts: no role, no status, and nothing for
+ * anyone whose sign-in address was changed, since it matches on persons.email.
+ * GET /admin/users already returns everything in scope, so there is nothing to
+ * fetch.
  */
 
 /**
@@ -60,6 +67,18 @@ import { formatPostedAt } from "../lib/format";
  * not from a row menu, and it was never offered here.
  */
 const ASSIGNABLE_ROLES: Role[] = ["ADMIN", "PRAYER_REQUEST_ADMIN", "USER"];
+
+type UserStatus = AppUserDto["status"];
+
+/** Most to least privileged, the order the filter lists them in. */
+const ROLE_OPTIONS = ROLES.map((value) => ({ value, label: roleLabel(value) }));
+const STATUS_OPTIONS = USER_STATUSES.map((value) => ({ value, label: userStatusLabel(value) }));
+
+/** Whatever of `allowed` the URL names, ignoring anything a hand-edited link added. */
+function readList<T extends string>(params: URLSearchParams, key: string, allowed: readonly T[]) {
+  const named = params.getAll(key);
+  return allowed.filter((value) => named.includes(value));
+}
 
 export function AdminUsers() {
   const { me, isSuperAdmin, organizationId, reload: reloadMe } = useMe();
@@ -82,17 +101,40 @@ export function AdminUsers() {
    */
   const [params, setParams] = useSearchParams();
   const search = params.get("q") ?? "";
+  // Repeated parameters, `?role=ADMIN&role=USER`, as on the audit log.
+  const roles = useMemo(() => readList(params, "role", ROLES), [params]);
+  const statuses = useMemo(() => readList(params, "status", USER_STATUSES), [params]);
+  const filtering = search.trim() !== "" || roles.length > 0 || statuses.length > 0;
 
-  function setSearch(next: string): void {
+  function updateParams(mutate: (updated: URLSearchParams) => void): void {
     setParams(
       (prev) => {
         const updated = new URLSearchParams(prev);
-        if (next) updated.set("q", next);
-        else updated.delete("q");
+        mutate(updated);
         return updated;
       },
       { replace: true }
     );
+  }
+
+  function setSearch(next: string): void {
+    updateParams((updated) => {
+      if (next) updated.set("q", next);
+      else updated.delete("q");
+    });
+  }
+
+  function setList(key: "role" | "status", values: string[]): void {
+    updateParams((updated) => {
+      updated.delete(key);
+      for (const value of values) updated.append(key, value);
+    });
+  }
+
+  function clearFilters(): void {
+    updateParams((updated) => {
+      for (const key of ["q", "role", "status"]) updated.delete(key);
+    });
   }
   // Mutation failures only; the read's own is `usersQuery.error`.
   const [actionError, setActionError] = useState<string | null>(null);
@@ -159,28 +201,21 @@ export function AdminUsers() {
   );
 
   /*
-   * Every whitespace-separated term has to match somewhere, so "smith admin"
-   * narrows rather than widens -- the same rule /directory/search applies
-   * server-side. Role and status are matched by their labels, because
-   * "administrator" and "disabled" are what is on screen to be typed.
+   * The search is over name and email only -- role and status have filters of
+   * their own. Every whitespace-separated term has to match somewhere, so
+   * "anna smith" narrows rather than widens, the same rule /directory/search
+   * applies server-side. An empty filter is no filter.
    */
   const shown = useMemo(() => {
     const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
-    if (terms.length === 0) return users;
     return users.filter((user) => {
-      const haystack = [
-        user.personName,
-        user.email,
-        roleLabel(user.role),
-        userStatusLabel(user.status),
-        user.organizationName,
-      ]
-        .filter(Boolean)
-        .join(" ")
-        .toLowerCase();
+      if (roles.length > 0 && !roles.includes(user.role)) return false;
+      if (statuses.length > 0 && !statuses.includes(user.status)) return false;
+      if (terms.length === 0) return true;
+      const haystack = [user.personName, user.email].filter(Boolean).join(" ").toLowerCase();
       return terms.every((term) => haystack.includes(term));
     });
-  }, [users, search]);
+  }, [users, search, roles, statuses]);
 
   // Only the accounts list gates the page, exactly as it did when it was the
   // one call in the Promise.all without a catch around it.
@@ -291,23 +326,45 @@ export function AdminUsers() {
       <PageHeading
         title="People & Accounts"
         subtitle={
-          search.trim()
+          filtering
             ? `${shown.length} of ${users.length} ${users.length === 1 ? "account" : "accounts"}`
             : `${users.length} ${users.length === 1 ? "account" : "accounts"}`
         }
         /*
          * The search box, not the Invite button. `actions` is beside the title
          * from `md` up and stacked underneath it on a phone, which is exactly
-         * where a search box wants to be; `filters` would keep it below the
-         * title at every width. Invite moved down to the list it adds to.
+         * where a search box wants to be. Invite moved down to the list it adds
+         * to.
          */
         actions={
           <SearchField
             value={search}
             onChange={setSearch}
             label="Search people and accounts"
-            placeholder="Search name, email, role, status…"
+            placeholder="Search name or email…"
           />
+        }
+        filters={
+          <>
+            <MultiSelect
+              aria-label="Filter by role"
+              allLabel="All roles"
+              summarize={(count) => `${count} roles`}
+              options={ROLE_OPTIONS}
+              values={roles}
+              onChange={(values) => setList("role", values)}
+              className="w-full sm:w-56"
+            />
+            <MultiSelect
+              aria-label="Filter by status"
+              allLabel="All statuses"
+              summarize={(count) => `${count} statuses`}
+              options={STATUS_OPTIONS}
+              values={statuses}
+              onChange={(values) => setList("status", values)}
+              className="w-full sm:w-48"
+            />
+          </>
         }
       />
 
@@ -384,7 +441,17 @@ export function AdminUsers() {
       ) : users.length === 0 ? (
         <EmptyState title="No accounts yet" />
       ) : shown.length === 0 ? (
-        <EmptyState title={`No accounts match “${search.trim()}”`} />
+        <EmptyState
+          title={
+            roles.length === 0 && statuses.length === 0
+              ? `No accounts match “${search.trim()}”`
+              : "No accounts match these filters"
+          }
+        >
+          <Button variant="ghost" onClick={clearFilters}>
+            Clear filters
+          </Button>
+        </EmptyState>
       ) : (
         /*
          * One list at every width, rounded on the rows rather than the
@@ -418,9 +485,6 @@ export function AdminUsers() {
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <Badge>{roleLabel(user.role)}</Badge>
                   <StatusBadge status={user.status} />
-                  {isSuperAdmin && user.organizationName && (
-                    <Badge tone="accent">{user.organizationName}</Badge>
-                  )}
                 </div>
               </div>
               <UserActions
@@ -439,7 +503,7 @@ export function AdminUsers() {
       {inviting && (
         <InviteModal
           families={families}
-          organizations={organizations}
+          organizationId={organizationId}
           canInviteSuperAdmin={isSuperAdmin}
           onClose={() => setInviting(false)}
           onInvited={async () => {
@@ -577,7 +641,7 @@ function DirectoryRequestsSection({
   );
 }
 
-function StatusBadge({ status }: { status: AppUserDto["status"] }) {
+function StatusBadge({ status }: { status: UserStatus }) {
   const label = userStatusLabel(status);
   if (status === "ACTIVE") return <Badge tone="accent">{label}</Badge>;
   if (status === "INVITED") return <Badge tone="primary">{label}</Badge>;
@@ -672,13 +736,14 @@ function UserActions({
 
 function InviteModal({
   families,
-  organizations,
+  organizationId,
   canInviteSuperAdmin,
   onClose,
   onInvited,
 }: {
   families: { id: string; name: string }[];
-  organizations: { id: string; name: string }[];
+  /** The church being viewed, which is where the invitation lands. */
+  organizationId: string | null;
   canInviteSuperAdmin: boolean;
   onClose: () => void;
   onInvited: () => Promise<void>;
@@ -688,14 +753,15 @@ function InviteModal({
   const [lastName, setLastName] = useState("");
   const [role, setRole] = useState<Role>("USER");
   const [familyId, setFamilyId] = useState("");
-  const [organizationId, setOrganizationId] = useState("");
+  /*
+   * Everyone is invited into the church being viewed, so the new account shows
+   * up on the list it was invited from. A super admin alone may instead belong
+   * to no church: they administer every one either way, and can join one later
+   * from My Details.
+   */
+  const [inThisChurch, setInThisChurch] = useState<"yes" | "no">("yes");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  // A super admin can be given a church, in which case they get a directory
-  // record like anyone else. Left blank they administer without belonging to
-  // one, and can join later from My Details.
-  const showChurchPicker = organizations.length > 0;
 
   return (
     <Modal title="Invite someone" onClose={onClose}>
@@ -714,7 +780,8 @@ function InviteModal({
                 lastName: lastName || null,
                 role,
                 familyId: familyId || null,
-                organizationId: organizationId || null,
+                organizationId:
+                  role === "SUPER_ADMIN" && inThisChurch === "no" ? null : organizationId,
               },
             });
             await onInvited();
@@ -775,24 +842,17 @@ function InviteModal({
             />
           </Field>
 
-          {showChurchPicker && (
+          {role === "SUPER_ADMIN" && (
             <Field
-              label={role === "SUPER_ADMIN" ? "Church (optional)" : "Church"}
-              hint={
-                role === "SUPER_ADMIN"
-                  ? "Give them a church to list them in its directory; they administer every church either way."
-                  : undefined
-              }
+              label="Church"
+              hint="In this church, they are listed in its directory; they administer every church either way."
             >
               <Select
-                value={organizationId}
-                onChange={setOrganizationId}
+                value={inThisChurch}
+                onChange={setInThisChurch}
                 options={[
-                  { value: "", label: role === "SUPER_ADMIN" ? "No church" : "My own church" },
-                  ...organizations.map((organization) => ({
-                    value: organization.id,
-                    label: organization.name,
-                  })),
+                  { value: "yes", label: "This church" },
+                  { value: "no", label: "No church" },
                 ]}
               />
             </Field>

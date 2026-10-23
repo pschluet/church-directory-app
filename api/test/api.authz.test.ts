@@ -325,8 +325,8 @@ describe.skipIf(!hasDb)("authorization", () => {
       expect(body.organizationId).toBe(orgA);
     });
 
-    it("lets a super admin invite anywhere, in any role", async () => {
-      const { status, body } = await as(superAdmin).call("POST", "/api/admin/users", {
+    it("lets a super admin invite into the church they are viewing, in any role", async () => {
+      const { status, body } = await as(superAdmin).call("POST", `/api/admin/users?orgId=${orgB}`, {
         email: "new5@b.test",
         firstName: "New",
         role: "ADMIN",

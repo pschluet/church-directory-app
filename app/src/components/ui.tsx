@@ -601,6 +601,161 @@ export interface SelectOption<T extends string = string> {
 }
 
 /**
+ * The open list of a Select or MultiSelect: portalled, fixed to its button,
+ * following it as anything scrolls, and dismissed by a pointer outside it or a
+ * resize. Also keeps the highlighted option scrolled into view.
+ */
+function useAnchoredList(open: boolean, dismiss: () => void, activeOptionId: string | null) {
+  const [fixedAt, setFixedAt] = useState<{
+    top?: number;
+    bottom?: number;
+    left: number;
+    minWidth: number;
+  } | null>(null);
+  const buttonRef = useRef<HTMLButtonElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  // The listeners below are attached once per opening; this keeps them calling
+  // the latest `dismiss` rather than the one from that render.
+  const dismissRef = useRef(dismiss);
+  dismissRef.current = dismiss;
+
+  /*
+   * Placed below the button unless there is more room above, as MenuButton is.
+   * The side is chosen once, on opening, so the list does not jump from one to
+   * the other while it follows the button.
+   */
+  const flipRef = useRef(false);
+  function place(choose: boolean): void {
+    const button = buttonRef.current;
+    const list = listRef.current;
+    if (!button || !list) return;
+    const box = button.getBoundingClientRect();
+    const listBox = list.getBoundingClientRect();
+    const GAP = 4;
+    if (choose) {
+      const roomBelow = window.innerHeight - box.bottom;
+      flipRef.current = roomBelow < listBox.height + GAP && box.top > roomBelow;
+    }
+    const listWidth = Math.max(box.width, listBox.width);
+    const left = Math.max(8, Math.min(box.left, window.innerWidth - listWidth - 8));
+    setFixedAt(
+      flipRef.current
+        ? { bottom: window.innerHeight - box.top + GAP, left, minWidth: box.width }
+        : { top: box.bottom + GAP, left, minWidth: box.width }
+    );
+  }
+
+  useLayoutEffect(() => {
+    if (open) place(true);
+    else setFixedAt(null);
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) return;
+    const close = () => dismissRef.current();
+    const onPointerDown = (event: PointerEvent) => {
+      const target = event.target as Node;
+      if (buttonRef.current?.contains(target) || listRef.current?.contains(target)) return;
+      close();
+    };
+    /*
+     * A fixed list does not move with the page, so it follows the button
+     * instead. Closing on scroll was the alternative, and the wrong one: a
+     * scroll still settling as the list opens -- momentum on a phone, or a
+     * dialog bringing the focused button into view -- shut it again at once.
+     */
+    let frame = 0;
+    const onScroll = (event: Event) => {
+      if (listRef.current?.contains(event.target as Node)) return;
+      cancelAnimationFrame(frame);
+      frame = requestAnimationFrame(() => {
+        const box = buttonRef.current?.getBoundingClientRect();
+        // Gone off screen entirely: there is nothing left to anchor to.
+        if (!box || box.bottom < 0 || box.top > window.innerHeight) close();
+        else place(false);
+      });
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", close);
+    return () => {
+      cancelAnimationFrame(frame);
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", close);
+    };
+  }, [open]);
+
+  /*
+   * Keeps the highlighted option in view as the arrow keys move it. By hand
+   * rather than with scrollIntoView, which would also scroll the page -- and on
+   * the first render the list is still parked off screen, waiting to be placed.
+   */
+  useEffect(() => {
+    const list = listRef.current;
+    const option = activeOptionId ? document.getElementById(activeOptionId) : null;
+    if (!list || !option) return;
+    if (option.offsetTop < list.scrollTop) list.scrollTop = option.offsetTop;
+    else if (option.offsetTop + option.offsetHeight > list.scrollTop + list.clientHeight)
+      list.scrollTop = option.offsetTop + option.offsetHeight - list.clientHeight;
+  });
+
+  return {
+    buttonRef,
+    listRef,
+    // Parked off screen until it has been measured and placed.
+    fixedAt: fixedAt ?? { top: -9999, left: 0, minWidth: 0 },
+  };
+}
+
+const LIST_PANEL_CLASS =
+  "z-[60] max-h-72 max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-md border border-line bg-surface py-1 text-left shadow-lg ring-1 ring-ink/5 motion-safe:animate-[select-in_120ms_ease-out]";
+
+/**
+ * Letters typed within half a second of each other build one search, so "ma"
+ * reaches March past May, as on a native select. The index of the first option
+ * starting with what has been typed, or -1.
+ */
+function typeaheadMatch(
+  state: { text: string; at: number },
+  event: React.KeyboardEvent,
+  options: { label: string }[]
+): number {
+  if (event.key.length !== 1 || event.metaKey || event.ctrlKey || event.altKey) return -1;
+  const now = Date.now();
+  const text = now - state.at < 500 ? state.text + event.key : event.key;
+  state.text = text.toLowerCase();
+  state.at = now;
+  return options.findIndex((option) => option.label.toLowerCase().startsWith(state.text));
+}
+
+function Chevron({ open }: { open: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 20 20"
+      className={`h-5 w-5 shrink-0 fill-current text-ink-muted transition-transform duration-150 motion-reduce:transition-none ${
+        open ? "rotate-180 text-accent" : ""
+      }`}
+    >
+      <path d="M5.3 7.3a1 1 0 0 1 1.4 0L10 10.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4Z" />
+    </svg>
+  );
+}
+
+function CheckMark({ shown }: { shown: boolean }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 20 20"
+      className={`h-4 w-4 shrink-0 fill-current ${shown ? "" : "invisible"}`}
+    >
+      <path d="M16.7 5.3a1 1 0 0 1 0 1.4l-8 8a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.4L8 12.6l7.3-7.3a1 1 0 0 1 1.4 0Z" />
+    </svg>
+  );
+}
+
+/**
  * A dropdown, in place of a native `<select>`.
  *
  * The native control's open state is whatever the OS draws -- a grey system
@@ -643,17 +798,14 @@ export function Select<T extends string>({
 }) {
   const [open, setOpen] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
-  const [fixedAt, setFixedAt] = useState<{
-    top?: number;
-    bottom?: number;
-    left: number;
-    minWidth: number;
-  } | null>(null);
-  const buttonRef = useRef<HTMLButtonElement>(null);
-  const listRef = useRef<HTMLDivElement>(null);
   const typeahead = useRef({ text: "", at: 0 });
   const listId = useId();
   const optionId = (index: number) => `${listId}-option-${index}`;
+  const { buttonRef, listRef, fixedAt } = useAnchoredList(
+    open,
+    () => setOpen(false),
+    open && activeIndex >= 0 ? optionId(activeIndex) : null
+  );
 
   const selectedIndex = options.findIndex((option) => option.value === value);
   const selected = selectedIndex >= 0 ? options[selectedIndex] : undefined;
@@ -666,7 +818,6 @@ export function Select<T extends string>({
 
   function close(): void {
     setOpen(false);
-    setFixedAt(null);
   }
 
   function choose(index: number): void {
@@ -675,85 +826,6 @@ export function Select<T extends string>({
     buttonRef.current?.focus();
     if (option && option.value !== value) onChange(option.value);
   }
-
-  /*
-   * Placed below the button unless there is more room above, as MenuButton is.
-   * The side is chosen once, on opening, so the list does not jump from one to
-   * the other while it follows the button.
-   */
-  const flipRef = useRef(false);
-  function place(choose: boolean): void {
-    const button = buttonRef.current;
-    const list = listRef.current;
-    if (!button || !list) return;
-    const box = button.getBoundingClientRect();
-    const listBox = list.getBoundingClientRect();
-    const GAP = 4;
-    if (choose) {
-      const roomBelow = window.innerHeight - box.bottom;
-      flipRef.current = roomBelow < listBox.height + GAP && box.top > roomBelow;
-    }
-    const listWidth = Math.max(box.width, listBox.width);
-    const left = Math.max(8, Math.min(box.left, window.innerWidth - listWidth - 8));
-    setFixedAt(
-      flipRef.current
-        ? { bottom: window.innerHeight - box.top + GAP, left, minWidth: box.width }
-        : { top: box.bottom + GAP, left, minWidth: box.width }
-    );
-  }
-
-  useLayoutEffect(() => {
-    if (open) place(true);
-  }, [open]);
-
-  useEffect(() => {
-    if (!open) return;
-    const onPointerDown = (event: PointerEvent) => {
-      const target = event.target as Node;
-      if (buttonRef.current?.contains(target) || listRef.current?.contains(target)) return;
-      close();
-    };
-    /*
-     * A fixed list does not move with the page, so it follows the button
-     * instead. Closing on scroll was the alternative, and the wrong one: a
-     * scroll still settling as the list opens -- momentum on a phone, or a
-     * dialog bringing the focused button into view -- shut it again at once.
-     */
-    let frame = 0;
-    const onScroll = (event: Event) => {
-      if (listRef.current?.contains(event.target as Node)) return;
-      cancelAnimationFrame(frame);
-      frame = requestAnimationFrame(() => {
-        const box = buttonRef.current?.getBoundingClientRect();
-        // Gone off screen entirely: there is nothing left to anchor to.
-        if (!box || box.bottom < 0 || box.top > window.innerHeight) close();
-        else place(false);
-      });
-    };
-    document.addEventListener("pointerdown", onPointerDown);
-    document.addEventListener("scroll", onScroll, true);
-    window.addEventListener("resize", close);
-    return () => {
-      cancelAnimationFrame(frame);
-      document.removeEventListener("pointerdown", onPointerDown);
-      document.removeEventListener("scroll", onScroll, true);
-      window.removeEventListener("resize", close);
-    };
-  }, [open]);
-
-  /*
-   * Keeps the highlighted option in view as the arrow keys move it. By hand
-   * rather than with scrollIntoView, which would also scroll the page -- and on
-   * the first render the list is still parked off screen, waiting to be placed.
-   */
-  useEffect(() => {
-    const list = listRef.current;
-    const option = open && activeIndex >= 0 ? document.getElementById(optionId(activeIndex)) : null;
-    if (!list || !option) return;
-    if (option.offsetTop < list.scrollTop) list.scrollTop = option.offsetTop;
-    else if (option.offsetTop + option.offsetHeight > list.scrollTop + list.clientHeight)
-      list.scrollTop = option.offsetTop + option.offsetHeight - list.clientHeight;
-  });
 
   function onKeyDown(event: React.KeyboardEvent): void {
     if (disabled) return;
@@ -800,18 +872,8 @@ export function Select<T extends string>({
         return;
     }
 
-    if (event.key.length === 1 && !event.metaKey && !event.ctrlKey && !event.altKey) {
-      // Letters typed within half a second of each other build one search, so
-      // "ma" reaches March past May, as on a native select.
-      const now = Date.now();
-      const text =
-        now - typeahead.current.at < 500 ? typeahead.current.text + event.key : event.key;
-      typeahead.current = { text: text.toLowerCase(), at: now };
-      const match = options.findIndex((option) =>
-        option.label.toLowerCase().startsWith(typeahead.current.text)
-      );
-      if (match >= 0) setActiveIndex(match);
-    }
+    const match = typeaheadMatch(typeahead.current, event, options);
+    if (match >= 0) setActiveIndex(match);
   }
 
   const sizing = compact
@@ -858,15 +920,7 @@ export function Select<T extends string>({
               </span>
             ))}
         </span>
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 20 20"
-          className={`h-5 w-5 shrink-0 fill-current text-ink-muted transition-transform duration-150 motion-reduce:transition-none ${
-            open ? "rotate-180 text-accent" : ""
-          }`}
-        >
-          <path d="M5.3 7.3a1 1 0 0 1 1.4 0L10 10.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4Z" />
-        </svg>
+        <Chevron open={open} />
       </button>
 
       {required && (
@@ -893,9 +947,9 @@ export function Select<T extends string>({
             aria-label={ariaLabel}
             style={{
               position: "fixed",
-              ...(fixedAt ?? { top: -9999, left: 0, minWidth: 0 }),
+              ...fixedAt,
             }}
-            className="z-[60] max-h-72 max-w-[calc(100vw-1rem)] overflow-y-auto overscroll-contain rounded-md border border-line bg-surface py-1 text-left shadow-lg ring-1 ring-ink/5 motion-safe:animate-[select-in_120ms_ease-out]"
+            className={LIST_PANEL_CLASS}
           >
             {options.map((option, index) => {
               const isSelected = index === selectedIndex;
@@ -918,13 +972,180 @@ export function Select<T extends string>({
                   } ${isSelected ? "font-bold text-primary" : "text-ink"}`}
                 >
                   <span className="flex-1 whitespace-nowrap">{option.label}</span>
-                  <svg
-                    aria-hidden="true"
-                    viewBox="0 0 20 20"
-                    className={`h-4 w-4 shrink-0 fill-current ${isSelected ? "" : "invisible"}`}
-                  >
-                    <path d="M16.7 5.3a1 1 0 0 1 0 1.4l-8 8a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.4L8 12.6l7.3-7.3a1 1 0 0 1 1.4 0Z" />
-                  </svg>
+                  <CheckMark shown={isSelected} />
+                </div>
+              );
+            })}
+          </div>,
+          document.body
+        )}
+    </span>
+  );
+}
+
+/**
+ * Select's look, choosing any number of options rather than one -- a filter
+ * where nothing chosen means "all of them".
+ *
+ * A listbox with `aria-multiselectable`: choosing an option toggles it and
+ * leaves the list open for the next, which is the difference from Select.
+ * Escape, Tab or a click elsewhere closes it. The button names the one option
+ * chosen, or says how many when there are several.
+ */
+export function MultiSelect<T extends string>({
+  values,
+  onChange,
+  options,
+  allLabel,
+  summarize,
+  className = "",
+  "aria-label": ariaLabel,
+}: {
+  values: T[];
+  onChange: (values: T[]) => void;
+  options: SelectOption<T>[];
+  /** What the button says with nothing chosen -- "All roles". */
+  allLabel: string;
+  /** What it says with more than one chosen -- "3 roles". */
+  summarize: (count: number) => string;
+  className?: string;
+  "aria-label": string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const typeahead = useRef({ text: "", at: 0 });
+  const listId = useId();
+  const optionId = (index: number) => `${listId}-option-${index}`;
+  const { buttonRef, listRef, fixedAt } = useAnchoredList(
+    open,
+    () => setOpen(false),
+    open && activeIndex >= 0 ? optionId(activeIndex) : null
+  );
+
+  const chosen = options.filter((option) => values.includes(option.value));
+  const summary =
+    chosen.length === 0
+      ? allLabel
+      : chosen.length === 1
+        ? chosen[0]!.label
+        : summarize(chosen.length);
+
+  function toggle(index: number): void {
+    const option = options[index];
+    if (!option) return;
+    setActiveIndex(index);
+    // In the options' order rather than the order they were picked, so the
+    // same choice always reads -- and serializes -- the same way.
+    const next = values.includes(option.value)
+      ? values.filter((value) => value !== option.value)
+      : [...values, option.value];
+    onChange(options.map((o) => o.value).filter((value) => next.includes(value)));
+  }
+
+  function onKeyDown(event: React.KeyboardEvent): void {
+    const last = options.length - 1;
+
+    if (!open) {
+      if (["ArrowDown", "ArrowUp", "Enter", " "].includes(event.key)) {
+        event.preventDefault();
+        setActiveIndex(0);
+        setOpen(true);
+      }
+      return;
+    }
+
+    switch (event.key) {
+      case "ArrowDown":
+        event.preventDefault();
+        setActiveIndex((index) => Math.min(last, index + 1));
+        return;
+      case "ArrowUp":
+        event.preventDefault();
+        setActiveIndex((index) => Math.max(0, index - 1));
+        return;
+      case "Home":
+        event.preventDefault();
+        setActiveIndex(0);
+        return;
+      case "End":
+        event.preventDefault();
+        setActiveIndex(last);
+        return;
+      case "Enter":
+      case " ":
+        event.preventDefault();
+        toggle(activeIndex);
+        return;
+      case "Escape":
+        // Stopped here so a Modal underneath does not close along with the list.
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(false);
+        return;
+      case "Tab":
+        setOpen(false);
+        return;
+    }
+
+    const match = typeaheadMatch(typeahead.current, event, options);
+    if (match >= 0) setActiveIndex(match);
+  }
+
+  return (
+    <span className={`relative inline-flex min-w-0 ${className}`}>
+      <button
+        ref={buttonRef}
+        type="button"
+        role="combobox"
+        aria-label={ariaLabel}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listId}
+        aria-activedescendant={open && activeIndex >= 0 ? optionId(activeIndex) : undefined}
+        onClick={() => {
+          if (!open) setActiveIndex(0);
+          setOpen(!open);
+        }}
+        onKeyDown={onKeyDown}
+        className={`${inputClass} flex w-full min-w-0 items-center justify-between gap-2 pr-2 text-left transition hover:border-accent ${
+          open ? "border-accent" : ""
+        }`}
+      >
+        <span className={`truncate ${chosen.length === 0 ? "text-ink-muted" : ""}`}>{summary}</span>
+        <Chevron open={open} />
+      </button>
+
+      {open &&
+        createPortal(
+          <div
+            ref={listRef}
+            id={listId}
+            role="listbox"
+            aria-label={ariaLabel}
+            aria-multiselectable="true"
+            style={{ position: "fixed", ...fixedAt }}
+            className={LIST_PANEL_CLASS}
+          >
+            {options.map((option, index) => {
+              const isSelected = values.includes(option.value);
+              return (
+                // As in Select: focus stays on the button.
+                // biome-ignore lint/a11y/useFocusableInteractive: see above
+                <div
+                  key={option.value}
+                  id={optionId(index)}
+                  role="option"
+                  aria-selected={isSelected}
+                  data-value={option.value}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => toggle(index)}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  className={`tap-target flex cursor-pointer items-center gap-2 px-3 py-2 ${
+                    index === activeIndex ? "bg-surface-muted" : ""
+                  } ${isSelected ? "font-bold text-primary" : "text-ink"}`}
+                >
+                  <span className="flex-1 whitespace-nowrap">{option.label}</span>
+                  <CheckMark shown={isSelected} />
                 </div>
               );
             })}
