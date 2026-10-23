@@ -1634,7 +1634,11 @@ export const inviteUserSchema = z.object({
   firstName: z.string().trim().min(1).max(100),
   lastName: trimmedOptional(100),
   role: roleSchema,
-  /** Required unless the invited role is SUPER_ADMIN. */
+  /**
+   * The organization being viewed, or null to leave a SUPER_ADMIN invite
+   * without a parish. Any other organization is refused; the account always
+   * lands in the one being viewed.
+   */
   organizationId: uuidSchema.nullable().optional(),
   /** Optionally place the new person straight into a family. */
   familyId: uuidSchema.nullable().optional(),
