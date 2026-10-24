@@ -37,6 +37,7 @@ export default function EmojiPickerPanel({ onPick }: { onPick: (emoji: string) =
       onEmojiSelect={({ emoji }) => onPick(emoji)}
       emojibaseUrl={EMOJIBASE_URL}
       skinTone={skinTone}
+      // Matched by the rows' grid-cols-9 below, whose cells stretch to fill the width.
       columns={9}
       className="isolate flex h-[24rem] w-full flex-col bg-surface text-ink"
     >
@@ -52,16 +53,16 @@ export default function EmojiPickerPanel({ onPick }: { onPick: (emoji: string) =
       </div>
 
       {search === "" && (
-        <div className="border-b border-line px-2 pb-2">
-          <p className="px-1 pb-1 text-xs font-bold text-ink-muted">Frequently used</p>
-          <ul className="flex flex-wrap">
+        <div className="border-b border-line pb-2">
+          <p className="px-3 pb-1 text-xs font-bold text-ink-muted">Frequently used</p>
+          <ul className="grid grid-cols-9 px-1.5">
             {frequent.map((emoji) => (
               <li key={emoji}>
                 <button
                   type="button"
                   aria-label={`React with ${emoji}`}
                   onClick={() => onPick(emoji)}
-                  className="flex size-9 items-center justify-center rounded-md text-xl hover:bg-surface-muted focus-visible:bg-surface-muted"
+                  className="flex aspect-square w-full items-center justify-center rounded-md text-2xl hover:bg-surface-muted focus-visible:bg-surface-muted"
                 >
                   {emoji}
                 </button>
@@ -71,7 +72,11 @@ export default function EmojiPickerPanel({ onPick }: { onPick: (emoji: string) =
         </div>
       )}
 
-      <EmojiPicker.Viewport className="relative min-h-0 flex-1 outline-hidden">
+      {/* No gutter held for a scrollbar, so the grid runs to the right edge. */}
+      <EmojiPicker.Viewport
+        className="relative min-h-0 flex-1 outline-hidden"
+        style={{ scrollbarGutter: "auto" }}
+      >
         <EmojiPicker.Loading>
           <span className="absolute inset-0 flex items-center justify-center text-sm text-ink-muted">
             Loading…
@@ -93,15 +98,25 @@ export default function EmojiPickerPanel({ onPick }: { onPick: (emoji: string) =
                 {category.label}
               </div>
             ),
-            Row: ({ children, ...props }) => (
-              <div className="scroll-my-1.5 px-2" {...props}>
+            // The picker styles a row as a flex line of fixed cells, which left a
+            // strip empty at the right; a grid of nine stretches them to the edge.
+            Row: ({ children, style, ...props }) => (
+              <div
+                className="scroll-my-1.5 px-1.5"
+                {...props}
+                style={{
+                  ...style,
+                  display: "grid",
+                  gridTemplateColumns: "repeat(9, minmax(0, 1fr))",
+                }}
+              >
                 {children}
               </div>
             ),
             Emoji: ({ emoji, ...props }) => (
               <button
                 type="button"
-                className="flex size-9 items-center justify-center rounded-md text-xl data-[active]:bg-surface-muted"
+                className="flex aspect-square w-full items-center justify-center rounded-md text-2xl data-[active]:bg-surface-muted"
                 {...props}
               >
                 {emoji.emoji}

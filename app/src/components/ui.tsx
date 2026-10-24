@@ -383,6 +383,7 @@ export function MenuButton({
   portal = false,
   trigger,
   align = "right",
+  buttonClassName = "tap-target inline-flex items-center justify-center rounded-md text-ink-muted transition hover:bg-surface-muted hover:text-primary",
 }: {
   /** What the button opens, for screen readers -- e.g. "Actions for Paul". */
   label: string;
@@ -399,6 +400,8 @@ export function MenuButton({
   trigger?: ReactNode;
   /** Which edge of the button the panel lines up with. */
   align?: "left" | "right";
+  /** Replaces the button's own look, for a trigger that draws its own shape. */
+  buttonClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   /**
@@ -524,7 +527,7 @@ export function MenuButton({
             return !wasOpen;
           })
         }
-        className="tap-target inline-flex items-center justify-center rounded-md text-ink-muted transition hover:bg-surface-muted hover:text-primary"
+        className={buttonClassName}
       >
         {trigger ?? (
           <svg aria-hidden="true" viewBox="0 0 20 20" className="h-5 w-5 fill-current">

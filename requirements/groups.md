@@ -52,7 +52,7 @@ For a Private group, non-members see the title, description, image, and a member
 - Senders can edit or delete their own posts. Edited posts show an "edited" indicator, and there's no time limit on how long after posting someone can edit.
 - Deleting a post doesn't remove it from the thread entirely — it leaves a placeholder ("message deleted," or "event cancelled" for events) so replies underneath don't lose their context. Only the content is removed; the fact that something was posted there remains.
 - Any member can reply to a post. Replies appear in an expandable thread under the original post. Replies are one level deep — you can reply to a top-level post, but you cannot reply to a reply.
-- Posts support plain text with clickable links; there's no rich text formatting.
+- Messages support Slack-style formatting from the composer's **Aa** row: bold, italic, underline, strikethrough, links, and bulleted and numbered lists. It is stored as plain text with a small Markdown-like syntax (`app/src/lib/richText.ts`), so older plain messages read as they always did. Event descriptions stay plain text.
 - Members can @ mention other members of the group, which notifies the person mentioned. You can only mention people who are already in the group.
 - Members can type @everyone to mention every member of the group at once. It notifies everyone a mention would, including members set to "only when I'm mentioned"; members who turned the group's notifications off are not notified.
 - Posts can include attachments: photos and documents (PDF, Word, Excel, PowerPoint, plain text, and CSV files). Video attachments are planned for a future phase and are not supported in this release. Each attachment is capped at 25MB.
