@@ -2648,9 +2648,12 @@ function ChatComposer({
   /*
    * Open (the card with its toolbar) while the box has focus, and until a press
    * lands somewhere else -- a press in the + menu or the emoji picker, which
-   * are drawn outside the bar, does not count as leaving it.
+   * are drawn outside the bar, does not count as leaving it. Focus going
+   * nowhere, as when a phone's keyboard is dismissed, also closes it -- unless
+   * a press in the bar caused it: a tapped button on iOS takes no focus.
    */
   const barRef = useRef<HTMLDivElement>(null);
+  const pressedInside = useRef(0);
   const [active, setActive] = useState(autoFocus);
   const [formatOpen, setFormatOpen] = useState(false);
   const [emojiOpen, setEmojiOpen] = useState(false);
@@ -2852,8 +2855,12 @@ function ChatComposer({
             ? "flex-col rounded-3xl px-2 pb-1.5 pt-1"
             : "items-center gap-1 rounded-full px-1.5 py-0.5"
         } ${editing ? "border-accent" : "border-line"}`}
+        onPointerDownCapture={() => {
+          pressedInside.current = Date.now();
+        }}
         onBlur={(event) => {
-          if (event.relatedTarget && isOutside(event.relatedTarget)) setActive(false);
+          const to = event.relatedTarget;
+          if (to ? isOutside(to) : Date.now() - pressedInside.current > 500) setActive(false);
         }}
         onClick={(event) => {
           // A press anywhere on the resting pill, bar its buttons, starts typing.

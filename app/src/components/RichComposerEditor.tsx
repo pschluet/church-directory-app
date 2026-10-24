@@ -198,6 +198,9 @@ export default function RichComposerEditor({
     content: bodyToDoc(value),
     extensions: [
       StarterKit.configure({
+        // Its empty line after a list stays behind when the list is undone,
+        // leaving a blank box two lines tall.
+        trailingNode: false,
         heading: false,
         blockquote: false,
         code: false,
@@ -377,7 +380,17 @@ export default function RichComposerEditor({
     editor.commands.focus("end");
   }, [editor, focusToken]);
 
-  const isEmpty = useEditorState({ editor, selector: ({ editor: e }) => e?.isEmpty ?? true });
+  // Empty means a single blank line: a list started but not yet typed in has
+  // its bullet or number where the placeholder would be.
+  const isEmpty = useEditorState({
+    editor,
+    selector: ({ editor: e }) => {
+      const doc = e?.state.doc;
+      if (!doc) return true;
+      const only = doc.childCount === 1 ? doc.firstChild : null;
+      return only?.type.name === "paragraph" && only.content.size === 0;
+    },
+  });
   const wrapperBox = wrapperRef.current?.getBoundingClientRect();
 
   return (
