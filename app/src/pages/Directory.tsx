@@ -19,6 +19,8 @@ interface Cursor {
 interface Page {
   people: PersonSummaryDto[];
   nextCursor: Cursor | null;
+  /** The whole directory under the current filter; sent on the first page only. */
+  total: number | null;
 }
 
 /** Stable identity while the first page is still in flight, for PersonGrid's memo. */
@@ -106,10 +108,14 @@ export function Directory() {
       }),
     initialPageParam: null as Cursor | null,
     getNextPageParam: (last: Page) => last.nextCursor,
-    select: (data) => data.pages.flatMap((page) => page.people),
+    select: (data) => ({
+      people: data.pages.flatMap((page) => page.people),
+      total: data.pages[0]?.total ?? null,
+    }),
   });
 
-  const people = browse.data ?? NO_PEOPLE;
+  const people = browse.data?.people ?? NO_PEOPLE;
+  const total = browse.data?.total ?? null;
 
   /*
    * Typing goes into the URL, debounced, so a search can be shared or
@@ -196,17 +202,28 @@ export function Directory() {
       return `${results.length} ${results.length === 1 ? "match" : "matches"}`;
     }
     if (browse.isPending) return undefined;
+    // The whole directory, not just the pages scrolled into so far. Falls back
+    // to what is loaded only if the server sent no total.
+    const count = total ?? people.length;
     // Names what is being counted, so a number shrinking under the filter is
     // never left unexplained.
     const noun = accountHoldersOnly
-      ? people.length === 1
+      ? count === 1
         ? "account holder"
         : "account holders"
-      : people.length === 1
+      : count === 1
         ? "person"
         : "people";
-    return `${people.length} ${noun}, by last name`;
-  }, [searching, searchLoading, results, browse.isPending, people.length, accountHoldersOnly]);
+    return `${count} ${noun}, by last name`;
+  }, [
+    searching,
+    searchLoading,
+    results,
+    browse.isPending,
+    total,
+    people.length,
+    accountHoldersOnly,
+  ]);
 
   return (
     <>

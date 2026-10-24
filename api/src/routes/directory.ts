@@ -77,17 +77,34 @@ routes.get("/", async (c) => {
   if (cursorId) params.push(cursorLastName, cursorFirstName ?? "", cursorId);
   params.push(limit + 1);
 
-  const { rows } = await db.query<PersonRow>(
-    `select ${PERSON_COLUMNS}
-       from persons_resolved r
-      where r.organization_id = $1
-        and r.deleted_at is null
-        ${accountHoldersOnly ? ACCOUNT_HOLDER_FILTER : ""}
-        ${keyset}
-      ${PERSON_ORDER}
-      limit $${params.length}`,
-    params
-  );
+  // The page header counts the whole directory, not the pages loaded so far.
+  // Counted on the first page only: the client reads it from there, and a
+  // "Show more" click should not pay for the same number again.
+  const [{ rows }, total] = await Promise.all([
+    db.query<PersonRow>(
+      `select ${PERSON_COLUMNS}
+         from persons_resolved r
+        where r.organization_id = $1
+          and r.deleted_at is null
+          ${accountHoldersOnly ? ACCOUNT_HOLDER_FILTER : ""}
+          ${keyset}
+        ${PERSON_ORDER}
+        limit $${params.length}`,
+      params
+    ),
+    cursorId
+      ? null
+      : db
+          .query<{ total: number }>(
+            `select count(*)::int as total
+               from persons_resolved r
+              where r.organization_id = $1
+                and r.deleted_at is null
+                ${accountHoldersOnly ? ACCOUNT_HOLDER_FILTER : ""}`,
+            [organizationId]
+          )
+          .then((result) => result.rows[0]?.total ?? 0),
+  ]);
 
   const hasMore = rows.length > limit;
   const page = hasMore ? rows.slice(0, limit) : rows;
@@ -95,6 +112,7 @@ routes.get("/", async (c) => {
 
   return c.json({
     people: toSummaries(caller, page),
+    total,
     nextCursor:
       hasMore && last
         ? { lastName: last.last_name, firstName: last.first_name, id: last.id }
