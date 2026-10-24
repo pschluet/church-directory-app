@@ -148,6 +148,19 @@ describe("Directory", () => {
     expect(calls("/directory/search")).toHaveLength(0);
   });
 
+  it("counts the whole directory, not just the pages loaded", async () => {
+    api.mockImplementation(() =>
+      Promise.resolve({
+        people: [ANNA, BORIS],
+        nextCursor: { lastName: "Petrov", firstName: "Boris", id: "boris-id" },
+        total: 120,
+      })
+    );
+    renderDirectory();
+
+    expect(await screen.findByText("120 people, by last name")).toBeInTheDocument();
+  });
+
   /*
    * jsdom does not lay anything out, so the class is as close as this can get
    * to the real assertion: that a card with a long name stays inside the

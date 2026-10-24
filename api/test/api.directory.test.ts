@@ -98,6 +98,8 @@ describe.skipIf(!hasDb)("directory browse and search", () => {
       let query = "/api/directory?limit=2";
       for (let page = 0; page < 5; page += 1) {
         const { body } = await as(me).call("GET", query);
+        // The whole directory on the first page, not the two on it; nothing after.
+        expect(body.total).toBe(page === 0 ? 5 : null);
         seen.push(...body.people.map((p: any) => p.id));
         if (!body.nextCursor) break;
         const { lastName, firstName, id } = body.nextCursor;
@@ -275,6 +277,7 @@ describe.skipIf(!hasDb)("directory browse and search", () => {
       for (let page = 0; page < 6; page += 1) {
         const { body } = await as(me).call("GET", query);
         expect(body.people).toHaveLength(1);
+        expect(body.total).toBe(page === 0 ? 3 : null);
         seen.push(...names(body));
         if (!body.nextCursor) break;
         const { lastName, firstName, id } = body.nextCursor;
