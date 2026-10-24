@@ -589,6 +589,73 @@ describe("GroupDetail", () => {
       );
     });
 
+    it("formats typed markers in place, Slack's shortcuts included", async () => {
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      const editor = (bar as HTMLElement & { editor: Editor }).editor;
+      // Each closing character goes in as a keystroke would, so the editor's
+      // typing shortcuts see it.
+      const typeClosing = (text: string, last: string) => {
+        act(() => void editor.view.dispatch(editor.view.state.tr.insertText(text)));
+        act(() => {
+          const { view } = editor;
+          const { from, to } = view.state.selection;
+          const handled = view.someProp("handleTextInput", (f) =>
+            f(view, from, to, last, () => view.state.tr)
+          );
+          if (!handled) view.dispatch(view.state.tr.insertText(last));
+        });
+      };
+      await userEvent.click(bar);
+      typeClosing("*bold", "*");
+      typeClosing(" _soft", "_");
+      typeClosing(" ~gone", "~");
+      typeClosing(" ++under+", "+");
+      typeClosing(" [site](example.org", ")");
+
+      expect(bar.querySelector("strong")).toHaveTextContent("bold");
+      expect(bar.querySelector("em")).toHaveTextContent("soft");
+      expect(bar.querySelector("s")).toHaveTextContent("gone");
+      expect(bar.querySelector("u")).toHaveTextContent("under");
+      expect(bar.querySelector("a")).toHaveAttribute("href", "https://example.org");
+      // None of the markers is left showing.
+      expect(barText(bar)).toBe("bold soft gone under site");
+
+      await userEvent.keyboard("{Enter}");
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith(
+          "/groups/g1/posts",
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({
+              body: "**bold** _soft_ ~~gone~~ ++under++ [site](https://example.org)",
+            }),
+          })
+        )
+      );
+    });
+
+    it("formats pasted plain text, lists and links included", async () => {
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      await userEvent.click(bar);
+      // Text only, as a paste from Notes or a text message carries.
+      const text = "Bring **snacks** and [the form](https://example.org)\n- one\n- two";
+      fireEvent.paste(bar, {
+        clipboardData: {
+          getData: (type: string) => (type === "text/plain" ? text : ""),
+          types: ["text/plain"],
+        },
+      });
+
+      expect(bar.querySelector("strong")).toHaveTextContent("snacks");
+      expect(bar.querySelector("a")).toHaveAttribute("href", "https://example.org");
+      expect(bar.querySelectorAll("li")).toHaveLength(2);
+      expect(barText(bar)).not.toContain("**");
+    });
+
     it("reads mentions out of formatted text", async () => {
       stub();
       renderPage();

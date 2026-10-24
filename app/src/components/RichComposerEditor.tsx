@@ -1,10 +1,23 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { EditorContent, Extension, useEditor, useEditorState, type Editor } from "@tiptap/react";
+import {
+  EditorContent,
+  Extension,
+  InputRule,
+  markInputRule,
+  markPasteRule,
+  useEditor,
+  useEditorState,
+  type Editor,
+} from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
+import Bold from "@tiptap/extension-bold";
+import Italic, { underscoreInputRegex, underscorePasteRegex } from "@tiptap/extension-italic";
+import Strike from "@tiptap/extension-strike";
+import Underline from "@tiptap/extension-underline";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import Suggestion, { exitSuggestion, type SuggestionProps } from "@tiptap/suggestion";
 import { GROUP_MENTION_EVERYONE, type GroupMemberDto } from "@shared";
-import { bodyToDoc, docToBody, type DocNode } from "../lib/richText";
+import { bodyToDoc, docToBody, isSafeHref, type DocNode } from "../lib/richText";
 import { Button, Field, inputClass, Modal } from "./ui";
 
 /**
@@ -31,6 +44,80 @@ type MentionState = {
 };
 
 const mentionKey = new PluginKey("mention");
+
+/*
+ * Typing the markers formats the text in place, so the box never shows raw
+ * syntax. Slack's own shortcuts -- *bold*, _italic_, ~strike~ -- alongside the
+ * stored syntax's **bold**, ~~strike~~ and ++underline++. A single * is bold
+ * here, as in Slack, so italics are underscores only.
+ */
+const singleStarInput = /(?:^|\s)(\*(?!\s)([^*]+?)(?<!\s)\*)$/;
+const singleStarPaste = /(?:^|\s)(\*(?!\s)([^*]+?)(?<!\s)\*)/g;
+const singleTildeInput = /(?:^|\s)(~(?!\s)([^~]+?)(?<!\s)~)$/;
+const singleTildePaste = /(?:^|\s)(~(?!\s)([^~]+?)(?<!\s)~)/g;
+const plusInput = /(?:^|\s)(\+\+(?!\s)([^+]+?)(?<!\s)\+\+)$/;
+const plusPaste = /(?:^|\s)(\+\+(?!\s)([^+]+?)(?<!\s)\+\+)/g;
+
+const MessageBold = Bold.extend({
+  addInputRules() {
+    return [...(this.parent?.() ?? []), markInputRule({ find: singleStarInput, type: this.type })];
+  },
+  addPasteRules() {
+    return [...(this.parent?.() ?? []), markPasteRule({ find: singleStarPaste, type: this.type })];
+  },
+});
+
+const MessageItalic = Italic.extend({
+  addInputRules() {
+    return [markInputRule({ find: underscoreInputRegex, type: this.type })];
+  },
+  addPasteRules() {
+    return [markPasteRule({ find: underscorePasteRegex, type: this.type })];
+  },
+});
+
+const MessageStrike = Strike.extend({
+  addInputRules() {
+    return [...(this.parent?.() ?? []), markInputRule({ find: singleTildeInput, type: this.type })];
+  },
+  addPasteRules() {
+    return [...(this.parent?.() ?? []), markPasteRule({ find: singleTildePaste, type: this.type })];
+  },
+});
+
+const MessageUnderline = Underline.extend({
+  addInputRules() {
+    return [markInputRule({ find: plusInput, type: this.type })];
+  },
+  addPasteRules() {
+    return [markPasteRule({ find: plusPaste, type: this.type })];
+  },
+});
+
+/** Typing [text](address) turns it into a link to that address, showing only the text. */
+const LinkShortcut = Extension.create({
+  name: "linkShortcut",
+  addInputRules() {
+    return [
+      new InputRule({
+        find: /\[([^\]]+)\]\(([^)\s]+)\)$/,
+        handler: ({ state, range, match }) => {
+          const [, text = "", raw = ""] = match;
+          const href = normalizeHref(raw);
+          const link = state.schema.marks.link;
+          if (!link || !isSafeHref(href)) return null;
+          state.tr.replaceWith(
+            range.from,
+            range.to,
+            state.schema.text(text, [link.create({ href })])
+          );
+          // What comes next is typed plain, not as more of the link.
+          state.tr.removeStoredMark(link);
+        },
+      }),
+    ];
+  },
+});
 
 export default function RichComposerEditor({
   value,
@@ -104,6 +191,7 @@ export default function RichComposerEditor({
   }
   const pickRef = useRef(pick);
   pickRef.current = pick;
+  const editorRef = useRef<Editor | null>(null);
 
   const editor = useEditor({
     autofocus: autoFocus ? "end" : false,
@@ -115,8 +203,17 @@ export default function RichComposerEditor({
         code: false,
         codeBlock: false,
         horizontalRule: false,
+        bold: false,
+        italic: false,
+        strike: false,
+        underline: false,
         link: { openOnClick: false, autolink: false, linkOnPaste: true },
       }),
+      MessageBold,
+      MessageItalic,
+      MessageStrike,
+      MessageUnderline,
+      LinkShortcut,
       Extension.create({
         name: "messageKeys",
         // Ahead of the lists' own Enter, so Enter on a desktop sends from a list too.
@@ -209,6 +306,28 @@ export default function RichComposerEditor({
       }),
     ],
     editorProps: {
+      /*
+       * Plain text pasted in -- a message copied from elsewhere, or a list typed
+       * in Notes -- is read with the same parser that renders messages, so its
+       * lists, links and formatting arrive formatted rather than as markers.
+       * Anything carrying its own HTML is left to the editor, which keeps its
+       * formatting.
+       */
+      handlePaste: (_view, event) => {
+        const data = event.clipboardData;
+        const text = data?.getData("text/plain");
+        if (!text || data?.getData("text/html")) return false;
+        const content = bodyToDoc(text).content ?? [];
+        if (content.length === 0) return false;
+        // A single line goes into the line where the caret is, not a new one.
+        const only = content.length === 1 ? content[0] : null;
+        editorRef.current
+          ?.chain()
+          .focus()
+          .insertContent(only?.type === "paragraph" ? (only.content ?? []) : content)
+          .run();
+        return true;
+      },
       attributes: {
         role: "textbox",
         "aria-label": ariaLabel,
@@ -225,6 +344,8 @@ export default function RichComposerEditor({
     onFocus: () => latest.current.onFocus?.(),
     onBlur: () => window.setTimeout(() => setMention(null), 150),
   });
+
+  editorRef.current = editor;
 
   // The label follows the bar: "Message", "Reply", or "Edit message".
   useEffect(() => {
