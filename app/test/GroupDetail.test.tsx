@@ -1876,7 +1876,12 @@ describe("GroupDetail", () => {
       await screen.findByText("Hello");
       await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
       await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
-      return screen.findByRole("textbox", { name: "Edit message" });
+      const bar = await screen.findByRole("textbox", { name: "Edit message" });
+      // The bar is relabelled a render before the message's text arrives in it;
+      // typing in between would be overwritten by it, as on a slow CI runner.
+      await waitFor(() => expect(barText(bar)).toBe("Hello"));
+      await waitFor(() => expect(bar).toHaveFocus());
+      return bar;
     }
 
     it("uses the message bar at the bottom, not a new input inside the conversation", async () => {
@@ -2165,7 +2170,9 @@ describe("GroupDetail", () => {
       await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
       await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
       const bar = await screen.findByRole("textbox", { name: "Edit message" });
-      expect(barText(bar)).toBe("my reply");
+      // As in startEdit: the reply's text arrives a render after the label.
+      await waitFor(() => expect(barText(bar)).toBe("my reply"));
+      await waitFor(() => expect(bar).toHaveFocus());
       await typeInBar(bar, "!");
       await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
       await waitFor(() =>
