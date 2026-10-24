@@ -36,3 +36,14 @@ if (typeof window !== "undefined") {
     value: { writeText: vi.fn().mockResolvedValue(undefined) },
   });
 }
+
+/*
+ * The message bar's editor (ProseMirror) measures the selection to keep the
+ * caret in view; jsdom lays nothing out, so there is nothing to measure.
+ */
+if (typeof window !== "undefined") {
+  const noRects = () => Object.assign([], { item: () => null }) as unknown as DOMRectList;
+  Range.prototype.getClientRects ??= noRects;
+  Range.prototype.getBoundingClientRect ??= () => new DOMRect();
+  document.elementFromPoint ??= () => null;
+}

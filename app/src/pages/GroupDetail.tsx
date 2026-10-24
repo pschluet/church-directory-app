@@ -1,4 +1,6 @@
 import {
+  lazy,
+  Suspense,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -69,6 +71,8 @@ import {
   useGroupReactionToggle,
 } from "../components/Reactions";
 import { isEmojiOnly } from "../lib/emoji";
+import { parseBody, toPlainText, type Inline, type ListBlock } from "../lib/richText";
+import type { Editor } from "@tiptap/react";
 import {
   Badge,
   Button,
@@ -85,6 +89,13 @@ import {
   useNow,
   usePageScrollLock,
 } from "../components/ui";
+
+// The message bar's editor and its Aa row: one lazily loaded chunk, so Tiptap
+// stays out of the main bundle (see RichComposerEditor.tsx).
+const RichComposerEditor = lazy(() => import("../components/RichComposerEditor"));
+const FormatButtons = lazy(() =>
+  import("../components/RichComposerEditor").then((m) => ({ default: m.FormatButtons }))
+);
 
 /**
  * One group: its messages, files and events, plus everything a group admin or
@@ -1671,13 +1682,13 @@ function ChatRow({
               />
             )}
             {post.body && (
-              <p
+              <div
                 className={`whitespace-pre-line break-words text-ink ${
                   // A message of nothing but emoji is shown large, as in Slack.
-                  isEmojiOnly(post.body) ? "text-3xl leading-tight" : "leading-snug"
+                  isEmojiOnly(toPlainText(post.body)) ? "text-3xl leading-tight" : "leading-snug"
                 }`}
               >
-                <MentionText
+                <RichText
                   text={post.body}
                   mentions={post.mentions}
                   mentionsEveryone={post.mentionsEveryone}
@@ -1685,7 +1696,7 @@ function ChatRow({
                 {!header && post.editedAt && (
                   <span className="text-xs text-ink-muted"> (edited)</span>
                 )}
-              </p>
+              </div>
             )}
             <AttachmentStrip attachments={post.attachments} onMediaLoad={onMediaLoad} />
             <ReactionBar
@@ -1764,7 +1775,7 @@ function ChatRow({
           {/* Which message this is for: its author and the start of what it says. */}
           <p className="mb-2 line-clamp-2 break-words rounded-md border-l-4 border-accent bg-accent-light/30 px-3 py-2 text-sm text-ink">
             <span className="font-bold">{post.authorName}</span>
-            {post.body ? `: ${post.body}` : ""}
+            {post.body ? `: ${toPlainText(post.body)}` : ""}
           </p>
           {canReactHere && (
             <div className="mb-2 flex items-center justify-between gap-1">
@@ -1808,7 +1819,7 @@ function ChatRow({
                   type="button"
                   className="tap-target block w-full px-2 py-3 text-left font-bold text-ink"
                   onClick={() => {
-                    void navigator.clipboard?.writeText(post.body ?? "");
+                    void navigator.clipboard?.writeText(toPlainText(post.body ?? ""));
                     setSheetOpen(false);
                   }}
                 >
@@ -1990,6 +2001,95 @@ function MentionText({
 }
 
 /**
+ * A message's body with its formatting (lib/richText.ts) -- bold, italics,
+ * links, lists -- and, in its text, @ mentions picked out by `MentionText`.
+ * Built from React elements, never HTML, so nothing typed can become markup.
+ */
+function RichText({
+  text,
+  mentions,
+  mentionsEveryone,
+}: {
+  text: string;
+  mentions: { appUserId: string; personId: string; name: string }[];
+  mentionsEveryone?: boolean;
+}) {
+  const inline = (nodes: Inline[]): ReactNode[] =>
+    nodes.map((node, k) => {
+      if (node.kind === "text") {
+        return (
+          <MentionText
+            key={k}
+            text={node.text}
+            mentions={mentions}
+            mentionsEveryone={mentionsEveryone}
+          />
+        );
+      }
+      const children = inline(node.children);
+      switch (node.kind) {
+        case "bold":
+          return <strong key={k}>{children}</strong>;
+        case "italic":
+          return <em key={k}>{children}</em>;
+        case "underline":
+          return <u key={k}>{children}</u>;
+        case "strike":
+          return <s key={k}>{children}</s>;
+        default:
+          // A link: the only kind left.
+          return (
+            <a
+              key={k}
+              href={node.href}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-accent underline"
+            >
+              {children}
+            </a>
+          );
+      }
+    });
+
+  const lines = (rows: Inline[][]): ReactNode[] =>
+    rows.flatMap((row, k) => [...(k > 0 ? [<br key={`br${k}`} />] : []), ...inline(row)]);
+
+  const list = (block: ListBlock, key: number): ReactNode => {
+    const items = block.items.map((item, k) => (
+      <li key={k}>
+        {lines(item.lines)}
+        {item.children.map(list)}
+      </li>
+    ));
+    return block.ordered ? (
+      <ol key={key} start={block.start} className="list-decimal pl-6">
+        {items}
+      </ol>
+    ) : (
+      <ul key={key} className="list-disc pl-6">
+        {items}
+      </ul>
+    );
+  };
+
+  // Lines run on with a break between; a list is its own block.
+  const out: ReactNode[] = [];
+  let lastWasLine = false;
+  parseBody(text).forEach((block, k) => {
+    if (block.kind === "list") {
+      out.push(list(block, k));
+      lastWasLine = false;
+      return;
+    }
+    if (lastWasLine) out.push(<br key={`br${k}`} />);
+    out.push(<span key={k}>{inline(block.content)}</span>);
+    lastWasLine = true;
+  });
+  return <>{out}</>;
+}
+
+/**
  * Where the caret sits inside a `<textarea>`, in pixels relative to the
  * textarea's own padding box. There is no DOM API for this, so the standard
  * trick is to mirror the textarea into an identically-styled, invisible div
@@ -2067,6 +2167,9 @@ function useMentionable(members: GroupMemberDto[]): GroupMemberDto[] {
  * separate "mention mode": an "@" only starts one when it follows the start
  * of the text or whitespace, so an email address typed into a message is
  * left alone.
+ *
+ * For an event's description, which stays plain text. The message bar has its
+ * own editor with formatting (components/RichComposerEditor.tsx).
  */
 function MentionTextarea({
   value,
@@ -2075,15 +2178,6 @@ function MentionTextarea({
   placeholder,
   minHeightClass = "min-h-24",
   maxLength,
-  rows,
-  autoGrow = false,
-  onSubmit,
-  ariaLabel,
-  dropUp = false,
-  bare = false,
-  autoFocus = false,
-  focusToken,
-  inputRef,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -2091,43 +2185,12 @@ function MentionTextarea({
   placeholder: string;
   minHeightClass?: string;
   maxLength: number;
-  rows?: number;
-  /** Grow with the text, up to a cap -- for the one-line message bar. */
-  autoGrow?: boolean;
-  /** Enter (without Shift) sends. The mention list keeps Enter while it is open. */
-  onSubmit?: () => void;
-  ariaLabel?: string;
-  /** Open the mention list above the caret, for a box at the bottom of the screen. */
-  dropUp?: boolean;
-  /** No border or background of its own; a parent draws the box. */
-  bare?: boolean;
-  autoFocus?: boolean;
-  /** Focus (caret at the end) whenever this changes -- for text put in the box from outside. */
-  focusToken?: unknown;
-  /** The textarea itself, for a parent that inserts text at the caret. */
-  inputRef?: { current: HTMLTextAreaElement | null };
 }) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [query, setQuery] = useState<{ atIndex: number; text: string } | null>(null);
   const [highlighted, setHighlighted] = useState(0);
   const [caret, setCaret] = useState<{ top: number; left: number; height: number } | null>(null);
   const [pendingCursor, setPendingCursor] = useState<number | null>(null);
-
-  useEffect(() => {
-    const el = textareaRef.current;
-    if (focusToken === undefined || !el) return;
-    el.focus();
-    el.setSelectionRange(el.value.length, el.value.length);
-  }, [focusToken]);
-
-  useLayoutEffect(() => {
-    const el = textareaRef.current;
-    if (!autoGrow || !el) return;
-    el.style.height = "auto";
-    // Empty, the scroll height is the placeholder's, which wraps on a long
-    // group name; the rows height keeps the empty box one line.
-    if (value !== "") el.style.height = `${el.scrollHeight}px`;
-  }, [autoGrow, value]);
 
   useEffect(() => {
     if (pendingCursor === null) return;
@@ -2190,13 +2253,7 @@ function MentionTextarea({
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>): void {
     // The picker, when it is open, owns the arrows and Enter.
-    if (!query || matches.length === 0) {
-      if (onSubmit && event.key === "Enter" && !event.shiftKey && !event.nativeEvent.isComposing) {
-        event.preventDefault();
-        onSubmit();
-      }
-      return;
-    }
+    if (!query || matches.length === 0) return;
     if (event.key === "ArrowDown") {
       event.preventDefault();
       setHighlighted((h) => (h + 1) % matches.length);
@@ -2215,20 +2272,10 @@ function MentionTextarea({
   }
 
   return (
-    <div className={bare ? "relative min-w-0 flex-1" : "relative"}>
+    <div className="relative">
       <textarea
-        ref={(el) => {
-          textareaRef.current = el;
-          if (inputRef) inputRef.current = el;
-        }}
-        rows={rows}
-        autoFocus={autoFocus}
-        aria-label={ariaLabel}
-        className={
-          bare
-            ? "block max-h-40 w-full resize-none overflow-y-auto bg-transparent px-1 py-2.5 text-ink outline-none placeholder:text-transparent"
-            : `${inputClass} ${minHeightClass}`
-        }
+        ref={textareaRef}
+        className={`${inputClass} ${minHeightClass}`}
         value={value}
         maxLength={maxLength}
         placeholder={placeholder}
@@ -2237,25 +2284,10 @@ function MentionTextarea({
         onSelect={handleSelect}
         onBlur={() => window.setTimeout(() => setQuery(null), 150)}
       />
-      {/* A textarea's own placeholder wraps rather than ellipsising, so in the
-          composer it is drawn here on one line instead. The real one stays,
-          transparent, for screen readers. */}
-      {bare && value === "" && (
-        <span
-          aria-hidden="true"
-          className="pointer-events-none absolute inset-x-0 top-0 truncate px-1 py-2.5 text-ink-muted"
-        >
-          {placeholder}
-        </span>
-      )}
       {query && caret && matches.length > 0 && (
         <ul
           className="absolute z-20 max-h-48 w-56 overflow-y-auto rounded-md border border-line bg-surface py-1 shadow-lg"
-          style={
-            dropUp
-              ? { bottom: (textareaRef.current?.offsetHeight ?? 0) - caret.top, left: caret.left }
-              : { top: caret.top + caret.height, left: caret.left }
-          }
+          style={{ top: caret.top + caret.height, left: caret.left }}
         >
           {matches.map((option, index) => (
             <li key={option.kind === "everyone" ? "@everyone" : option.member.appUserId}>
@@ -2482,6 +2514,42 @@ function CircleIcon({ tone }: { tone: "check" | "x" }) {
   );
 }
 
+function CloseIcon() {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20" className="h-5 w-5 fill-current">
+      <path d="M5.3 5.3a1 1 0 0 1 1.4 0L10 8.6l3.3-3.3a1 1 0 1 1 1.4 1.4L11.4 10l3.3 3.3a1 1 0 0 1-1.4 1.4L10 11.4l-3.3 3.3a1 1 0 0 1-1.4-1.4L8.6 10 5.3 6.7a1 1 0 0 1 0-1.4Z" />
+    </svg>
+  );
+}
+
+function SmileIcon() {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 24 24"
+      className="h-6 w-6"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.8"
+      strokeLinecap="round"
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M8.5 14.5a4.5 4.5 0 0 0 7 0" />
+      <circle cx="9" cy="10" r="0.6" fill="currentColor" />
+      <circle cx="15" cy="10" r="0.6" fill="currentColor" />
+    </svg>
+  );
+}
+
+/** The one-line box shown for the moment the editor's chunk is loading. */
+function ComposerEditorFallback({ placeholder }: { placeholder: string }) {
+  return (
+    <div className="min-w-0 flex-1 truncate px-1 py-2.5 text-ink-muted" aria-hidden="true">
+      {placeholder}
+    </div>
+  );
+}
+
 function SendIcon() {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20" className="h-5 w-5 fill-current">
@@ -2495,9 +2563,14 @@ function SendIcon() {
  * and send. Used for a top-level message at the foot of the conversation and,
  * with `parentPostId`, for a reply inside a thread.
  *
- * Enter sends and Shift+Enter makes a new line (the mention picker, while open,
- * keeps Enter for choosing a name). The server requires a message to have text,
- * so attachments ride along with some -- they do not send on their own.
+ * Slack's shape: at rest a one-line pill with a round `+`; once it has focus
+ * or words, a card with the text on top and a toolbar under it (`+`, `Aa` for
+ * the formatting row, emoji, send). The text is a rich editor whose formatting
+ * is saved as the plain-text syntax in lib/richText.ts.
+ *
+ * On a desktop Enter sends and Shift+Enter makes a new line; on a phone Enter
+ * is the keyboard's return, a new line, and the send button sends. The mention
+ * picker, while open, keeps Enter for choosing a name.
  */
 function ChatComposer({
   groupId,
@@ -2566,26 +2639,39 @@ function ChatComposer({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editingId]);
 
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [editor, setEditor] = useState<Editor | null>(null);
   /** Put an emoji from the picker into the text at the caret, replacing any selection. */
   function insertEmoji(emoji: string): void {
-    const el = inputRef.current;
-    const start = el?.selectionStart ?? body.length;
-    const end = el?.selectionEnd ?? body.length;
-    const next = `${body.slice(0, start)}${emoji}${body.slice(end)}`;
-    if (next.length > GROUP_POST_BODY_MAX) return;
-    onBodyChange(next);
-    const caret = start + emoji.length;
-    window.setTimeout(() => {
-      el?.focus();
-      el?.setSelectionRange(caret, caret);
-    }, 0);
+    editor?.chain().focus().insertContent({ type: "text", text: emoji }).run();
   }
+
+  /*
+   * Open (the card with its toolbar) while the box has focus, and until a press
+   * lands somewhere else -- a press in the + menu or the emoji picker, which
+   * are drawn outside the bar, does not count as leaving it.
+   */
+  const barRef = useRef<HTMLDivElement>(null);
+  const [active, setActive] = useState(autoFocus);
+  const [formatOpen, setFormatOpen] = useState(false);
+  const [emojiOpen, setEmojiOpen] = useState(false);
+  const isOutside = (target: EventTarget | null) =>
+    target instanceof Element &&
+    !barRef.current?.contains(target) &&
+    !target.closest('[role="menu"], [role="dialog"]');
+  useEffect(() => {
+    if (!active) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (isOutside(event.target)) setActive(false);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => document.removeEventListener("pointerdown", onPointerDown);
+  }, [active]);
+  const hasText = toPlainText(body).trim() !== "";
 
   const lastSignal = useRef(0);
   function onBodyChange(next: string): void {
     setBody(next);
-    if (editing || parentPostId || next.trim() === "") return;
+    if (editing || parentPostId || toPlainText(next).trim() === "") return;
     const at = Date.now();
     if (at - lastSignal.current < TYPING_SIGNAL_INTERVAL_MS) return;
     lastSignal.current = at;
@@ -2603,7 +2689,7 @@ function ChatComposer({
     removedIds.length === 0 &&
     picker.attachments.length === 0;
   // Words, or at least one picture or file left on it.
-  const editHasContent = body.trim() !== "" || attachmentCount > 0;
+  const editHasContent = hasText || attachmentCount > 0;
   const canSaveEdit = !busy && !picker.busy && editHasContent && !unchanged;
 
   async function saveEdit(): Promise<void> {
@@ -2617,8 +2703,8 @@ function ChatComposer({
         method: "PATCH",
         body: {
           body,
-          mentionedAppUserIds: findMentionedAppUserIds(body, mentionable),
-          mentionsEveryone: hasEveryoneMention(body),
+          mentionedAppUserIds: findMentionedAppUserIds(toPlainText(body), mentionable),
+          mentionsEveryone: hasEveryoneMention(toPlainText(body)),
           removeAttachmentIds: removedIds,
           addAttachments: picker.attachments,
         },
@@ -2634,7 +2720,7 @@ function ChatComposer({
   }
 
   // Words, or a picture or file with no words. Not while one is still uploading.
-  const canSend = body.trim() !== "" || (picker.attachments.length > 0 && !picker.busy);
+  const canSend = hasText || (picker.attachments.length > 0 && !picker.busy);
 
   async function submit(): Promise<void> {
     if (editing) return void saveEdit();
@@ -2648,8 +2734,8 @@ function ChatComposer({
           kind: "MESSAGE",
           body,
           parentPostId,
-          mentionedAppUserIds: findMentionedAppUserIds(body, mentionable),
-          mentionsEveryone: hasEveryoneMention(body),
+          mentionedAppUserIds: findMentionedAppUserIds(toPlainText(body), mentionable),
+          mentionsEveryone: hasEveryoneMention(toPlainText(body)),
           attachments: picker.attachments,
         },
       });
@@ -2662,6 +2748,34 @@ function ChatComposer({
       setBusy(false);
     }
   }
+
+  const expanded =
+    active || hasText || editing !== null || emojiOpen || attachmentCount > 0 || eventOpen;
+
+  // An edit can add pictures and files, but a message cannot become an event.
+  const plusMenu = (
+    <MenuButton
+      portal
+      align="left"
+      label="Add to this message"
+      trigger={
+        <span className="inline-flex size-9 items-center justify-center rounded-full bg-surface-muted text-ink">
+          <PlusIcon />
+        </span>
+      }
+      buttonClassName="tap-target inline-flex items-center justify-center rounded-full text-ink transition hover:text-primary"
+      className="shrink-0"
+    >
+      <MenuItem
+        onSelect={() => {
+          if (!picker.busy && !attachmentsFull) picker.open();
+        }}
+      >
+        Photo or file
+      </MenuItem>
+      {canStartEvent && !editing && <MenuItem onSelect={() => setEventOpen(true)}>Event…</MenuItem>}
+    </MenuButton>
+  );
 
   return (
     // Escape abandons an edit. The mention list stops its own Escape from
@@ -2732,84 +2846,118 @@ function ChatComposer({
       )}
 
       <div
-        className={`flex items-end gap-1 rounded-3xl border bg-surface px-2 py-1 focus-within:border-accent ${
-          editing ? "border-accent" : "border-line"
-        }`}
+        ref={barRef}
+        className={`flex border bg-surface focus-within:border-accent ${
+          expanded
+            ? "flex-col rounded-3xl px-2 pb-1.5 pt-1"
+            : "items-center gap-1 rounded-full px-1.5 py-0.5"
+        } ${editing ? "border-accent" : "border-line"}`}
+        onBlur={(event) => {
+          if (event.relatedTarget && isOutside(event.relatedTarget)) setActive(false);
+        }}
+        onClick={(event) => {
+          // A press anywhere on the resting pill, bar its buttons, starts typing.
+          if (!(event.target as Element).closest("button")) editor?.commands.focus();
+        }}
       >
-        {/* An edit can add pictures and files, but a message cannot become an event. */}
-        <MenuButton
-          portal
-          align="left"
-          label="Add to this message"
-          trigger={<PlusIcon />}
-          className="shrink-0"
-        >
-          <MenuItem
-            onSelect={() => {
-              if (!picker.busy && !attachmentsFull) picker.open();
-            }}
-          >
-            Photo or file
-          </MenuItem>
-          {canStartEvent && !editing && (
-            <MenuItem onSelect={() => setEventOpen(true)}>Event…</MenuItem>
-          )}
-        </MenuButton>
+        {/* Here at rest, in the toolbar once open; the editor keeps its place either way. */}
+        {!expanded && plusMenu}
 
-        <MentionTextarea
-          bare
-          rows={1}
-          autoGrow
-          dropUp
-          value={body}
-          onChange={onBodyChange}
-          members={mentionable}
-          placeholder={placeholder}
-          autoFocus={autoFocus}
-          focusToken={editingId}
-          ariaLabel={editing ? "Edit message" : parentPostId ? "Reply" : "Message"}
-          maxLength={GROUP_POST_BODY_MAX}
-          onSubmit={() => void submit()}
-          inputRef={inputRef}
-        />
+        <div className={`flex min-w-0 ${expanded ? "px-1.5" : "flex-1"}`}>
+          <Suspense fallback={<ComposerEditorFallback placeholder={placeholder} />}>
+            <RichComposerEditor
+              value={body}
+              onChange={onBodyChange}
+              members={mentionable}
+              placeholder={placeholder}
+              autoFocus={autoFocus}
+              focusToken={editingId}
+              ariaLabel={editing ? "Edit message" : parentPostId ? "Reply" : "Message"}
+              maxLength={GROUP_POST_BODY_MAX}
+              onSubmit={() => void submit()}
+              onEditor={setEditor}
+              onFocus={() => setActive(true)}
+            />
+          </Suspense>
+        </div>
 
-        <AddReactionButton
-          label="Add emoji"
-          onPick={insertEmoji}
-          className="tap-target inline-flex shrink-0 items-center justify-center rounded-md text-ink-muted transition hover:bg-surface-muted hover:text-primary"
-        />
+        {expanded && (
+          <div className="flex items-center gap-1">
+            {formatOpen ? (
+              <>
+                <button
+                  type="button"
+                  aria-label="Hide formatting"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => setFormatOpen(false)}
+                  className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-accent text-white"
+                >
+                  <CloseIcon />
+                </button>
+                {/* On a very narrow phone the row scrolls rather than pushing send off the edge. */}
+                <div className="flex min-w-0 flex-1 items-center overflow-x-auto sm:gap-0.5">
+                  <Suspense fallback={null}>
+                    <FormatButtons editor={editor} />
+                  </Suspense>
+                </div>
+              </>
+            ) : (
+              <>
+                {plusMenu}
+                <button
+                  type="button"
+                  aria-label="Show formatting"
+                  onMouseDown={(event) => event.preventDefault()}
+                  onClick={() => setFormatOpen(true)}
+                  className="inline-flex size-9 shrink-0 items-center justify-center rounded-md text-lg text-ink-muted transition hover:bg-surface-muted hover:text-ink"
+                >
+                  <span aria-hidden="true">Aa</span>
+                </button>
+                <AddReactionButton
+                  label="Add emoji"
+                  onPick={insertEmoji}
+                  onOpenChange={setEmojiOpen}
+                  className="inline-flex size-9 shrink-0 items-center justify-center rounded-md text-ink-muted transition hover:bg-surface-muted hover:text-ink"
+                >
+                  <SmileIcon />
+                </AddReactionButton>
+                <div className="flex-1" />
+              </>
+            )}
 
-        {editing ? (
-          <div className="flex shrink-0 items-center gap-1">
-            <button
-              type="button"
-              aria-label="Cancel editing"
-              disabled={busy}
-              onClick={() => onEditDone?.()}
-              className="tap-target inline-flex items-center justify-center rounded-full text-red-600 transition hover:bg-red-50 disabled:opacity-60"
-            >
-              <CircleIcon tone="x" />
-            </button>
-            <button
-              type="button"
-              aria-label="Save changes"
-              disabled={!canSaveEdit}
-              onClick={() => void saveEdit()}
-              className="tap-target inline-flex items-center justify-center rounded-full text-green-600 transition hover:bg-green-50 disabled:cursor-not-allowed disabled:text-ink-muted disabled:opacity-60"
-            >
-              <CircleIcon tone="check" />
-            </button>
+            {editing ? (
+              <div className="flex shrink-0 items-center gap-1">
+                <button
+                  type="button"
+                  aria-label="Cancel editing"
+                  disabled={busy}
+                  onClick={() => onEditDone?.()}
+                  className="tap-target inline-flex items-center justify-center rounded-full text-red-600 transition hover:bg-red-50 disabled:opacity-60"
+                >
+                  <CircleIcon tone="x" />
+                </button>
+                <button
+                  type="button"
+                  aria-label="Save changes"
+                  disabled={!canSaveEdit}
+                  onClick={() => void saveEdit()}
+                  className="tap-target inline-flex items-center justify-center rounded-full text-green-600 transition hover:bg-green-50 disabled:cursor-not-allowed disabled:text-ink-muted disabled:opacity-60"
+                >
+                  <CircleIcon tone="check" />
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                aria-label="Send"
+                disabled={busy || !canSend}
+                onClick={() => void submit()}
+                className="tap-target inline-flex shrink-0 items-center justify-center rounded-md text-primary transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:text-ink-muted disabled:opacity-60"
+              >
+                <SendIcon />
+              </button>
+            )}
           </div>
-        ) : (
-          <button
-            type="button"
-            aria-label="Send"
-            disabled={busy || !canSend}
-            onClick={() => void submit()}
-            className="tap-target inline-flex shrink-0 items-center justify-center rounded-md text-primary transition hover:bg-surface-muted disabled:cursor-not-allowed disabled:text-ink-muted disabled:opacity-60"
-          >
-            <SendIcon />
-          </button>
         )}
       </div>
 

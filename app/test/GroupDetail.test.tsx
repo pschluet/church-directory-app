@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
+import type { Editor } from "@tiptap/react";
 import userEvent from "@testing-library/user-event";
 import type {
   GroupDto,
@@ -244,6 +245,25 @@ function renderPage(path = "/groups/g1") {
   );
 }
 
+/**
+ * Types into the message bar. Its editor (ProseMirror) reads typing back out of
+ * the DOM, which jsdom does not keep in step a letter at a time, so each run of
+ * text goes in as the editor's own text insertion -- what a keystroke becomes --
+ * and only the {Key} presses are really pressed.
+ */
+async function typeInBar(bar: HTMLElement, text: string): Promise<void> {
+  const editor = (bar as HTMLElement & { editor: Editor }).editor;
+  if (!bar.contains(document.activeElement)) await userEvent.click(bar);
+  for (const part of text.split(/((?:\{[^}]*\})+)/)) {
+    if (!part) continue;
+    if (part.startsWith("{")) await userEvent.keyboard(part);
+    else act(() => void editor.view.dispatch(editor.view.state.tr.insertText(part)));
+  }
+}
+
+/** What is in the message bar, as text. */
+const barText = (bar: HTMLElement) => bar.textContent;
+
 const where = () => screen.getByTestId("where").textContent;
 const navType = () => screen.getByTestId("where").getAttribute("data-nav-type");
 
@@ -420,13 +440,13 @@ describe("GroupDetail", () => {
       renderPage();
       const bar = await screen.findByRole("textbox", { name: "Message" });
 
-      await userEvent.type(bar, "Hello{Shift>}{Enter}{/Shift}there");
+      await typeInBar(bar, "Hello{Shift>}{Enter}{/Shift}there");
       expect(apiMock).not.toHaveBeenCalledWith(
         "/groups/g1/posts",
         expect.objectContaining({ method: "POST" })
       );
 
-      await userEvent.type(bar, "{Enter}");
+      await typeInBar(bar, "{Enter}");
       await waitFor(() =>
         expect(apiMock).toHaveBeenCalledWith(
           "/groups/g1/posts",
@@ -443,14 +463,14 @@ describe("GroupDetail", () => {
       renderPage();
       const bar = await screen.findByRole("textbox", { name: "Message" });
 
-      await userEvent.type(bar, "hi @An");
+      await typeInBar(bar, "hi @An");
       await userEvent.keyboard("{Enter}");
 
       expect(apiMock).not.toHaveBeenCalledWith(
         "/groups/g1/posts",
         expect.objectContaining({ method: "POST" })
       );
-      expect(bar).toHaveValue("hi @Ann Lee ");
+      expect(barText(bar)).toBe("hi @Ann Lee ");
 
       await userEvent.keyboard("{Enter}");
       await waitFor(() =>
@@ -469,10 +489,10 @@ describe("GroupDetail", () => {
       renderPage();
       const bar = await screen.findByRole("textbox", { name: "Message" });
 
-      await userEvent.type(bar, "hi @ev");
+      await typeInBar(bar, "hi @ev");
       expect(screen.getByRole("button", { name: /Notify everyone in this group/ })).toBeVisible();
       await userEvent.keyboard("{Enter}");
-      expect(bar).toHaveValue("hi @everyone ");
+      expect(barText(bar)).toBe("hi @everyone ");
 
       await userEvent.keyboard("{Enter}");
       await waitFor(() =>
@@ -491,13 +511,103 @@ describe("GroupDetail", () => {
       renderPage();
       const bar = await screen.findByRole("textbox", { name: "Message" });
 
-      await userEvent.type(bar, "email me at me@everyone.org{Enter}");
+      await typeInBar(bar, "email me at me@everyone.org{Enter}");
       await waitFor(() =>
         expect(apiMock).toHaveBeenCalledWith(
           "/groups/g1/posts",
           expect.objectContaining({
             method: "POST",
             body: expect.objectContaining({ mentionsEveryone: false }),
+          })
+        )
+      );
+    });
+
+    it("makes a new line with Enter on a phone, and sends from the button", async () => {
+      // Only the phone query: the rest of the page keeps its desktop behaviour.
+      vi.spyOn(window, "matchMedia").mockImplementation(
+        (query: string) =>
+          ({
+            matches: query === "(hover: none) and (pointer: coarse)",
+            media: query,
+            addEventListener: vi.fn(),
+            removeEventListener: vi.fn(),
+          }) as unknown as MediaQueryList
+      );
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+
+      await typeInBar(bar, "Hello{Enter}there");
+      expect(apiMock).not.toHaveBeenCalledWith(
+        "/groups/g1/posts",
+        expect.objectContaining({ method: "POST" })
+      );
+
+      await userEvent.click(screen.getByRole("button", { name: "Send" }));
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith(
+          "/groups/g1/posts",
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({ body: "Hello\nthere" }),
+          })
+        )
+      );
+    });
+
+    it("formats from the Aa row and sends the formatting as text", async () => {
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      await typeInBar(bar, "hi ");
+
+      await userEvent.click(screen.getByRole("button", { name: "Show formatting" }));
+      const bold = await screen.findByRole("button", { name: "Bold" });
+      expect(bold).toHaveAttribute("aria-pressed", "false");
+      await userEvent.click(bold);
+      await typeInBar(bar, "there");
+      expect(bar.querySelector("strong")).toHaveTextContent("there");
+      expect(bold).toHaveAttribute("aria-pressed", "true");
+
+      await userEvent.click(screen.getByRole("button", { name: "Bulleted list" }));
+      expect(bar.querySelector("ul")).toBeInTheDocument();
+
+      // The row closes back to +, Aa and emoji.
+      await userEvent.click(screen.getByRole("button", { name: "Hide formatting" }));
+      expect(screen.queryByRole("button", { name: "Bold" })).not.toBeInTheDocument();
+
+      await userEvent.click(screen.getByRole("button", { name: "Send" }));
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith(
+          "/groups/g1/posts",
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({ body: "- hi **there**" }),
+          })
+        )
+      );
+    });
+
+    it("reads mentions out of formatted text", async () => {
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      await userEvent.click(bar);
+      await userEvent.click(screen.getByRole("button", { name: "Show formatting" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Bold" }));
+      await typeInBar(bar, "@An");
+      await typeInBar(bar, "{Enter}");
+      await typeInBar(bar, "{Enter}");
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith(
+          "/groups/g1/posts",
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({
+              body: "**@Ann Lee** ",
+              mentionedAppUserIds: ["user-ann"],
+            }),
           })
         )
       );
@@ -514,11 +624,20 @@ describe("GroupDetail", () => {
 
       const sendButton = () => screen.getByRole("button", { name: "Send" });
 
-      it("keeps Send off with no text and nothing attached", async () => {
+      it("rests as a pill with no Send, and keeps Send off with no text once it has focus", async () => {
         stub();
         renderPage();
-        await screen.findByRole("textbox", { name: "Message" });
+        const bar = await screen.findByRole("textbox", { name: "Message" });
+        expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("button", { name: "Show formatting" })).not.toBeInTheDocument();
+
+        await userEvent.click(bar);
         expect(sendButton()).toBeDisabled();
+        expect(screen.getByRole("button", { name: "Show formatting" })).toBeInTheDocument();
+
+        // Pressing somewhere else, with nothing typed, puts it back to rest.
+        await userEvent.click(document.body);
+        expect(screen.queryByRole("button", { name: "Send" })).not.toBeInTheDocument();
       });
 
       it("sends an attachment with no text", async () => {
@@ -604,7 +723,7 @@ describe("GroupDetail", () => {
           },
         });
         renderPage("/groups/g1/threads/root-1");
-        await screen.findByRole("textbox", { name: "Reply" });
+        await userEvent.click(await screen.findByRole("textbox", { name: "Reply" }));
         expect(sendButton()).toBeDisabled();
       });
 
@@ -629,11 +748,11 @@ describe("GroupDetail", () => {
         await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
 
         const bar = await screen.findByRole("textbox", { name: "Edit message" });
-        expect(bar).toHaveValue("");
+        expect(barText(bar)).toBe("");
         const save = screen.getByRole("button", { name: "Save changes" });
         expect(save).toBeDisabled();
 
-        await userEvent.type(bar, "From the picnic");
+        await typeInBar(bar, "From the picnic");
         expect(save).toBeEnabled();
         await userEvent.click(save);
         await waitFor(() =>
@@ -650,14 +769,14 @@ describe("GroupDetail", () => {
       it("still sends text with no attachment", async () => {
         stub();
         renderPage();
-        await userEvent.type(await screen.findByRole("textbox", { name: "Message" }), "Hello");
+        await typeInBar(await screen.findByRole("textbox", { name: "Message" }), "Hello");
         expect(sendButton()).toBeEnabled();
       });
 
       it("treats spaces alone as no text", async () => {
         stub();
         renderPage();
-        await userEvent.type(await screen.findByRole("textbox", { name: "Message" }), "   ");
+        await typeInBar(await screen.findByRole("textbox", { name: "Message" }), "   ");
         expect(sendButton()).toBeDisabled();
       });
 
@@ -745,15 +864,15 @@ describe("GroupDetail", () => {
       const typingCalls = () =>
         apiMock.mock.calls.filter((call) => call[0] === "/groups/g1/typing");
 
-      await userEvent.type(bar, "   ");
+      await typeInBar(bar, "   ");
       expect(typingCalls()).toHaveLength(0);
 
-      await userEvent.type(bar, "abc");
+      await typeInBar(bar, "abc");
       expect(typingCalls()).toHaveLength(1);
       expect(typingCalls()[0]![1]).toEqual({ method: "POST" });
 
       nowMs += 3500;
-      await userEvent.type(bar, "d");
+      await typeInBar(bar, "d");
       expect(typingCalls()).toHaveLength(2);
       clock.mockRestore();
     });
@@ -762,7 +881,7 @@ describe("GroupDetail", () => {
       const root = post({ id: "root-1", body: "Hello", replyCount: 0 });
       stub({ thread: { root, replies: [] } });
       renderPage("/groups/g1/threads/root-1");
-      await userEvent.type(await screen.findByRole("textbox", { name: "Reply" }), "thinking");
+      await typeInBar(await screen.findByRole("textbox", { name: "Reply" }), "thinking");
       expect(apiMock.mock.calls.some((call) => call[0] === "/groups/g1/typing")).toBe(false);
     });
   });
@@ -880,7 +999,7 @@ describe("GroupDetail", () => {
       press(row);
       await userEvent.click(await screen.findByRole("button", { name: "Edit" }));
       expect(screen.queryByRole("dialog", { name: "Message" })).not.toBeInTheDocument();
-      expect(screen.getByDisplayValue("Hello there")).toBeInTheDocument();
+      expect(barText(screen.getByRole("textbox", { name: "Edit message" }))).toBe("Hello there");
     });
 
     it("hides the always-on three-dot button on a touch screen", async () => {
@@ -1447,7 +1566,7 @@ describe("GroupDetail", () => {
       stub({ thread: { root: root({ replyCount: 0 }), replies: [] } });
       renderPage("/groups/g1/threads/root-1");
       expect(await screen.findByText("No replies yet")).toBeInTheDocument();
-      await userEvent.type(await screen.findByRole("textbox", { name: "Reply" }), "Thanks{Enter}");
+      await typeInBar(await screen.findByRole("textbox", { name: "Reply" }), "Thanks{Enter}");
       await waitFor(() =>
         expect(apiMock).toHaveBeenCalledWith(
           "/groups/g1/posts",
@@ -1506,7 +1625,8 @@ describe("GroupDetail", () => {
       await screen.findByText("Hello");
       await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
       await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
-      expect(await screen.findByRole("textbox", { name: "Reply" })).toHaveFocus();
+      const bar = await screen.findByRole("textbox", { name: "Reply" });
+      await waitFor(() => expect(bar).toHaveFocus());
     });
 
     it("keeps a deleted message's replies", async () => {
@@ -1697,8 +1817,8 @@ describe("GroupDetail", () => {
       renderPage();
       const bar = await startEdit();
 
-      expect(bar).toHaveValue("Hello");
-      expect(bar).toHaveFocus();
+      expect(barText(bar)).toBe("Hello");
+      await waitFor(() => expect(bar).toHaveFocus());
       expect(screen.getByText("Editing message")).toBeInTheDocument();
       // The only text box is the bar itself, and it is not inside the message log.
       expect(screen.getAllByRole("textbox")).toHaveLength(1);
@@ -1735,7 +1855,7 @@ describe("GroupDetail", () => {
       stub(mine());
       renderPage();
       const bar = await startEdit();
-      await userEvent.type(bar, " @Bo");
+      await typeInBar(bar, " @Bo");
       await userEvent.keyboard("{Enter}");
       await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
 
@@ -1756,7 +1876,7 @@ describe("GroupDetail", () => {
       );
       // Back to the ordinary bar.
       await waitFor(() => expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument());
-      expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("");
+      expect(barText(screen.getByRole("textbox", { name: "Message" }))).toBe("");
     });
 
     describe("pictures and files", () => {
@@ -1918,7 +2038,7 @@ describe("GroupDetail", () => {
       stub(mine());
       renderPage();
       const bar = await startEdit();
-      await userEvent.type(bar, "!{Enter}");
+      await typeInBar(bar, "!{Enter}");
       await waitFor(() =>
         expect(apiMock).toHaveBeenCalledWith(
           "/groups/g1/posts/p1",
@@ -1931,17 +2051,17 @@ describe("GroupDetail", () => {
       stub(mine());
       renderPage();
       const draftBar = await screen.findByRole("textbox", { name: "Message" });
-      await userEvent.type(draftBar, "half a thought");
+      await typeInBar(draftBar, "half a thought");
 
       let bar = await startEdit();
-      expect(bar).toHaveValue("Hello");
-      await userEvent.type(bar, " changed");
+      expect(barText(bar)).toBe("Hello");
+      await typeInBar(bar, " changed");
       await userEvent.click(screen.getByRole("button", { name: "Cancel editing" }));
-      expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("half a thought");
+      expect(barText(screen.getByRole("textbox", { name: "Message" }))).toBe("half a thought");
 
       bar = await startEdit();
-      await userEvent.type(bar, "{Escape}");
-      expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue("half a thought");
+      await typeInBar(bar, "{Escape}");
+      expect(barText(screen.getByRole("textbox", { name: "Message" }))).toBe("half a thought");
 
       expect(apiMock.mock.calls.some((c) => c[1]?.method === "PATCH")).toBe(false);
     });
@@ -1950,7 +2070,7 @@ describe("GroupDetail", () => {
       stub(mine());
       renderPage();
       const bar = await startEdit();
-      await userEvent.type(bar, " @An");
+      await typeInBar(bar, " @An");
       await userEvent.keyboard("{Escape}");
       expect(screen.getByRole("textbox", { name: "Edit message" })).toBeInTheDocument();
     });
@@ -1959,7 +2079,7 @@ describe("GroupDetail", () => {
       stub(mine());
       renderPage();
       const bar = await startEdit();
-      await userEvent.type(bar, " more");
+      await typeInBar(bar, " more");
       expect(apiMock.mock.calls.some((call) => call[0] === "/groups/g1/typing")).toBe(false);
     });
 
@@ -1978,8 +2098,8 @@ describe("GroupDetail", () => {
       await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
       await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
       const bar = await screen.findByRole("textbox", { name: "Edit message" });
-      expect(bar).toHaveValue("my reply");
-      await userEvent.type(bar, "!");
+      expect(barText(bar)).toBe("my reply");
+      await typeInBar(bar, "!");
       await userEvent.click(screen.getByRole("button", { name: "Save changes" }));
       await waitFor(() =>
         expect(apiMock).toHaveBeenCalledWith(
@@ -2254,6 +2374,34 @@ describe("GroupDetail", () => {
       expect(apiMock.mock.calls.some(([path]) => String(path).includes("/reactions/"))).toBe(false);
     });
 
+    it("shows a message's formatting, and no link for an unsafe address", async () => {
+      stub({
+        pages: [
+          {
+            posts: [
+              post({
+                body: "**Bold** _soft_ ++under++ ~~gone~~ [site](https://example.org) [bad](javascript:alert)\n- one\n- two\n1. first",
+              }),
+            ],
+            nextCursor: null,
+          },
+        ],
+      });
+      renderPage();
+      expect((await screen.findByText("Bold")).tagName).toBe("STRONG");
+      expect(screen.getByText("soft").tagName).toBe("EM");
+      expect(screen.getByText("under").tagName).toBe("U");
+      expect(screen.getByText("gone").tagName).toBe("S");
+      expect(screen.getByRole("link", { name: "site" })).toHaveAttribute(
+        "href",
+        "https://example.org"
+      );
+      expect(screen.queryByRole("link", { name: "bad" })).not.toBeInTheDocument();
+      expect(screen.getByText("bad")).toBeInTheDocument();
+      expect(screen.getByText("one").closest("ul")).toBeInTheDocument();
+      expect(screen.getByText("first").closest("ol")).toBeInTheDocument();
+    });
+
     it("shows a message of only emoji large, and a mixed one normally", async () => {
       stub({
         pages: [
@@ -2267,19 +2415,20 @@ describe("GroupDetail", () => {
         ],
       });
       renderPage();
-      expect((await screen.findByText("🎉 🙏")).className).toContain("text-3xl");
-      expect(screen.getByText("hello 🎉").className).not.toContain("text-3xl");
+      expect((await screen.findByText("🎉 🙏")).closest("div")!.className).toContain("text-3xl");
+      expect(screen.getByText("hello 🎉").closest("div")!.className).not.toContain("text-3xl");
     });
 
     it("puts an emoji from the message bar's picker at the caret", async () => {
       stub();
       renderPage();
-      const bar = (await screen.findByRole("textbox", { name: "Message" })) as HTMLTextAreaElement;
-      await userEvent.type(bar, "hi  there");
-      bar.setSelectionRange(3, 3);
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      await typeInBar(bar, "hi  there");
+      // The caret between the two spaces: the paragraph starts at 1, so after "hi ".
+      act(() => void (bar as HTMLElement & { editor: Editor }).editor.commands.setTextSelection(4));
       await userEvent.click(screen.getByRole("button", { name: "Add emoji" }));
       await userEvent.click(await screen.findByRole("button", { name: "pick party" }));
-      expect(bar.value).toBe("hi 🎉 there");
+      expect(barText(bar)).toBe("hi 🎉 there");
     });
 
     describe("on a touch screen", () => {
