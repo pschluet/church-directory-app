@@ -367,6 +367,9 @@ export default function RichComposerEditor({
     if (!editor || value === lastEmitted.current) return;
     lastEmitted.current = value;
     editor.commands.setContent(bodyToDoc(value), { emitUpdate: false });
+    // Typing carries on from the end of it -- a message opened for editing
+    // arrives a render after the focus asked for it, so that focus's caret is gone.
+    editor.commands.setTextSelection(editor.state.doc.content.size);
   }, [editor, value]);
 
   useEffect(() => {
