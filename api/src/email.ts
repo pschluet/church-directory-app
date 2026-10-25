@@ -181,6 +181,117 @@ export async function sendSignInCodeEmail(params: { to: string; code: string }):
   await send(params.to, subject, text, html);
 }
 
+/**
+ * The code for a self-service sign-in email change (see
+ * services/email-change.ts). A separate template from the sign-in code,
+ * even though the shape is identical, because the two mean different things
+ * to read mid-inbox: one signs you in, the other moves where your sign-ins go.
+ */
+export async function sendEmailChangeCodeEmail(params: { to: string; code: string }): Promise<void> {
+  const subject = `Your verification code: ${params.code}`;
+  const heading = FROM_NAME || "Directory";
+
+  const text = [
+    `Your verification code is ${params.code}`,
+    "",
+    "Enter it to finish changing the email address you sign in with. It works",
+    "once and expires in 10 minutes.",
+    "",
+    "If you did not request this, you can ignore this email -- your sign-in",
+    "address will not change.",
+  ].join("\n");
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#faf8f5;font-family:Helvetica,Arial,sans-serif;color:#333333;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e0d8;border-radius:8px;">
+      <tr>
+        <td style="background:#b42d23;color:#ffffff;padding:16px 24px;font-size:16px;font-weight:bold;border-radius:8px 8px 0 0;">
+          ${escapeHtml(heading)}
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:24px;">
+          <p style="margin:0 0 16px;">Your verification code is</p>
+          <p style="margin:0 0 24px;font-size:32px;font-weight:bold;letter-spacing:8px;">
+            ${escapeHtml(params.code)}
+          </p>
+          <p style="margin:0 0 16px;color:#6b6b6b;">
+            Enter it to finish changing the email address you sign in with. It works once
+            and expires in 10 minutes.
+          </p>
+          <p style="margin:0;color:#6b6b6b;">
+            If you did not request this, you can ignore this email -- your sign-in address
+            will not change.
+          </p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+
+  await send(params.to, subject, text, html);
+}
+
+/**
+ * Sent to the *old* address once a sign-in email change has already taken
+ * effect -- self-service or an admin's override, both go through the same
+ * notice. There is nothing to confirm or undo here; the point is only that an
+ * unexpected copy of this is the signal that something is wrong.
+ */
+export async function sendEmailChangedNoticeEmail(params: {
+  to: string;
+  newEmail: string;
+  organizationName: string;
+}): Promise<void> {
+  const subject = "Your sign-in address was changed";
+  const heading = FROM_NAME || "Directory";
+  const masked = maskEmail(params.newEmail);
+
+  const text = [
+    `The address you use to sign in to the ${params.organizationName} directory was`,
+    `changed to ${masked}.`,
+    "",
+    "If this was you, there is nothing else to do.",
+    "",
+    "If you did not make this change, contact your parish administrator right away.",
+  ].join("\n");
+
+  const html = `<!doctype html>
+<html>
+  <body style="margin:0;padding:24px;background:#faf8f5;font-family:Helvetica,Arial,sans-serif;color:#333333;">
+    <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;margin:0 auto;background:#ffffff;border:1px solid #e5e0d8;border-radius:8px;">
+      <tr>
+        <td style="background:#b42d23;color:#ffffff;padding:16px 24px;font-size:16px;font-weight:bold;border-radius:8px 8px 0 0;">
+          ${escapeHtml(heading)}
+        </td>
+      </tr>
+      <tr>
+        <td style="padding:24px;">
+          <p style="margin:0 0 16px;">
+            The address you use to sign in to the ${escapeHtml(params.organizationName)} directory
+            was changed to ${escapeHtml(masked)}.
+          </p>
+          <p style="margin:0 0 16px;">If this was you, there is nothing else to do.</p>
+          <p style="margin:0;color:#6b6b6b;">
+            If you did not make this change, contact your parish administrator right away.
+          </p>
+        </td>
+      </tr>
+    </table>
+  </body>
+</html>`;
+
+  await send(params.to, subject, text, html);
+}
+
+/** "name@example.com" -> "n***@example.com", for a notice that names the new address without fully disclosing it. */
+function maskEmail(email: string): string {
+  const [local, domain] = email.split("@");
+  if (!domain || !local) return email;
+  return `${local[0]}${"*".repeat(Math.max(local.length - 1, 3))}@${domain}`;
+}
+
 function escapeHtml(value: string): string {
   return value
     .replace(/&/g, "&amp;")

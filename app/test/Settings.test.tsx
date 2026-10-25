@@ -38,17 +38,24 @@ const meState = {
   pushPublicKey: "vapid-public-key" as string | null,
   canApprove: false,
   isAdmin: false,
+  pendingEmailChange: null as { email: string; expiresAt: string } | null,
 };
 
 vi.mock("../src/context/MeContext", () => ({
   useMe: () => ({
-    me: { pushPublicKey: meState.pushPublicKey } as unknown as MeDto,
+    me: {
+      pushPublicKey: meState.pushPublicKey,
+      // The sign-in section reads both of these off `me` directly.
+      appUser: { email: "member@test.example" },
+      pendingEmailChange: meState.pendingEmailChange,
+    } as unknown as MeDto,
     canApprovePrayerRequests: meState.canApprove,
     isAdmin: meState.isAdmin,
     organizationId: "org-1",
     // The church address section renders an AddressAutocomplete, which reads
     // this. Null is the plain-text-input path.
     maps: null,
+    reload: vi.fn(() => Promise.resolve()),
   }),
 }));
 
@@ -81,6 +88,7 @@ describe("Settings", () => {
     meState.pushPublicKey = "vapid-public-key";
     meState.canApprove = false;
     meState.isAdmin = false;
+    meState.pendingEmailChange = null;
   });
 
   /*

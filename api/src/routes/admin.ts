@@ -4,7 +4,8 @@ import { requireOrganizationId, requireRole, type AppEnv } from "../auth";
 import { one, type Queryable } from "../db";
 import { audit } from "../audit";
 import { assertCanGrantRole } from "../services/access";
-import { deleteUser, setUserEnabled, updateUserEmail } from "../cognito";
+import { deleteUser, setUserEnabled } from "../cognito";
+import { applyEmailChange, assertEmailAvailable } from "../services/email-change";
 import { clearInheritanceFor } from "../services/inheritance";
 import { inviteAccount } from "../services/invitations";
 import { setAccountOrganization } from "../services/membership";
@@ -133,13 +134,14 @@ routes.patch("/users/:id", async (c) => {
 
   const target = await one<{
     id: string;
+    cognito_sub: string | null;
     email: string;
     role: AppUserDto["role"];
     organization_id: string | null;
     status: AppUserDto["status"];
   }>(
     db,
-    "select id, email::text as email, role, organization_id, status from app_users where id = $1",
+    "select id, cognito_sub, email::text as email, role, organization_id, status from app_users where id = $1",
     [id]
   );
   if (!target) throw new HTTPException(404, { message: "Account not found" });
@@ -207,8 +209,14 @@ routes.patch("/users/:id", async (c) => {
 
   // Keep Cognito in step: a disabled account must not be able to sign in even
   // before our own 403 would kick in.
+  //
+  // By cognito_sub, not by email: updateUserEmail changes the email attribute
+  // but never the username, which stays whatever the address was at
+  // AdminCreateUser time. Falling back to the email is only for the bootstrap
+  // super admin, whose sub is null and whose username in Cognito is still its
+  // original, never-changed address (see V3__bootstrap_super_admin.sql).
   if (payload.status !== undefined && payload.status !== target.status) {
-    await setUserEnabled(target.email, payload.status !== "DISABLED");
+    await setUserEnabled(target.cognito_sub ?? target.email, payload.status !== "DISABLED");
   }
 
   await audit(db, caller, {
@@ -335,29 +343,44 @@ routes.delete("/users/:id", async (c) => {
   return c.body(null, 204);
 });
 
-/** Changing the address an account signs in with. */
+/**
+ * Changing the address an account signs in with, immediately and without a
+ * code -- the rescue path for someone who has lost access to the mailbox
+ * their old address pointed at and so could never complete the self-service
+ * flow (`POST /me/email`, services/email-change.ts) themselves. That flow and
+ * this one both end at `applyEmailChange`, which is what keeps
+ * `persons.email` mirroring the sign-in address and notifies the old one
+ * either way.
+ */
 routes.put("/users/:id/email", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
   const id = uuidSchema.parse(c.req.param("id"));
   const { email } = inviteUserSchema.pick({ email: true }).parse(await c.req.json());
 
-  const target = await one<{ id: string; email: string; organization_id: string | null }>(
+  const target = await one<{
+    id: string;
+    cognito_sub: string | null;
+    email: string;
+    organization_id: string | null;
+  }>(
     db,
-    "select id, email::text as email, organization_id from app_users where id = $1",
+    "select id, cognito_sub, email::text as email, organization_id from app_users where id = $1",
     [id]
   );
   if (!target || target.organization_id !== requireOrganizationId(c)) {
     throw new HTTPException(404, { message: "Account not found" });
   }
+  if (email === target.email) {
+    throw new HTTPException(400, { message: "That is already their sign-in address" });
+  }
+  await assertEmailAvailable(db, email);
 
-  await updateUserEmail(target.email, email);
-  await db.query("update app_users set email = $2 where id = $1", [id, email]);
-  await audit(db, caller, {
-    action: "user.changeEmail",
-    entityType: "appUser",
-    entityId: id,
-    changes: { from: target.email, to: email },
+  await applyEmailChange(db, caller, {
+    appUserId: target.id,
+    cognitoSub: target.cognito_sub,
+    fromEmail: target.email,
+    toEmail: email,
   });
   return c.json({ id, email });
 });

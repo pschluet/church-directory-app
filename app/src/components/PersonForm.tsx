@@ -6,13 +6,14 @@ import {
   normalizePhone,
   personWriteSchema,
   type InheritableAttribute,
+  type PendingEmailChangeDto,
   type PersonDto,
   type PersonSummaryDto,
 } from "@shared";
 import { api, ApiError } from "../lib/api";
 import { InheritToggle, inheritanceCandidates } from "./InheritToggle";
 import { AddressAutocomplete } from "./AddressAutocomplete";
-import { Button, Field, Select, inputClass } from "./ui";
+import { Button, Field, Modal, Select, inputClass } from "./ui";
 import { SuggestInput } from "./SuggestInput";
 import { useMe } from "../context/MeContext";
 import { qk } from "../lib/queryKeys";
@@ -113,11 +114,27 @@ export function PersonForm({
   onSaved: (updated: PersonDto) => void;
   onCancel?: () => void;
 }) {
-  const { organizationId } = useMe();
+  const { me, organizationId, reload } = useMe();
   const [form, setForm] = useState<FormState>(() => initialState(person));
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  /*
+   * An account holder's email is also their sign-in address (see
+   * api/src/services/email-change.ts), so changing it does not land on save
+   * the way every other field does: a code goes to the new address first.
+   * `savedPerson` is everything *else* this save already committed, held here
+   * so it can be handed to `onSaved` once the code is entered (or the change
+   * is abandoned) rather than only once the whole save finishes.
+   */
+  const [pendingEmailChange, setPendingEmailChange] = useState<PendingEmailChangeDto | null>(null);
+  const [savedPerson, setSavedPerson] = useState<PersonDto | null>(null);
+  const [emailCode, setEmailCode] = useState("");
+  const [emailChangeBusy, setEmailChangeBusy] = useState(false);
+  const [emailChangeError, setEmailChangeError] = useState<string | null>(null);
+
+  const isOwnAccount = person.appUserId !== null && person.appUserId === me?.appUser.id;
 
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -221,15 +238,32 @@ export function PersonForm({
 
     setSaving(true);
     try {
+      const result = await api<PersonDto>(`/persons/${person.id}`, {
+        method: "PATCH",
+        body: parsed.data,
+      });
+
+      if (result.pendingEmailChange) {
+        // Everything else in this save already committed; only the address is
+        // on hold. Keep the form open on the code step rather than calling
+        // `onSaved`, which would unmount it before the code could be entered.
+        // `pendingEmailChange` itself is held separately in its own state, so
+        // it is stripped here -- otherwise it would ride along into whatever
+        // `onSaved` is eventually called with, claiming a change is still
+        // pending after it has been confirmed or abandoned.
+        const { pendingEmailChange: pending, ...rest } = result;
+        setSavedPerson(rest);
+        setPendingEmailChange(pending);
+        return;
+      }
+
       /*
        * `geocodeWarning` rides along on the response and is deliberately *not*
        * shown here: `onSaved` closes this form, so a message rendered in it
        * would be unmounted in the same tick and nobody would ever read it. The
        * page that survives the save shows it -- see PersonDetail.
        */
-      onSaved(
-        await api<PersonDto>(`/persons/${person.id}`, { method: "PATCH", body: parsed.data })
-      );
+      onSaved(result);
     } catch (err) {
       if (err instanceof ApiError && err.issues?.length) {
         setFieldErrors(
@@ -240,6 +274,52 @@ export function PersonForm({
     } finally {
       setSaving(false);
     }
+  }
+
+  async function confirmEmailChange(): Promise<void> {
+    if (!pendingEmailChange || !savedPerson) return;
+    setEmailChangeBusy(true);
+    setEmailChangeError(null);
+    try {
+      await api("/me/email/confirm", { method: "POST", body: { code: emailCode } });
+      // The header, Settings and every other reader of `me` need the new
+      // sign-in address too, not just this form.
+      await reload();
+      onSaved({ ...savedPerson, email: pendingEmailChange.email });
+    } catch (err) {
+      setEmailChangeError(err instanceof Error ? err.message : "That code is not right");
+    } finally {
+      setEmailChangeBusy(false);
+    }
+  }
+
+  async function resendEmailChangeCode(): Promise<void> {
+    if (!pendingEmailChange) return;
+    setEmailChangeBusy(true);
+    setEmailChangeError(null);
+    try {
+      const pending = await api<PendingEmailChangeDto>("/me/email", {
+        method: "POST",
+        body: { email: pendingEmailChange.email },
+      });
+      setPendingEmailChange(pending);
+      setEmailCode("");
+    } catch (err) {
+      setEmailChangeError(err instanceof Error ? err.message : "Could not resend the code");
+    } finally {
+      setEmailChangeBusy(false);
+    }
+  }
+
+  async function cancelEmailChange(): Promise<void> {
+    try {
+      await api("/me/email", { method: "DELETE" });
+    } catch {
+      // Best effort: either way, the saved record below still has the old
+      // address, so nothing is left half-changed.
+    }
+    if (savedPerson) onSaved(savedPerson);
+    setPendingEmailChange(null);
   }
 
   const candidatesFor = (attribute: InheritableAttribute) =>
@@ -357,12 +437,24 @@ export function PersonForm({
             candidates={candidatesFor("email")}
             sourceId={form.inherit.email}
             onChange={(id) => set("inherit", { ...form.inherit, email: id })}
-            disabled={movingFamily}
+            // An account holder signs in with their own email (see
+            // services/email-change.ts), which a shared address would
+            // contradict -- the API rejects it too, so this only keeps the
+            // rejection from being the first anyone hears of it.
+            disabled={movingFamily || person.appUserId !== null}
           />
           <Field
             label="Email"
             error={fieldErrors.email}
-            hint={form.inherit.email ? `Using ${sourceName("email")}'s email` : undefined}
+            hint={
+              form.inherit.email
+                ? `Using ${sourceName("email")}'s email`
+                : person.appUserId !== null
+                  ? isOwnAccount
+                    ? "You sign in with this address. Changing it sends a code to the new one first."
+                    : "This person signs in with this address. Changing it updates their sign-in immediately."
+                  : undefined
+            }
           >
             <input
               type="email"
@@ -376,6 +468,72 @@ export function PersonForm({
           </Field>
         </div>
       </div>
+
+      {pendingEmailChange && (
+        <Modal
+          title="Check your email"
+          onClose={() => void cancelEmailChange()}
+          dismissable={!emailChangeBusy}
+        >
+          <form
+            className="space-y-4"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void confirmEmailChange();
+            }}
+          >
+            <p className="text-ink-muted">
+              We sent a 6-digit code to{" "}
+              <span className="font-bold text-ink">{pendingEmailChange.email}</span>. Enter it to
+              finish changing the address you sign in with.
+            </p>
+
+            <Field label="Code">
+              <input
+                className={`${inputClass} text-center text-2xl tracking-[0.4em]`}
+                inputMode="numeric"
+                autoComplete="one-time-code"
+                autoFocus
+                pattern="[0-9]{6}"
+                value={emailCode}
+                onChange={(e) => setEmailCode(e.target.value.replace(/\D/g, "").slice(0, 6))}
+              />
+            </Field>
+
+            {emailChangeError && (
+              <p role="alert" className="font-bold text-primary">
+                {emailChangeError}
+              </p>
+            )}
+
+            <Button
+              type="submit"
+              disabled={emailChangeBusy || emailCode.length !== 6}
+              className="w-full"
+            >
+              {emailChangeBusy ? "Checking…" : "Confirm"}
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => void resendEmailChangeCode()}
+              disabled={emailChangeBusy}
+              className="w-full"
+            >
+              Send a new code
+            </Button>
+            <Button
+              type="button"
+              variant="ghost"
+              onClick={() => void cancelEmailChange()}
+              disabled={emailChangeBusy}
+              className="w-full"
+            >
+              Cancel
+            </Button>
+          </form>
+        </Modal>
+      )}
 
       <div className="grid gap-4 md:grid-cols-2">
         <div>

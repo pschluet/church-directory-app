@@ -24,7 +24,12 @@ vi.mock("../src/lib/api", () => ({
  * into -- and is also what a parish with Map View switched off gets.
  */
 vi.mock("../src/context/MeContext", () => ({
-  useMe: () => ({ organizationId: "org-1", mapViewEnabled: false, maps: null }),
+  useMe: () => ({
+    organizationId: "org-1",
+    mapViewEnabled: false,
+    maps: null,
+    reload: vi.fn(() => Promise.resolve()),
+  }),
 }));
 
 function summary(overrides: { id: string; firstName: string }): PersonSummaryDto {
@@ -227,5 +232,72 @@ describe("PersonForm", () => {
     await save();
     await waitFor(() => expect(api).toHaveBeenCalled());
     expect(lastBody().inheritLastNameFromPersonId).toBe(PARENT.id);
+  });
+
+  describe("an account holder's email", () => {
+    it("cannot be shared from a relative, and says why", () => {
+      renderForm({ person: person({ appUserId: "user-1" }) });
+      expect(screen.getByLabelText(/same email as/i)).toBeDisabled();
+      expect(screen.getByText(/signs? in with/i)).toBeInTheDocument();
+    });
+
+    it("holds the change behind a code, and does not call onSaved until it is entered", async () => {
+      const onSaved = vi.fn();
+      const saved = person({ appUserId: "user-1", email: "old@test.example" });
+      api.mockImplementation((path: string, options?: { method?: string }) => {
+        if (path === `/persons/${PERSON_ID}` && options?.method === "PATCH") {
+          return Promise.resolve({
+            ...saved,
+            pendingEmailChange: { email: "new@test.example", expiresAt: "2099-01-01T00:00:00Z" },
+          });
+        }
+        if (path === "/me/email/confirm") return Promise.resolve({});
+        return Promise.resolve(saved);
+      });
+
+      renderForm({ person: saved, onSaved });
+      await userEvent.clear(screen.getByLabelText(/^email/i));
+      await userEvent.type(screen.getByLabelText(/^email/i), "new@test.example");
+      await save();
+
+      expect(await screen.findByText(/check your email/i)).toBeInTheDocument();
+      expect(onSaved).not.toHaveBeenCalled();
+
+      await userEvent.type(screen.getByLabelText("Code"), "123456");
+      await userEvent.click(screen.getByRole("button", { name: /^confirm$/i }));
+
+      await waitFor(() =>
+        expect(onSaved).toHaveBeenCalledWith(expect.objectContaining({ email: "new@test.example" }))
+      );
+      expect(api).toHaveBeenCalledWith(
+        "/me/email/confirm",
+        expect.objectContaining({ method: "POST", body: { code: "123456" } })
+      );
+    });
+
+    it("abandons the change on cancel, keeping everything else the save already committed", async () => {
+      const onSaved = vi.fn();
+      const saved = person({ appUserId: "user-1", email: "old@test.example", firstName: "Changed" });
+      api.mockImplementation((path: string, options?: { method?: string }) => {
+        if (path === `/persons/${PERSON_ID}` && options?.method === "PATCH") {
+          return Promise.resolve({
+            ...saved,
+            pendingEmailChange: { email: "new@test.example", expiresAt: "2099-01-01T00:00:00Z" },
+          });
+        }
+        return Promise.resolve(saved);
+      });
+
+      renderForm({ person: person({ appUserId: "user-1" }), onSaved });
+      await userEvent.clear(screen.getByLabelText(/^email/i));
+      await userEvent.type(screen.getByLabelText(/^email/i), "new@test.example");
+      await save();
+
+      await screen.findByText(/check your email/i);
+      await userEvent.click(screen.getByRole("button", { name: /^cancel$/i }));
+
+      expect(api).toHaveBeenCalledWith("/me/email", expect.objectContaining({ method: "DELETE" }));
+      await waitFor(() => expect(onSaved).toHaveBeenCalledWith(saved));
+    });
   });
 });

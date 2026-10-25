@@ -84,6 +84,7 @@ export function AdminUsers() {
   const { me, isSuperAdmin, organizationId, reload: reloadMe } = useMe();
   const queryClient = useQueryClient();
   const [moving, setMoving] = useState<AppUserDto | null>(null);
+  const [changingEmail, setChangingEmail] = useState<AppUserDto | null>(null);
   const [deleting, setDeleting] = useState<AppUserDto | null>(null);
   const [busy, setBusy] = useState(false);
   const [inviting, setInviting] = useState(false);
@@ -493,6 +494,7 @@ export function AdminUsers() {
                 isSuperAdmin={isSuperAdmin}
                 onUpdate={update}
                 onMove={setMoving}
+                onChangeEmail={setChangingEmail}
                 onDelete={setDeleting}
               />
             </li>
@@ -534,6 +536,17 @@ export function AdminUsers() {
           onClose={() => setMoving(null)}
           onMoved={async () => {
             setMoving(null);
+            await reload();
+          }}
+        />
+      )}
+
+      {changingEmail && (
+        <ChangeEmailModal
+          user={changingEmail}
+          onClose={() => setChangingEmail(null)}
+          onChanged={async () => {
+            setChangingEmail(null);
             await reload();
           }}
         />
@@ -662,6 +675,7 @@ function UserActions({
   isSuperAdmin,
   onUpdate,
   onMove,
+  onChangeEmail,
   onDelete,
 }: {
   user: AppUserDto;
@@ -669,6 +683,7 @@ function UserActions({
   isSuperAdmin: boolean;
   onUpdate: (user: AppUserDto, body: Record<string, unknown>) => Promise<void>;
   onMove: (user: AppUserDto) => void;
+  onChangeEmail: (user: AppUserDto) => void;
   onDelete: (user: AppUserDto) => void;
 }) {
   const canManage = isSuperAdmin || user.role !== "SUPER_ADMIN";
@@ -690,6 +705,20 @@ function UserActions({
     isSuperAdmin && (
       <MenuItem key="move" onSelect={() => onMove(user)}>
         Move church
+      </MenuItem>
+    ),
+    /*
+     * Everyone's own address goes through the self-service, code-verified
+     * flow on My Details instead (see PersonForm and
+     * api/src/services/email-change.ts) -- not offered here even for an
+     * admin, since `PATCH /admin/users/:id` already refuses `isSelf`
+     * everywhere else a rescue path like this one could lock someone out.
+     * This is for everyone *else*: the rescue when they have lost access to
+     * their old mailbox and so could never receive the code that flow sends.
+     */
+    !isSelf && canManage && (
+      <MenuItem key="change-email" onSelect={() => onChangeEmail(user)}>
+        Change sign-in email
       </MenuItem>
     ),
     /*
@@ -1002,6 +1031,86 @@ function MoveChurchModal({
             disabled={busy || !organizationId || (needsName && firstName.trim() === "")}
           >
             {busy ? "Moving…" : "Move"}
+          </Button>
+          <Button variant="ghost" onClick={onClose} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    </Modal>
+  );
+}
+
+/**
+ * Changes the address an account signs in with, immediately and without a
+ * code -- unlike the self-service flow on My Details, which emails one to
+ * the new address before anything changes. This is the rescue path for
+ * someone who no longer has access to the mailbox that flow would have to
+ * reach: an administrator is already trusted to invite and disable this
+ * account, and there is no other way back in once the old address is gone
+ * (see `PUT /admin/users/:id/email`, api/src/services/email-change.ts). The
+ * old address is still emailed a notice once the change lands, so an
+ * unexpected one is visible even though nothing here waited for it.
+ */
+function ChangeEmailModal({
+  user,
+  onClose,
+  onChanged,
+}: {
+  user: AppUserDto;
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const [email, setEmail] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  return (
+    <Modal title={`Change sign-in email for ${user.personName ?? user.email}`} onClose={onClose}>
+      <form
+        className="space-y-4"
+        onSubmit={async (event) => {
+          event.preventDefault();
+          setBusy(true);
+          setError(null);
+          try {
+            await api(`/admin/users/${user.id}/email`, { method: "PUT", body: { email } });
+            await onChanged();
+          } catch (err) {
+            setError(err instanceof Error ? err.message : "Could not change that address");
+          } finally {
+            setBusy(false);
+          }
+        }}
+      >
+        <p className="text-ink-muted">
+          Takes effect immediately, with no code sent to the new address. Their directory contact
+          email changes with it, and a notice goes to their current address,{" "}
+          <span className="font-bold text-ink">{user.email}</span>, in case this was not them.
+        </p>
+
+        <Field label="New sign-in email">
+          <input
+            type="email"
+            inputMode="email"
+            autoComplete="email"
+            className={inputClass}
+            value={email}
+            onChange={(event) => setEmail(event.target.value)}
+            autoFocus
+            required
+          />
+        </Field>
+
+        {error && (
+          <p role="alert" className="font-bold text-primary">
+            {error}
+          </p>
+        )}
+
+        <div className="flex flex-col gap-2 sm:flex-row">
+          <Button type="submit" disabled={busy || email.trim() === ""}>
+            {busy ? "Changing…" : "Change email"}
           </Button>
           <Button variant="ghost" onClick={onClose} disabled={busy}>
             Cancel

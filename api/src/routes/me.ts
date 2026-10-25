@@ -4,14 +4,22 @@ import type { Context } from "hono";
 import { requireRole, type AppEnv, type Caller } from "../auth";
 import { one } from "../db";
 import { audit } from "../audit";
+import {
+  cancelEmailChange,
+  confirmEmailChange,
+  pendingEmailChangeFor,
+  requestEmailChange,
+} from "../services/email-change";
 import { loadPerson } from "../services/persons";
 import { setAccountOrganization } from "../services/membership";
 import { PHOTO_COOKIE_TTL_SECONDS, signPhotoCookies } from "../photo-cookies";
 import { pushPublicKey } from "../services/push";
 import { mapsBrowserConfig } from "../services/geocoding";
 import {
+  confirmEmailChangeSchema,
   fullName,
   groupGuidelinesAgreementSchema,
+  requestEmailChangeSchema,
   setMyOrganizationSchema,
   type MeDto,
   type OrganizationMoveDto,
@@ -36,7 +44,7 @@ function asHomeParishCaller(caller: Caller): Caller {
 }
 
 async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<MeDto> {
-  const [org, person, guidelines] = await Promise.all([
+  const [org, person, guidelines, pendingEmailChange] = await Promise.all([
     caller.organizationId
       ? one<{ id: string; name: string; map_view_enabled: boolean }>(
           db,
@@ -52,6 +60,7 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
       "select version, agreed_at from group_guidelines_agreements where app_user_id = $1",
       [caller.appUserId]
     ),
+    pendingEmailChangeFor(db, caller.appUserId),
   ]);
 
   // Only super admins may act outside their own organization, so nobody else
@@ -114,6 +123,7 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
     mapsMapId: maps.mapId,
     groupGuidelinesAgreedVersion: guidelines?.version ?? null,
     groupGuidelinesAgreedAt: guidelines?.agreed_at.toISOString() ?? null,
+    pendingEmailChange,
   };
 }
 
@@ -174,6 +184,50 @@ routes.post("/group-guidelines", async (c) => {
   });
 
   return c.body(null, 204);
+});
+
+/**
+ * Starts a self-service change of the address this account signs in with. A
+ * code is emailed to the new address; nothing changes until it is confirmed
+ * (see `POST /me/email/confirm`). See services/email-change.ts for why this
+ * cannot be a plain field on `PATCH /persons/:id`.
+ */
+routes.post("/email", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const { email } = requestEmailChangeSchema.parse(await c.req.json());
+
+  const pending = await requestEmailChange(db, caller.appUserId, email);
+  return c.json(pending);
+});
+
+/** Cancels a pending self-service email change without applying it. */
+routes.delete("/email", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  await cancelEmailChange(db, caller.appUserId);
+  return c.body(null, 204);
+});
+
+/**
+ * Confirms a pending email change with its code. Returns the full `/me` body
+ * so the SPA picks up the new sign-in address in the same round trip.
+ */
+routes.post("/email/confirm", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const { code } = confirmEmailChangeSchema.parse(await c.req.json());
+
+  const newEmail = await confirmEmailChange(db, caller, code);
+
+  // `caller.email` is a snapshot from the start of this request and is now
+  // stale; loadMe reads `appUser.email` straight off it, so it has to be
+  // patched before that call rather than re-reading the account from Postgres.
+  const refreshed: Caller = { ...caller, email: newEmail };
+  const body = await loadMe(db, refreshed);
+  c.set("caller", refreshed);
+  issuePhotoCookies(c);
+  return c.json(body);
 });
 
 /**

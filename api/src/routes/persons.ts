@@ -6,6 +6,7 @@ import { audit } from "../audit";
 import { assertCanEditFamily, assertCanEditPerson } from "../services/access";
 import { clearInheritanceFor, validateInheritance } from "../services/inheritance";
 import { cancelPendingJoinRequests } from "../services/membership";
+import { applyEmailChange, assertEmailAvailable, requestEmailChange } from "../services/email-change";
 import { loadPerson, PERSON_WRITE_COLUMNS } from "../services/persons";
 import { deletePhoto, photoChange } from "../photos";
 import { addressToLine, mapViewEnabledFor, resolveAddress } from "../services/addresses";
@@ -15,6 +16,7 @@ import {
   personWriteSchema,
   photoAttachSchema,
   uuidSchema,
+  type PendingEmailChangeDto,
   type PersonWrite,
 } from "../types";
 
@@ -35,6 +37,7 @@ interface PersonFactsRow {
   photo_key: string | null;
   first_name: string;
   last_name: string | null;
+  email: string | null;
 }
 
 /**
@@ -50,7 +53,8 @@ async function loadFacts(
 ): Promise<PersonFactsRow> {
   const row = await one<PersonFactsRow>(
     q,
-    `select id, organization_id, family_id, app_user_id, photo_key, first_name, last_name
+    `select id, organization_id, family_id, app_user_id, photo_key, first_name, last_name,
+            email::text as email
        from persons
       where id = $1 and organization_id = $2 and deleted_at is null`,
     [id, organizationId]
@@ -193,6 +197,48 @@ routes.patch("/:id", async (c) => {
   const existing = await loadFacts(db, id, organizationId);
   assertCanEditPerson(caller, facts(existing));
 
+  /*
+   * An account holder's email is also their sign-in address (see
+   * services/email-change.ts, which keeps `app_users.email` and
+   * `persons.email` mirrored). It cannot go through the plain column write
+   * below, so a real change is pulled out of `payload` here -- `buildWrite`
+   * never sees it -- and routed to whichever of the two paths applies:
+   *
+   *   Own record     a code is emailed to the new address and nothing
+   *                   changes yet; the rest of this save still goes through.
+   *   Someone else's  only reachable by an admin (assertCanEditPerson allows
+   *                   a non-admin onto another account holder's record in no
+   *                   other case), so the change takes effect immediately --
+   *                   the rescue path for a lost mailbox.
+   */
+  let pendingEmailChange: PendingEmailChangeDto | null = null;
+  if ("email" in payload && existing.app_user_id) {
+    const requested = payload.email;
+    delete payload.email;
+    if (requested !== existing.email) {
+      if (!requested) {
+        throw new HTTPException(400, { message: "An account's sign-in email cannot be removed" });
+      }
+      if (existing.app_user_id === caller.appUserId) {
+        pendingEmailChange = await requestEmailChange(db, existing.app_user_id, requested);
+      } else {
+        const account = await one<{ cognito_sub: string | null; email: string }>(
+          db,
+          "select cognito_sub, email::text as email from app_users where id = $1",
+          [existing.app_user_id]
+        );
+        if (!account) throw new HTTPException(404, { message: "Account not found" });
+        await assertEmailAvailable(db, requested);
+        await applyEmailChange(db, caller, {
+          appUserId: existing.app_user_id,
+          cognitoSub: account.cognito_sub,
+          fromEmail: account.email,
+          toEmail: requested,
+        });
+      }
+    }
+  }
+
   // Moving between families needs permission on the destination too, and any
   // inheritance from the old family has to go: the resolution view would
   // otherwise keep serving an address from people who are no longer relatives.
@@ -211,7 +257,7 @@ routes.patch("/:id", async (c) => {
 
   await validateInheritance(
     db,
-    { personId: id, organizationId, familyId: effectiveFamilyId },
+    { personId: id, organizationId, familyId: effectiveFamilyId, appUserId: existing.app_user_id },
     payload
   );
 
@@ -255,7 +301,11 @@ routes.patch("/:id", async (c) => {
   });
 
   const person = await loadPerson(db, caller, id, organizationId);
-  return c.json(geocodeWarning ? { ...person, geocodeWarning } : person);
+  return c.json({
+    ...person,
+    ...(geocodeWarning ? { geocodeWarning } : {}),
+    ...(pendingEmailChange ? { pendingEmailChange } : {}),
+  });
 });
 
 /** Attaches a photo that has already been uploaded to the presigned URLs. */
