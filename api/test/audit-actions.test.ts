@@ -29,11 +29,14 @@ const ROUTE_FILES = [
 ];
 
 /**
- * Services that call `audit()` themselves, because more than one route shares
+ * Services that call `audit()` themselves, because more than one caller shares
  * them: inviteAccount is both "Invite someone" and approving a directory
- * request. Read exactly like the routes.
+ * request, and self-service/admin-override sign-in email changes (POST
+ * /me/email/confirm, PUT /admin/users/:id/email, and the email field on PATCH
+ * /persons/:id) all funnel through one `audit()` call in email-change.ts
+ * rather than three copies in three route files. Read exactly like the routes.
  */
-const SERVICE_FILES = ["invitations.ts"];
+const SERVICE_FILES = ["invitations.ts", "email-change.ts"];
 
 /**
  * `group.post.expire` is the one action nothing in `src/routes/` writes. It

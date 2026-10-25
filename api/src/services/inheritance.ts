@@ -57,6 +57,14 @@ export interface InheritanceTarget {
   personId: string | null;
   organizationId: string;
   familyId: string | null;
+  /**
+   * Set when this person has their own account. Only matters for `email`: an
+   * account holder signs in with their own address (see
+   * services/email-change.ts, which keeps `persons.email` mirroring
+   * `app_users.email`), so inheriting one from a relative would contradict
+   * that mirror the next time it was read.
+   */
+  appUserId?: string | null;
 }
 
 /**
@@ -78,6 +86,11 @@ export async function validateInheritance(
 
     const label = ATTRIBUTE_LABEL[attribute];
 
+    if (attribute === "email" && target.appUserId) {
+      throw new HTTPException(400, {
+        message: "This person signs in with their own email address",
+      });
+    }
     if (!target.familyId) {
       throw new HTTPException(400, {
         message: `Join a family before inheriting a ${label}`,

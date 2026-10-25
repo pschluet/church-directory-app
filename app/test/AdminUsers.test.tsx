@@ -433,6 +433,24 @@ describe("AdminUsers", () => {
       );
     });
 
+    it("changes a sign-in email immediately, with no code", async () => {
+      mockLoad([]);
+      renderPage();
+
+      await openMenu(/actions for layla haddad/i);
+      await userEvent.click(screen.getByRole("menuitem", { name: /change sign-in email/i }));
+
+      await userEvent.type(await screen.findByLabelText(/new sign-in email/i), "new@test.example");
+      await userEvent.click(screen.getByRole("button", { name: /^change email$/i }));
+
+      await waitFor(() =>
+        expect(api).toHaveBeenCalledWith("/admin/users/user-1/email", {
+          method: "PUT",
+          body: { email: "new@test.example" },
+        })
+      );
+    });
+
     it("offers no menu at all when nothing applies", async () => {
       /*
        * An admin can do nothing to a super admin in their own parish -- no role

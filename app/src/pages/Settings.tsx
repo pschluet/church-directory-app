@@ -224,7 +224,9 @@ export function Settings() {
 
       {message && <ErrorNotice message={message} />}
 
-      <section className="rounded-lg border border-line bg-surface p-4">
+      <SignInSection />
+
+      <section className="mt-4 rounded-lg border border-line bg-surface p-4">
         <h2 className="font-bold text-ink">Notifications</h2>
         <p className="mt-1 text-sm text-ink-muted">
           The directory can tell you about prayer requests and group messages two ways: a badge on
@@ -404,6 +406,127 @@ export function Settings() {
         </section>
       )}
     </>
+  );
+}
+
+/**
+ * The address this account signs in with, and -- when one is waiting -- the
+ * code to finish changing it.
+ *
+ * The change itself is started from the email field on My Details (see
+ * PersonForm and api/src/services/email-change.ts), not here: that is where
+ * the rest of a person's details already live, and starting it a second
+ * place would just be two forms that could disagree about what the address
+ * currently is. This section exists for the case that form does not cover --
+ * a code requested and then the tab closed, or the app reopened on another
+ * device -- so confirming or abandoning it is never stuck behind navigating
+ * back to the exact page that asked for it. `me.pendingEmailChange` is what
+ * makes that possible: the API carries it on every `/me` load, not just the
+ * response to the save that created it.
+ */
+function SignInSection() {
+  const { me, reload } = useMe();
+  const [code, setCode] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  if (!me) return null;
+  const pending = me.pendingEmailChange;
+
+  async function confirm(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await api("/me/email/confirm", { method: "POST", body: { code } });
+      await reload();
+      setCode("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "That code is not right");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function resend(): Promise<void> {
+    if (!pending) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await api("/me/email", { method: "POST", body: { email: pending.email } });
+      await reload();
+      setCode("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not resend the code");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function cancel(): Promise<void> {
+    setBusy(true);
+    setError(null);
+    try {
+      await api("/me/email", { method: "DELETE" });
+      await reload();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Could not cancel that change");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="rounded-lg border border-line bg-surface p-4">
+      <h2 className="font-bold text-ink">Sign-in</h2>
+      <p className="mt-1 text-sm text-ink-muted">
+        You sign in with <span className="font-bold text-ink">{me.appUser.email}</span>. To change
+        it, edit the email field on{" "}
+        <Link to="/me" className="font-bold text-ink hover:text-accent">
+          My Details
+        </Link>
+        .
+      </p>
+
+      {pending && (
+        <div className="mt-3 rounded-md border border-accent/40 bg-accent/5 p-3 text-sm text-ink">
+          <p>
+            A change to <span className="font-bold">{pending.email}</span> is waiting for its
+            6-digit code.
+          </p>
+          <form
+            className="mt-2 flex flex-wrap items-center gap-2"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void confirm();
+            }}
+          >
+            <input
+              aria-label="Verification code"
+              className={`${inputClass} w-32 text-center tracking-[0.3em]`}
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              pattern="[0-9]{6}"
+              value={code}
+              onChange={(event) => setCode(event.target.value.replace(/\D/g, "").slice(0, 6))}
+            />
+            <Button type="submit" disabled={busy || code.length !== 6}>
+              Confirm
+            </Button>
+            <Button type="button" variant="ghost" disabled={busy} onClick={() => void resend()}>
+              Send a new code
+            </Button>
+            <Button type="button" variant="ghost" disabled={busy} onClick={() => void cancel()}>
+              Cancel
+            </Button>
+          </form>
+          {error && (
+            <p role="alert" className="mt-2 font-bold text-primary">
+              {error}
+            </p>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 

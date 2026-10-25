@@ -448,6 +448,23 @@ export interface PersonDto extends PersonSummaryDto {
    * be guaranteed to pass. Only ever present on the response to a write.
    */
   geocodeWarning?: string;
+  /**
+   * Set instead of actually changing `email` when this person has an account
+   * and the save asked to change it to something new: a code was emailed to
+   * it and the change is on hold until `POST /me/email/confirm` is called
+   * with it. See services/email-change.ts. Only ever present on the response
+   * to a write that touched the address of the caller's own account.
+   */
+  pendingEmailChange?: PendingEmailChangeDto;
+}
+
+/**
+ * A self-service sign-in email change that has been requested but not yet
+ * confirmed with its code.
+ */
+export interface PendingEmailChangeDto {
+  email: string;
+  expiresAt: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -1717,6 +1734,19 @@ export interface OrganizationMoveDto {
   removedAnniversaries: number;
 }
 
+/** `POST /me/email` -- start a self-service change of the sign-in address. */
+export const requestEmailChangeSchema = z.object({ email: emailSchema });
+export type RequestEmailChange = z.infer<typeof requestEmailChangeSchema>;
+
+/** `POST /me/email/confirm` -- the code emailed to the new address. */
+export const confirmEmailChangeSchema = z.object({
+  code: z
+    .string()
+    .trim()
+    .regex(/^\d{6}$/, "Enter the 6-digit code"),
+});
+export type ConfirmEmailChange = z.infer<typeof confirmEmailChangeSchema>;
+
 export interface AppUserDto {
   id: string;
   email: string;
@@ -1779,6 +1809,12 @@ export interface MeDto {
   groupGuidelinesAgreedVersion: number | null;
   /** When that agreement was made, as an ISO timestamp, or null if never. */
   groupGuidelinesAgreedAt: string | null;
+  /**
+   * A self-service sign-in email change this account started but has not yet
+   * confirmed, or null. Carried here (as well as on the write response that
+   * started it) so reloading mid-flow resumes it instead of losing it.
+   */
+  pendingEmailChange: PendingEmailChangeDto | null;
 }
 
 // ---------------------------------------------------------------------------
