@@ -37,6 +37,7 @@ import {
   type GroupPostReportDto,
   type GroupRsvpResponse,
   type GroupVisibility,
+  type PublicEventRsvpDto,
 } from "@shared";
 import { api, ApiError } from "../lib/api";
 import { qk } from "../lib/queryKeys";
@@ -71,6 +72,9 @@ import {
   useGroupReactionToggle,
 } from "../components/Reactions";
 import { isEmojiOnly } from "../lib/emoji";
+import { eventShareUrl } from "../lib/eventShare";
+import { downloadEventFlyer } from "../lib/eventFlyer";
+import { EventQrModal } from "../components/EventQrModal";
 import { parseBody, toPlainText, type Inline, type ListBlock } from "../lib/richText";
 import type { Editor } from "@tiptap/react";
 import {
@@ -104,35 +108,39 @@ const FormatButtons = lazy(() =>
  * renders off of come from -- nothing here re-derives a permission.
  */
 
-type Tab = "messages" | "files" | "events";
+export type Tab = "messages" | "files" | "events";
+
+const TABS: readonly Tab[] = ["messages", "files", "events"];
+
+/**
+ * Which tab a group URL is on. `/groups/:id` is Messages -- the canonical
+ * group URL that the groups list and every notification already point at --
+ * and so is anything this does not recognise.
+ */
+export function tabFromPathname(pathname: string): Tab {
+  const segment = pathname.split("/").filter(Boolean)[2];
+  return TABS.find((tab) => tab === segment) ?? "messages";
+}
+
+/** A tab's own URL, so it can be linked, bookmarked, and survive a reload. */
+export function groupTabPath(groupId: string, tab: Tab): string {
+  return `/groups/${groupId}/${tab}`;
+}
 
 interface PostsPage {
   posts: GroupPostDto[];
   nextCursor: { createdAt: string; id: string } | null;
 }
 
-export function GroupDetail() {
-  const { id, postId } = useParams<{ id: string; postId?: string }>();
-  const groupId = id!;
-  const { me, isAdmin, organizationId } = useMe();
+/**
+ * What every page about one group shares: refreshing everything it shows, and
+ * joining or asking to join, with the error that either can leave behind. The
+ * group page and an event's page both use it.
+ */
+export function useGroupPageActions(groupId: string) {
+  const { me, organizationId } = useMe();
   const queryClient = useQueryClient();
-  const location = useLocation();
-  const { canGoBack, goBack } = useNavStack();
-
-  const [tab, setTab] = useState<Tab>("messages");
-  const [showMembers, setShowMembers] = useState(false);
-  const [reporting, setReporting] = useState<GroupPostDto | null>(null);
-  const [confirmLeave, setConfirmLeave] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
-
-  const groupQuery = useQuery({
-    queryKey: qk.group(organizationId, groupId),
-    queryFn: ({ signal }) => api<GroupDto>(`/groups/${groupId}`, { signal }),
-    refetchOnWindowFocus: true,
-  });
-
-  const now = useNow();
-  const group = groupQuery.data;
 
   function refresh(): Promise<unknown> {
     return Promise.all([
@@ -182,6 +190,42 @@ export function GroupDetail() {
     requestToJoin: () => requestToJoinMutation.mutate(),
     requesting: requestToJoinMutation.isPending,
   };
+
+  return { refresh, joinActions, actionError, setActionError };
+}
+
+export function GroupDetail() {
+  const { id, postId } = useParams<{ id: string; postId?: string }>();
+  const groupId = id!;
+  const { isAdmin, organizationId } = useMe();
+  const queryClient = useQueryClient();
+  const location = useLocation();
+  const { canGoBack, goBack } = useNavStack();
+
+  const navigate = useNavigate();
+  const tab = tabFromPathname(location.pathname);
+  /*
+   * `replace`, and no `viewTransition`. A tab is a view toggle, not a step in
+   * the stack: pushing would have the back chevron offer the same group's
+   * other tab, and -- the path really does change -- slide the whole page
+   * sideways for a tab switch. Replacing keeps Back exactly where it was while
+   * still giving every tab a real URL.
+   */
+  const setTab = (next: Tab) => void navigate(groupTabPath(groupId, next), { replace: true });
+  const [showMembers, setShowMembers] = useState(false);
+  const [reporting, setReporting] = useState<GroupPostDto | null>(null);
+  const [confirmLeave, setConfirmLeave] = useState(false);
+
+  const groupQuery = useQuery({
+    queryKey: qk.group(organizationId, groupId),
+    queryFn: ({ signal }) => api<GroupDto>(`/groups/${groupId}`, { signal }),
+    refetchOnWindowFocus: true,
+  });
+
+  const now = useNow();
+  const group = groupQuery.data;
+
+  const { refresh, joinActions, actionError, setActionError } = useGroupPageActions(groupId);
 
   const leaveMutation = useMutation({
     mutationFn: () => api(`/groups/${groupId}/leave`, { method: "POST" }),
@@ -489,7 +533,7 @@ function SectionIcons({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => voi
 }
 
 /** Join and Ask to join, run by the page and handed to wherever the bar shows. */
-interface JoinActions {
+export interface JoinActions {
   join: () => void;
   joining: boolean;
   requestToJoin: () => void;
@@ -502,7 +546,7 @@ interface JoinActions {
  * and for anyone with no way in (an archived private group, a sign-in with no
  * person record).
  */
-function joinState(group: GroupDto): "join" | "request" | "pending" | null {
+export function joinState(group: GroupDto): "join" | "request" | "pending" | null {
   if (group.myRole) return null;
   if (group.pendingJoinRequestId) return "pending";
   if (group.visibility === "PUBLIC") return "join";
@@ -541,7 +585,7 @@ function joinAction(
  * `compact` is a single line above the message bar, for a parish admin who can
  * post without being a member and so gets the bar as well.
  */
-function JoinBar({
+export function JoinBar({
   group,
   actions,
   compact = false,
@@ -778,7 +822,7 @@ const LONG_PRESS_MS = 450;
 /** Back-to-back messages by one person within this long share a single byline. */
 const GROUPING_WINDOW_MS = 5 * 60_000;
 
-type ChatItem =
+export type ChatItem =
   | { type: "divider"; key: string; label: string }
   | { type: "post"; key: string; post: GroupPostDto; showHeader: boolean };
 
@@ -811,6 +855,40 @@ function buildChatItems(posts: GroupPostDto[], now: Date): ChatItem[] {
     previous = post;
   }
   return items;
+}
+
+/**
+ * A private group shows nothing to a non-member, so the way in goes in this
+ * card rather than in a bar under it saying the same thing again. Shared with
+ * the event page, which a share link can bring a non-member to.
+ */
+export function MembersOnly({
+  group,
+  joinActions,
+  what = "its messages",
+}: {
+  group: GroupDto;
+  joinActions: JoinActions;
+  what?: string;
+}) {
+  const state = joinState(group);
+  const action = state && joinAction(state, joinActions);
+  return (
+    <EmptyState title="Members only">
+      {state === "pending"
+        ? "Your request to join is waiting for an admin to approve it."
+        : state === "request"
+          ? "Ask to join, and an admin of the group can let you in."
+          : `Join this group to see ${what}.`}
+      {action && (
+        <div className="mt-4">
+          <Button disabled={action.busy} onClick={action.run}>
+            {action.label}
+          </Button>
+        </div>
+      )}
+    </EmptyState>
+  );
 }
 
 function MessagesTab({
@@ -961,28 +1039,7 @@ function MessagesTab({
     rootMargin: "200px",
   });
 
-  if (!canSeeContent) {
-    // A private group shows nothing to a non-member, so the way in goes in
-    // this card rather than in a bar under it saying the same thing again.
-    const state = joinState(group);
-    const action = state && joinAction(state, joinActions);
-    return (
-      <EmptyState title="Members only">
-        {state === "pending"
-          ? "Your request to join is waiting for an admin to approve it."
-          : state === "request"
-            ? "Ask to join, and an admin of the group can let you in."
-            : "Join this group to see its messages."}
-        {action && (
-          <div className="mt-4">
-            <Button disabled={action.busy} onClick={action.run}>
-              {action.label}
-            </Button>
-          </div>
-        )}
-      </EmptyState>
-    );
-  }
+  if (!canSeeContent) return <MembersOnly group={group} joinActions={joinActions} />;
 
   async function posted(): Promise<void> {
     forceBottom.current = true;
@@ -1143,15 +1200,12 @@ function ThreadView({
   });
   const root = rootQuery.data;
 
-  const repliesQuery = useQuery({
-    queryKey: qk.groupReplies(organizationId, groupId, postId),
-    queryFn: ({ signal }) =>
-      api<{ replies: GroupPostDto[] }>(`/groups/${groupId}/posts/${postId}/replies`, { signal }),
-    enabled: Boolean(root) && root?.parentPostId === null,
-    refetchOnWindowFocus: true,
-  });
-  const replies = repliesQuery.data?.replies;
-  const items = useMemo(() => buildChatItems(replies ?? [], now), [replies, now]);
+  const { repliesQuery, replies, items } = useThreadReplies(
+    groupId,
+    postId,
+    now,
+    Boolean(root) && root?.parentPostId === null && root?.kind !== "EVENT"
+  );
 
   usePageScrollLock();
   const paneRef = useRef<HTMLDivElement>(null);
@@ -1212,6 +1266,11 @@ function ThreadView({
   if (root.parentPostId) {
     return <Navigate to={threadPath(groupId, root.parentPostId)} replace state={location.state} />;
   }
+  // An event has its own page now. A notification or bookmark from before
+  // that still says /threads/; send it on rather than show a thread page.
+  if (root.kind === "EVENT") {
+    return <Navigate to={eventDetailPath(groupId, root.id)} replace state={location.state} />;
+  }
 
   const count = replies?.length ?? root.replyCount;
 
@@ -1265,37 +1324,17 @@ function ThreadView({
                 {group.canReply ? "Be the first to reply." : "Nobody has replied yet."}
               </p>
             )}
-            <ol>
-              {items.map((item) =>
-                item.type === "divider" ? (
-                  <li
-                    key={item.key}
-                    data-day-divider=""
-                    className="my-3 flex items-center gap-3 text-xs font-bold uppercase tracking-wide text-ink-muted"
-                  >
-                    <span className="h-px flex-1 bg-line" />
-                    {item.label}
-                    <span className="h-px flex-1 bg-line" />
-                  </li>
-                ) : (
-                  <ChatRow
-                    key={item.key}
-                    post={item.post}
-                    showHeader={item.showHeader}
-                    groupId={groupId}
-                    members={group.members}
-                    now={now}
-                    onReport={onReport}
-                    onChanged={onChanged}
-                    onMediaLoad={onMediaLoad}
-                    canReact={group.canReact}
-                    onEdit={setEditing}
-                    editingId={editing?.id ?? null}
-                    isReply
-                  />
-                )
-              )}
-            </ol>
+            <ReplyList
+              items={items}
+              group={group}
+              groupId={groupId}
+              now={now}
+              onReport={onReport}
+              onChanged={onChanged}
+              onMediaLoad={onMediaLoad}
+              onEdit={setEditing}
+              editingId={editing?.id ?? null}
+            />
           </>
         )}
       </div>
@@ -1325,6 +1364,81 @@ function ThreadView({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * A thread's replies, oldest first, with the day dividers the feed uses. Shared
+ * by a message's thread page and an event's page, which both hang a
+ * discussion off one post.
+ */
+export function useThreadReplies(groupId: string, postId: string, now: Date, enabled: boolean) {
+  const { organizationId } = useMe();
+  const repliesQuery = useQuery({
+    queryKey: qk.groupReplies(organizationId, groupId, postId),
+    queryFn: ({ signal }) =>
+      api<{ replies: GroupPostDto[] }>(`/groups/${groupId}/posts/${postId}/replies`, { signal }),
+    enabled,
+    refetchOnWindowFocus: true,
+  });
+  const replies = repliesQuery.data?.replies;
+  const items = useMemo(() => buildChatItems(replies ?? [], now), [replies, now]);
+  return { repliesQuery, replies, items };
+}
+
+export function ReplyList({
+  items,
+  group,
+  groupId,
+  now,
+  onReport,
+  onChanged,
+  onMediaLoad,
+  onEdit,
+  editingId,
+}: {
+  items: ChatItem[];
+  group: GroupDto;
+  groupId: string;
+  now: Date;
+  onReport: (post: GroupPostDto) => void;
+  onChanged: () => Promise<unknown>;
+  onMediaLoad?: () => void;
+  onEdit: (post: GroupPostDto) => void;
+  editingId: string | null;
+}) {
+  return (
+    <ol>
+      {items.map((item) =>
+        item.type === "divider" ? (
+          <li
+            key={item.key}
+            data-day-divider=""
+            className="my-3 flex items-center gap-3 text-xs font-bold uppercase tracking-wide text-ink-muted"
+          >
+            <span className="h-px flex-1 bg-line" />
+            {item.label}
+            <span className="h-px flex-1 bg-line" />
+          </li>
+        ) : (
+          <ChatRow
+            key={item.key}
+            post={item.post}
+            showHeader={item.showHeader}
+            groupId={groupId}
+            members={group.members}
+            now={now}
+            onReport={onReport}
+            onChanged={onChanged}
+            onMediaLoad={onMediaLoad}
+            canReact={group.canReact}
+            onEdit={onEdit}
+            editingId={editingId}
+            isReply
+          />
+        )
+      )}
+    </ol>
   );
 }
 
@@ -1362,6 +1476,19 @@ function threadPath(groupId: string, postId: string): string {
   return `/groups/${groupId}/threads/${postId}`;
 }
 
+/**
+ * Where an event lives: its own page (EventDetail.tsx), not a chat thread. An
+ * event's discussion is there too, so this is where "Reply" on one goes.
+ */
+export function eventDetailPath(groupId: string, postId: string): string {
+  return `/groups/${groupId}/events/${postId}`;
+}
+
+/** An event's page or a message's thread -- wherever replying to this post happens. */
+function discussionPath(groupId: string, post: Pick<GroupPostDto, "id" | "kind">): string {
+  return post.kind === "EVENT" ? eventDetailPath(groupId, post.id) : threadPath(groupId, post.id);
+}
+
 function ChatBubbleIcon({ className = "h-4 w-4" }: { className?: string }) {
   return (
     <svg aria-hidden="true" viewBox="0 0 20 20" className={`${className} fill-current`}>
@@ -1378,7 +1505,7 @@ function ChatBubbleIcon({ className = "h-4 w-4" }: { className?: string }) {
 function ReplySummary({ post, groupId, now }: { post: GroupPostDto; groupId: string; now: Date }) {
   return (
     <Link
-      to={threadPath(groupId, post.id)}
+      to={discussionPath(groupId, post)}
       // Remembered so the thread's way out can pop this entry rather than push another.
       state={{ fromFeed: true }}
       className="-ml-2 mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-sm font-bold text-accent transition hover:bg-accent-light/30 focus-visible:outline-2 focus-visible:outline-accent"
@@ -1404,7 +1531,7 @@ function ReplySummary({ post, groupId, now }: { post: GroupPostDto; groupId: str
  * reply inside a thread (and, reused by the Events tab, a post with no thread
  * controls of its own).
  */
-function ChatRow({
+export function ChatRow({
   post,
   showHeader,
   groupId,
@@ -1466,6 +1593,8 @@ function ChatRow({
   });
 
   const isDeleted = post.deletedAt !== null;
+  const share = useEventShare(post.event);
+  const canShare = post.kind === "EVENT" && !isDeleted && post.event !== null;
   const reactionToggle = useGroupReactionToggle(groupId);
   const { react } = reactionToggle;
   /** The emoji picker opened from the hover toolbar, which keeps the toolbar and row lit. */
@@ -1490,11 +1619,18 @@ function ChatRow({
     actions.push({
       label: "Reply",
       onSelect: () =>
-        void navigate(threadPath(groupId, post.id), {
+        void navigate(discussionPath(groupId, post), {
           viewTransition: true,
           state: { focusComposer: true, fromFeed: true },
         }),
     });
+  // Advertising the event. Not for a cancelled one: there is nothing to invite
+  // anybody to, and its public page already says it was cancelled.
+  if (canShare) {
+    actions.push({ label: "Copy link", onSelect: share.copyLink });
+    actions.push({ label: "QR code", onSelect: share.openQr });
+    actions.push({ label: "Print flyer (PDF)", onSelect: share.printFlyer });
+  }
   if (!isDeleted && post.canEdit)
     actions.push({
       label: "Edit",
@@ -1769,6 +1905,7 @@ function ChatRow({
       {reactionsOpen && (
         <ReactionsSheet post={post} members={members} onClose={() => setReactionsOpen(false)} />
       )}
+      {canShare && share.qrModal}
 
       {sheetOpen && (
         <Modal noSelect title="Message" onClose={() => setSheetOpen(false)}>
@@ -1952,7 +2089,7 @@ function hasEveryoneMention(text: string): boolean {
  * link to that person's page -- and "@everyone", when the post has it, in the
  * same color with nowhere to link to.
  */
-function MentionText({
+export function MentionText({
   text,
   mentions,
   mentionsEveryone = false,
@@ -2325,7 +2462,7 @@ function MentionTextarea({
  * in the message bar at the foot of the page (see `ChatComposer`'s `editing`),
  * the same box every message is written in.
  */
-function EditForm({
+export function EditForm({
   post,
   groupId,
   members,
@@ -2357,7 +2494,7 @@ function EditForm({
  * (requirements/groups.md) -- which is why this posts the whole `event`
  * object on save rather than patching one field at a time.
  */
-function EventEditForm({
+export function EventEditForm({
   post,
   event,
   groupId,
@@ -2378,6 +2515,7 @@ function EventEditForm({
   const [endTime, setEndTime] = useState(event.endTime ?? "");
   const [location, setLocation] = useState(event.location ?? "");
   const [description, setDescription] = useState(event.description ?? "");
+  const [publicRsvpEnabled, setPublicRsvpEnabled] = useState(event.publicRsvpEnabled);
   const mentionable = useMentionable(members);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -2398,6 +2536,7 @@ function EventEditForm({
             startTime: startTime || undefined,
             endTime: endTime || undefined,
             location: location || undefined,
+            publicRsvpEnabled,
           },
         },
       });
@@ -2466,6 +2605,7 @@ function EventEditForm({
           maxLength={GROUP_POST_BODY_MAX}
         />
       </Field>
+      <PublicRsvpField checked={publicRsvpEnabled} onChange={setPublicRsvpEnabled} />
       {error && <p className="text-sm font-bold text-primary">{error}</p>}
       <div className="flex gap-2">
         <Button disabled={busy || !canSave} onClick={() => void save()}>
@@ -2475,6 +2615,49 @@ function EventEditForm({
           Cancel
         </Button>
       </div>
+    </div>
+  );
+}
+
+/**
+ * "Allow Public RSVP", and -- for as long as it is ticked -- what that
+ * exposes. A standing notice rather than a confirm dialog, the pattern
+ * requirements/groups.md sets for secret groups: the person editing the event
+ * six weeks later deserves to read it too, and a dialog that fires once is a
+ * thing you click past.
+ *
+ * Literally true of the implementation, and worth keeping that way: the
+ * public endpoint returns the details to anyone, and its headcount has no
+ * names in it (api/src/routes/public.ts).
+ */
+function PublicRsvpField({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      <label className="flex items-center gap-2 font-bold text-ink">
+        <input
+          type="checkbox"
+          checked={checked}
+          onChange={(event) => onChange(event.target.checked)}
+          className="h-4 w-4 accent-primary"
+        />
+        Allow Public RSVP
+      </label>
+      {checked && (
+        <p
+          role="note"
+          className="rounded-md border border-accent/40 bg-accent/5 p-3 text-sm leading-snug text-ink"
+        >
+          <strong>Anyone on the internet</strong> will be able to see this event's full details —
+          its title, description, date, time and location. Only people with an account in the
+          directory can see <strong>who has RSVP'd</strong>.
+        </p>
+      )}
     </div>
   );
 }
@@ -2572,7 +2755,7 @@ function SendIcon() {
  * is the keyboard's return, a new line, and the send button sends. The mention
  * picker, while open, keeps Enter for choosing a name.
  */
-function ChatComposer({
+export function ChatComposer({
   groupId,
   members,
   parentPostId,
@@ -3012,6 +3195,7 @@ function EventComposerModal({
   const [endTime, setEndTime] = useState("");
   const [location, setLocation] = useState("");
   const [description, setDescription] = useState("");
+  const [publicRsvpEnabled, setPublicRsvpEnabled] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const mentionable = useMentionable(members);
@@ -3034,6 +3218,7 @@ function EventComposerModal({
             startTime: startTime || undefined,
             endTime: endTime || undefined,
             location: location || undefined,
+            publicRsvpEnabled,
           },
         },
       });
@@ -3108,6 +3293,7 @@ function EventComposerModal({
             maxLength={GROUP_POST_BODY_MAX}
           />
         </Field>
+        <PublicRsvpField checked={publicRsvpEnabled} onChange={setPublicRsvpEnabled} />
 
         {error && (
           <p role="alert" className="text-sm font-bold text-primary">
@@ -3128,6 +3314,108 @@ function EventComposerModal({
 }
 
 // ---------------------------------------------------------------------------
+// Sharing an event: copy link, QR code, printable flyer
+// ---------------------------------------------------------------------------
+
+/**
+ * The three ways to advertise an event, in one place so the post's menu, the
+ * Events tab's share row and the event's own page cannot drift apart. All of
+ * them carry /e/<token> -- never the in-app URL -- because that one link is
+ * what routes by session: the same QR code is right whether a member or a
+ * stranger scans it.
+ *
+ * `qrModal` is the full-screen QR, for the caller to render wherever it likes.
+ */
+export function useEventShare(event: GroupPostDto["event"], cancelled = false) {
+  const { me } = useMe();
+  const [qrOpen, setQrOpen] = useState(false);
+  const [copied, setCopied] = useState(false);
+  const [flyerError, setFlyerError] = useState<string | null>(null);
+  const url = event ? eventShareUrl(event.shareToken) : "";
+
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
+  return {
+    url,
+    copied,
+    flyerError,
+    copyLink: () => {
+      void navigator.clipboard?.writeText(url).then(() => setCopied(true));
+    },
+    openQr: () => setQrOpen(true),
+    printFlyer: () => {
+      if (!event) return;
+      setFlyerError(null);
+      void downloadEventFlyer(
+        {
+          title: event.title,
+          description: event.description,
+          eventDate: event.eventDate,
+          startTime: event.startTime,
+          endTime: event.endTime,
+          location: event.location,
+          organizationName: me?.organization?.name ?? "",
+          cancelled,
+        },
+        url
+      ).catch(() => setFlyerError("Could not make the flyer. Try again."));
+    },
+    qrModal: event ? (
+      <EventQrModal open={qrOpen} onClose={() => setQrOpen(false)} url={url} title={event.title} />
+    ) : null,
+  };
+}
+
+/** Copy link, QR code and Print flyer as a row of buttons. */
+export function EventShareButtons({
+  share,
+  size = "sm",
+}: {
+  share: ReturnType<typeof useEventShare>;
+  size?: "sm" | "lg";
+}) {
+  const buttonClass =
+    size === "lg"
+      ? "inline-flex items-center gap-2 rounded-lg border border-line bg-surface px-4 py-2.5 font-bold text-ink shadow-sm transition hover:border-accent hover:text-primary"
+      : "inline-flex items-center gap-1.5 rounded-md px-2 py-1 text-sm font-bold text-accent transition hover:bg-accent-light/30";
+  const iconClass = size === "lg" ? "h-5 w-5 fill-current" : "h-4 w-4 fill-current";
+  return (
+    <div>
+      <div className={`flex flex-wrap items-center ${size === "lg" ? "gap-2" : "gap-1"}`}>
+        <button type="button" className={buttonClass} onClick={share.copyLink}>
+          <svg aria-hidden="true" viewBox="0 0 20 20" className={iconClass}>
+            <path d="M11.3 3.7a3.8 3.8 0 0 1 5.4 5.4l-2.2 2.2a3.8 3.8 0 0 1-5.4 0 .8.8 0 0 1 1.1-1.1 2.2 2.2 0 0 0 3.2 0l2.2-2.2a2.2 2.2 0 0 0-3.2-3.2l-.9.9a.8.8 0 0 1-1.1-1.1l.9-.9Zm-2.2 5a2.2 2.2 0 0 0-3.2 0l-2.2 2.2a2.2 2.2 0 0 0 3.2 3.2l.9-.9a.8.8 0 1 1 1.1 1.1l-.9.9a3.8 3.8 0 0 1-5.4-5.4l2.2-2.2a3.8 3.8 0 0 1 5.4 0 .8.8 0 1 1-1.1 1.1Z" />
+          </svg>
+          <span aria-live="polite">{share.copied ? "Copied" : "Copy link"}</span>
+        </button>
+        <button type="button" className={buttonClass} onClick={share.openQr}>
+          <svg aria-hidden="true" viewBox="0 0 20 20" className={iconClass}>
+            <path d="M3 3h6v6H3V3Zm1.6 1.6v2.8h2.8V4.6H4.6ZM11 3h6v6h-6V3Zm1.6 1.6v2.8h2.8V4.6h-2.8ZM3 11h6v6H3v-6Zm1.6 1.6v2.8h2.8v-2.8H4.6ZM11 11h2v2h-2v-2Zm2 2h2v2h-2v-2Zm2-2h2v2h-2v-2Zm0 4h2v2h-2v-2Zm-4 0h2v2h-2v-2Z" />
+          </svg>
+          QR code
+        </button>
+        <button type="button" className={buttonClass} onClick={share.printFlyer}>
+          <svg aria-hidden="true" viewBox="0 0 20 20" className={iconClass}>
+            <path d="M5 2h7.6L16 5.4V17a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm1 1.6v12.8h8.4V6.2h-2.6a.8.8 0 0 1-.8-.8V3.6H6Zm1.6 6.2h4.8a.8.8 0 0 1 0 1.6H7.6a.8.8 0 0 1 0-1.6Zm0 3h4.8a.8.8 0 0 1 0 1.6H7.6a.8.8 0 0 1 0-1.6Z" />
+          </svg>
+          Print flyer (PDF)
+        </button>
+      </div>
+      {share.flyerError && (
+        <p role="alert" className="mt-1 text-sm font-bold text-primary">
+          {share.flyerError}
+        </p>
+      )}
+      {share.qrModal}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Event block (RSVP)
 // ---------------------------------------------------------------------------
 
@@ -3138,35 +3426,175 @@ const RSVP_LABELS: Record<GroupRsvpResponse, string> = {
   NO: "Not going",
 };
 
-/** A page torn from a calendar: the month on a band, the day large beneath it. */
-function EventDateTile({ iso, past }: { iso: string; past: boolean }) {
-  const date = parseIsoDate(iso);
+/**
+ * Answering an event, and changing how many guests you are bringing. One hook
+ * behind both the card's compact control and the event page's larger one, so
+ * the two cannot answer differently.
+ */
+export function useEventRsvp(groupId: string, postId: string, onChanged: () => Promise<unknown>) {
+  return useMutation({
+    mutationFn: ({ response, guests }: { response: GroupRsvpResponse; guests: number }) =>
+      api(`/groups/${groupId}/posts/${postId}/rsvp`, {
+        method: "PUT",
+        body: { response, guestCount: guests },
+      }),
+    onSuccess: () => void onChanged(),
+  });
+}
+
+/**
+ * Going / Maybe / Not going as a segmented control, and a guest stepper once
+ * the answer is Going. `large` is the event page's version: the same control,
+ * sized as the page's main action.
+ */
+export function RsvpControl({
+  event,
+  postId,
+  rsvp,
+  large = false,
+}: {
+  event: NonNullable<GroupPostDto["event"]>;
+  postId: string;
+  rsvp: ReturnType<typeof useEventRsvp>;
+  large?: boolean;
+}) {
+  const mine = event.myRsvp;
+  const guests = mine?.guestCount ?? 0;
+  const segment = large ? "px-5 py-3 text-base" : "px-3 py-1.5 text-sm";
+  const step = large ? "px-4 py-2 text-lg" : "px-2.5 py-1 text-base";
   return (
-    <div
-      aria-hidden="true"
-      className="flex h-16 w-14 shrink-0 flex-col overflow-hidden rounded-xl border border-line bg-surface text-center shadow-sm"
-    >
-      <span
-        className={`py-0.5 text-[10px] font-bold uppercase tracking-wider text-white ${
-          past ? "bg-ink-muted" : "bg-primary"
+    <div className={`flex flex-wrap items-center ${large ? "gap-4" : "gap-3"}`}>
+      <div
+        role="group"
+        aria-label="Your RSVP"
+        className={`inline-flex overflow-hidden border border-line bg-surface ${
+          large ? "rounded-xl shadow-sm" : "rounded-lg"
         }`}
       >
-        {date.toLocaleDateString(undefined, { month: "short" })}
-      </span>
-      <span className="flex flex-1 items-center justify-center text-2xl font-bold leading-none text-ink">
-        {date.getDate()}
-      </span>
+        {RSVP_OPTIONS.map((option) => {
+          const active = mine?.response === option;
+          return (
+            <button
+              key={option}
+              type="button"
+              aria-pressed={active}
+              disabled={rsvp.isPending}
+              onClick={() => rsvp.mutate({ response: option, guests })}
+              className={`${segment} font-bold transition first:border-l-0 border-l border-line disabled:opacity-60 ${
+                active ? "bg-primary text-white" : "text-ink hover:bg-surface-muted"
+              }`}
+            >
+              {RSVP_LABELS[option]}
+            </button>
+          );
+        })}
+      </div>
+
+      {mine?.response === "YES" && (
+        <div
+          className={`flex items-center gap-1 text-ink-muted ${large ? "text-base" : "text-sm"}`}
+        >
+          <span id={`guests-${postId}`}>My guests</span>
+          <div
+            role="group"
+            aria-labelledby={`guests-${postId}`}
+            className="inline-flex items-center overflow-hidden rounded-lg border border-line bg-surface"
+          >
+            <button
+              type="button"
+              aria-label="Fewer guests"
+              disabled={rsvp.isPending || guests <= 0}
+              onClick={() => rsvp.mutate({ response: "YES", guests: guests - 1 })}
+              className={`${step} font-bold text-ink hover:bg-surface-muted disabled:text-ink-muted/50`}
+            >
+              −
+            </button>
+            <span aria-live="polite" className="min-w-6 text-center font-bold text-ink">
+              {guests}
+            </span>
+            <button
+              type="button"
+              aria-label="More guests"
+              disabled={rsvp.isPending || guests >= 50}
+              onClick={() => rsvp.mutate({ response: "YES", guests: guests + 1 })}
+              className={`${step} font-bold text-ink hover:bg-surface-muted disabled:text-ink-muted/50`}
+            >
+              +
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
 
-function EventMeta({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+/** "3 going · 1 maybe · 0 not going · 4 via link", or that nobody has answered. */
+export function rsvpSummary(counts: NonNullable<GroupPostDto["event"]>["rsvpCounts"]): string {
+  const { yes, maybe, no, publicAttending } = counts;
+  if (yes + maybe + no + publicAttending === 0) return "No RSVPs yet";
+  const parts = [`${yes} going`, `${maybe} maybe`, `${no} not going`];
+  if (publicAttending > 0) parts.push(`${publicAttending} via link`);
+  return parts.join(" · ");
+}
+
+/** A page torn from a calendar: the month on a band, the day large beneath it. */
+export function EventDateTile({
+  iso,
+  past,
+  size = "md",
+}: {
+  iso: string;
+  past: boolean;
+  /** `xl` is the event page's hero; `md` is a card in the feed. */
+  size?: "md" | "xl";
+}) {
+  const date = parseIsoDate(iso);
+  const xl = size === "xl";
   return (
-    <p className="flex items-start gap-2 text-sm text-ink">
+    <div
+      aria-hidden="true"
+      className={`flex shrink-0 flex-col overflow-hidden border border-line bg-surface text-center shadow-sm ${
+        xl ? "h-32 w-28 rounded-2xl" : "h-16 w-14 rounded-xl"
+      }`}
+    >
+      <span
+        className={`font-bold uppercase tracking-wider text-white ${
+          xl ? "py-1.5 text-sm" : "py-0.5 text-[10px]"
+        } ${past ? "bg-ink-muted" : "bg-primary"}`}
+      >
+        {date.toLocaleDateString(undefined, { month: "short" })}
+      </span>
+      <span
+        className={`flex flex-1 items-center justify-center font-bold leading-none text-ink ${
+          xl ? "text-6xl" : "text-2xl"
+        }`}
+      >
+        {date.getDate()}
+      </span>
+      {xl && (
+        <span className="pb-2 text-xs font-bold uppercase tracking-wide text-ink-muted">
+          {date.toLocaleDateString(undefined, { weekday: "short" })}
+        </span>
+      )}
+    </div>
+  );
+}
+
+export function EventMeta({
+  icon,
+  children,
+  large = false,
+}: {
+  icon: ReactNode;
+  children: ReactNode;
+  large?: boolean;
+}) {
+  return (
+    <p className={`flex items-start gap-2 text-ink ${large ? "text-base" : "text-sm"}`}>
       <svg
         aria-hidden="true"
         viewBox="0 0 20 20"
-        className="mt-0.5 h-4 w-4 shrink-0 fill-current text-ink-muted"
+        className={`shrink-0 fill-current text-ink-muted ${large ? "mt-0.5 h-5 w-5" : "mt-0.5 h-4 w-4"}`}
       >
         {icon}
       </svg>
@@ -3175,10 +3603,42 @@ function EventMeta({ icon, children }: { icon: ReactNode; children: ReactNode })
   );
 }
 
+export const CLOCK_ICON = (
+  <path d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm.8 4.2v3.5l2.7 1.6a.8.8 0 1 1-.8 1.4l-3.1-1.8a.8.8 0 0 1-.4-.7V6.2a.8.8 0 0 1 1.6 0Z" />
+);
+export const PIN_ICON = (
+  <path d="M10 1.8a6 6 0 0 0-6 6c0 4.2 5.2 9.9 5.4 10.1a.8.8 0 0 0 1.2 0C10.8 17.7 16 12 16 7.8a6 6 0 0 0-6-6Zm0 8.2a2.2 2.2 0 1 1 0-4.4 2.2 2.2 0 0 1 0 4.4Z" />
+);
+export const PEOPLE_ICON = (
+  <path d="M7 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm6.5.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM1.5 16a5.5 5.5 0 0 1 11 0 .8.8 0 0 1-.8.8H2.3a.8.8 0 0 1-.8-.8Zm11.7.8c.2-.3.3-.5.3-.8 0-1.6-.6-3-1.5-4a4.6 4.6 0 0 1 6.5 4.2.8.8 0 0 1-.8.8h-4.5Z" />
+);
+
+/** A Google Maps search, the same link everywhere an event's location shows. */
+export function mapsSearchUrl(location: string): string {
+  return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(location)}`;
+}
+
+/** Cancelled / Today / Tomorrow / Past, as the card and the event page both show them. */
+export function EventBadges({ eventDate, cancelled }: { eventDate: string; cancelled: boolean }) {
+  const past = eventDate < todayIso();
+  const soon = past || cancelled ? null : formatRelativeDay(eventDate);
+  return (
+    <>
+      {cancelled && <Badge tone="primary">Cancelled</Badge>}
+      {soon && <Badge tone="accent">{soon}</Badge>}
+      {past && !cancelled && <Badge tone="neutral">Past</Badge>}
+    </>
+  );
+}
+
 /**
  * An event, as a card: the date as a tile, the when and where with icons, then
  * RSVP as a segmented control with a guest stepper, and who is coming. Used in
  * the conversation and, larger, on the Events tab.
+ *
+ * The header -- the date tile, the title and its badges -- opens the event's
+ * own page. Nothing else on the card navigates: the RSVP buttons, the stepper,
+ * the location and the roster line all keep doing what they did.
  */
 function EventBlock({
   event,
@@ -3205,21 +3665,12 @@ function EventBlock({
   cancelled?: boolean;
 }) {
   const [showRsvps, setShowRsvps] = useState(false);
-  const rsvp = useMutation({
-    mutationFn: ({ response, guests }: { response: GroupRsvpResponse; guests: number }) =>
-      api(`/groups/${groupId}/posts/${postId}/rsvp`, {
-        method: "PUT",
-        body: { response, guestCount: guests },
-      }),
-    onSuccess: () => void onChanged(),
-  });
+  const rsvp = useEventRsvp(groupId, postId, onChanged);
+  const share = useEventShare(event);
 
-  const mine = event.myRsvp;
-  const guests = mine?.guestCount ?? 0;
   const past = event.eventDate < todayIso();
-  const soon = past || cancelled ? null : formatRelativeDay(event.eventDate);
   const times = formatEventTimes(event.startTime, event.endTime);
-  const { yes, maybe, no } = event.rsvpCounts;
+  const pagePath = eventDetailPath(groupId, postId);
 
   return (
     <div
@@ -3228,36 +3679,33 @@ function EventBlock({
       }`}
     >
       <div className="flex gap-3 p-4">
-        <EventDateTile iso={event.eventDate} past={past || cancelled} />
+        {/* The tile is a second way into the same page; the title link names it. */}
+        <Link to={pagePath} viewTransition aria-hidden="true" tabIndex={-1} className="shrink-0">
+          <EventDateTile iso={event.eventDate} past={past || cancelled} />
+        </Link>
         <div className="min-w-0 flex-1 space-y-1.5">
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
+          <Link
+            to={pagePath}
+            viewTransition
+            className="group/title flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md focus-visible:outline-2 focus-visible:outline-accent"
+          >
             <h3
-              className={`min-w-0 break-words text-lg font-bold leading-snug ${
+              className={`min-w-0 break-words text-lg font-bold leading-snug group-hover/title:underline ${
                 cancelled ? "text-ink-muted line-through" : "text-ink"
               }`}
             >
               {event.title}
             </h3>
-            {cancelled && <Badge tone="primary">Cancelled</Badge>}
-            {soon && <Badge tone="accent">{soon}</Badge>}
-            {past && !cancelled && <Badge tone="neutral">Past</Badge>}
-          </div>
-          <EventMeta
-            icon={
-              <path d="M10 2a8 8 0 1 0 0 16 8 8 0 0 0 0-16Zm.8 4.2v3.5l2.7 1.6a.8.8 0 1 1-.8 1.4l-3.1-1.8a.8.8 0 0 1-.4-.7V6.2a.8.8 0 0 1 1.6 0Z" />
-            }
-          >
+            <EventBadges eventDate={event.eventDate} cancelled={cancelled} />
+          </Link>
+          <EventMeta icon={CLOCK_ICON}>
             {formatDayLabel(event.eventDate)}
             {times && <span className="text-ink-muted"> · {times}</span>}
           </EventMeta>
           {event.location && (
-            <EventMeta
-              icon={
-                <path d="M10 1.8a6 6 0 0 0-6 6c0 4.2 5.2 9.9 5.4 10.1a.8.8 0 0 0 1.2 0C10.8 17.7 16 12 16 7.8a6 6 0 0 0-6-6Zm0 8.2a2.2 2.2 0 1 1 0-4.4 2.2 2.2 0 0 1 0 4.4Z" />
-              }
-            >
+            <EventMeta icon={PIN_ICON}>
               <a
-                href={`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(event.location)}`}
+                href={mapsSearchUrl(event.location)}
                 target="_blank"
                 rel="noreferrer"
                 className="text-accent underline-offset-2 hover:underline"
@@ -3280,64 +3728,7 @@ function EventBlock({
 
       {!cancelled && (
         <div className="space-y-3 border-t border-line bg-surface-muted/60 px-4 py-3">
-          <div className="flex flex-wrap items-center gap-3">
-            <div
-              role="group"
-              aria-label="Your RSVP"
-              className="inline-flex overflow-hidden rounded-lg border border-line bg-surface"
-            >
-              {RSVP_OPTIONS.map((option) => {
-                const active = mine?.response === option;
-                return (
-                  <button
-                    key={option}
-                    type="button"
-                    aria-pressed={active}
-                    disabled={rsvp.isPending}
-                    onClick={() => rsvp.mutate({ response: option, guests })}
-                    className={`px-3 py-1.5 text-sm font-bold transition first:border-l-0 border-l border-line disabled:opacity-60 ${
-                      active ? "bg-primary text-white" : "text-ink hover:bg-surface-muted"
-                    }`}
-                  >
-                    {RSVP_LABELS[option]}
-                  </button>
-                );
-              })}
-            </div>
-
-            {mine?.response === "YES" && (
-              <div className="flex items-center gap-1 text-sm text-ink-muted">
-                <span id={`guests-${postId}`}>My guests</span>
-                <div
-                  role="group"
-                  aria-labelledby={`guests-${postId}`}
-                  className="inline-flex items-center overflow-hidden rounded-lg border border-line bg-surface"
-                >
-                  <button
-                    type="button"
-                    aria-label="Fewer guests"
-                    disabled={rsvp.isPending || guests <= 0}
-                    onClick={() => rsvp.mutate({ response: "YES", guests: guests - 1 })}
-                    className="px-2.5 py-1 text-base font-bold text-ink hover:bg-surface-muted disabled:text-ink-muted/50"
-                  >
-                    −
-                  </button>
-                  <span aria-live="polite" className="min-w-6 text-center font-bold text-ink">
-                    {guests}
-                  </span>
-                  <button
-                    type="button"
-                    aria-label="More guests"
-                    disabled={rsvp.isPending || guests >= 50}
-                    onClick={() => rsvp.mutate({ response: "YES", guests: guests + 1 })}
-                    className="px-2.5 py-1 text-base font-bold text-ink hover:bg-surface-muted disabled:text-ink-muted/50"
-                  >
-                    +
-                  </button>
-                </div>
-              </div>
-            )}
-          </div>
+          <RsvpControl event={event} postId={postId} rsvp={rsvp} />
 
           <button
             type="button"
@@ -3345,16 +3736,21 @@ function EventBlock({
             className="flex items-center gap-1.5 text-sm font-bold text-accent hover:underline"
           >
             <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
-              <path d="M7 9a3 3 0 1 0 0-6 3 3 0 0 0 0 6Zm6.5.5a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5ZM1.5 16a5.5 5.5 0 0 1 11 0 .8.8 0 0 1-.8.8H2.3a.8.8 0 0 1-.8-.8Zm11.7.8c.2-.3.3-.5.3-.8 0-1.6-.6-3-1.5-4a4.6 4.6 0 0 1 6.5 4.2.8.8 0 0 1-.8.8h-4.5Z" />
+              {PEOPLE_ICON}
             </svg>
-            {yes + maybe + no === 0 ? (
-              "No RSVPs yet"
-            ) : (
-              <span>
-                {yes} going · {maybe} maybe · {no} not going
-              </span>
-            )}
+            <span>{rsvpSummary(event.rsvpCounts)}</span>
           </button>
+        </div>
+      )}
+
+      {/*
+        On the Events tab, where there is room, the share actions sit in plain
+        sight: advertising an event is the point of most of them, and an
+        overflow menu is a poor place to hide that.
+      */}
+      {wide && !cancelled && (
+        <div className="border-t border-line px-3 py-2">
+          <EventShareButtons share={share} />
         </div>
       )}
 
@@ -3376,8 +3772,13 @@ const RESPONSE_SECTIONS: { response: GroupRsvpResponse; heading: string }[] = [
  * guests each "going" is bringing, since the post's own `rsvpCounts` is only
  * ever a headcount. Fetched lazily, the same reasoning `MembersModal` gives
  * for not loading this until someone actually opens it.
+ *
+ * People who answered through the event's public share page are listed after
+ * Going, marked as such. Their addresses, and the button that removes a bogus
+ * one, are only for the event's author and the group's moderators -- the API
+ * decides that, and says so in `canManagePublicRsvps`.
  */
-function RsvpListModal({
+export function RsvpListModal({
   groupId,
   postId,
   onClose,
@@ -3387,74 +3788,161 @@ function RsvpListModal({
   onClose: () => void;
 }) {
   const { organizationId } = useMe();
+  const queryClient = useQueryClient();
   const rsvpsQuery = useQuery({
     queryKey: qk.groupPostRsvps(organizationId, groupId, postId),
     queryFn: ({ signal }) =>
-      api<{ rsvps: GroupEventRsvpDto[] }>(`/groups/${groupId}/posts/${postId}/rsvps`, { signal }),
+      api<{
+        rsvps: GroupEventRsvpDto[];
+        publicRsvps: PublicEventRsvpDto[];
+        canManagePublicRsvps: boolean;
+      }>(`/groups/${groupId}/posts/${postId}/rsvps`, { signal }),
+  });
+  const [removing, setRemoving] = useState<PublicEventRsvpDto | null>(null);
+  const remove = useMutation({
+    mutationFn: (rsvpId: string) =>
+      api(`/groups/${groupId}/posts/${postId}/public-rsvps/${rsvpId}`, { method: "DELETE" }),
+    onSuccess: async () => {
+      setRemoving(null);
+      // The post's own headcount changes too, wherever it is showing.
+      await queryClient.invalidateQueries({ queryKey: qk.group(organizationId, groupId) });
+    },
   });
 
   const rsvps = rsvpsQuery.data?.rsvps ?? [];
+  const publicRsvps = rsvpsQuery.data?.publicRsvps ?? [];
+  const canManage = rsvpsQuery.data?.canManagePublicRsvps ?? false;
   const going = rsvps.filter((r) => r.response === "YES");
   const totalGuests = going.reduce((sum, r) => sum + r.guestCount, 0);
-  const totalAttending = going.length + totalGuests;
+  const publicPeople = publicRsvps.reduce((sum, r) => sum + 1 + r.guestCount, 0);
+  const totalAttending = going.length + totalGuests + publicPeople;
 
   return (
     <Modal title="Who's RSVP'd" onClose={onClose}>
       {rsvpsQuery.isPending ? (
         <Spinner label="Loading RSVPs" />
-      ) : rsvps.length === 0 ? (
+      ) : rsvps.length === 0 && publicRsvps.length === 0 ? (
         <p className="text-ink-muted">Nobody has RSVP'd yet.</p>
       ) : (
         <div className="space-y-4">
           <p className="font-bold text-ink">
             {totalAttending} total attending ({going.length}{" "}
             {going.length === 1 ? "member" : "members"}
-            {totalGuests > 0 && ` + ${totalGuests} ${totalGuests === 1 ? "guest" : "guests"}`})
+            {totalGuests > 0 && ` + ${totalGuests} ${totalGuests === 1 ? "guest" : "guests"}`}
+            {publicPeople > 0 && ` + ${publicPeople} via the public link`})
           </p>
           {RESPONSE_SECTIONS.map(({ response, heading }) => {
             const rows = rsvps.filter((r) => r.response === response);
-            if (rows.length === 0) return null;
-            return (
-              <div key={response}>
-                <p className="mb-1 font-bold text-ink">
-                  {heading} ({rows.length})
-                </p>
-                <ul className="space-y-1">
-                  {rows.map((row) => (
-                    <li key={row.appUserId} className="flex items-center gap-2 text-ink">
-                      <Link
-                        to={`/people/${row.personId}`}
-                        aria-hidden="true"
-                        tabIndex={-1}
-                        className="shrink-0"
-                      >
-                        <Avatar
-                          thumbUrl={row.thumbUrl}
-                          person={{ firstName: row.name, lastName: null }}
-                          size="sm"
-                        />
-                      </Link>
-                      <span>
+            const section =
+              rows.length === 0 ? null : (
+                <div key={response}>
+                  <p className="mb-1 font-bold text-ink">
+                    {heading} ({rows.length})
+                  </p>
+                  <ul className="space-y-1">
+                    {rows.map((row) => (
+                      <li key={row.appUserId} className="flex items-center gap-2 text-ink">
                         <Link
                           to={`/people/${row.personId}`}
-                          className="hover:text-accent hover:underline"
+                          aria-hidden="true"
+                          tabIndex={-1}
+                          className="shrink-0"
                         >
-                          {row.name}
+                          <Avatar
+                            thumbUrl={row.thumbUrl}
+                            person={{ firstName: row.name, lastName: null }}
+                            size="sm"
+                          />
                         </Link>
-                        {response === "YES" && row.guestCount > 0 && (
-                          <span className="text-ink-muted">
-                            {" "}
-                            +{row.guestCount} {row.guestCount === 1 ? "guest" : "guests"}
+                        <span>
+                          <Link
+                            to={`/people/${row.personId}`}
+                            className="hover:text-accent hover:underline"
+                          >
+                            {row.name}
+                          </Link>
+                          {response === "YES" && row.guestCount > 0 && (
+                            <span className="text-ink-muted">
+                              {" "}
+                              +{row.guestCount} {row.guestCount === 1 ? "guest" : "guests"}
+                            </span>
+                          )}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              );
+            // Strangers who said they are coming, straight after the members who did.
+            if (response !== "YES" || publicRsvps.length === 0) return section;
+            return (
+              <div key={response} className="space-y-4">
+                {section}
+                <div>
+                  <p className="mb-1 font-bold text-ink">
+                    From the public link ({publicRsvps.length})
+                  </p>
+                  <ul className="space-y-1">
+                    {publicRsvps.map((row) => (
+                      <li key={row.id} className="flex items-center gap-2 text-ink">
+                        <Avatar
+                          thumbUrl={null}
+                          person={{ firstName: row.firstName, lastName: row.lastName }}
+                          size="sm"
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="flex flex-wrap items-center gap-x-2">
+                            <span>
+                              {row.firstName} {row.lastName}
+                            </span>
+                            <Badge tone="neutral">Public RSVP</Badge>
+                            {row.guestCount > 0 && (
+                              <span className="text-ink-muted">
+                                +{row.guestCount} {row.guestCount === 1 ? "guest" : "guests"}
+                              </span>
+                            )}
                           </span>
+                          {row.email && (
+                            <a
+                              href={`mailto:${row.email}`}
+                              className="block truncate text-sm text-accent hover:underline"
+                            >
+                              {row.email}
+                            </a>
+                          )}
+                        </span>
+                        {canManage && (
+                          <button
+                            type="button"
+                            aria-label={`Remove ${row.firstName} ${row.lastName}'s RSVP`}
+                            onClick={() => setRemoving(row)}
+                            className="tap-target shrink-0 rounded-md px-2 text-sm font-bold text-primary hover:bg-surface-muted"
+                          >
+                            Remove
+                          </button>
                         )}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               </div>
             );
           })}
         </div>
+      )}
+      {removing && (
+        <ConfirmDialog
+          title="Remove this RSVP?"
+          confirmLabel="Remove it"
+          busy={remove.isPending}
+          onConfirm={() => remove.mutate(removing.id)}
+          onClose={() => setRemoving(null)}
+        >
+          <p>
+            {removing.firstName} {removing.lastName} answered through the public link. They are not
+            told it was removed.
+          </p>
+        </ConfirmDialog>
       )}
     </Modal>
   );
@@ -4235,7 +4723,7 @@ function ReportQueue({
 // Report modal
 // ---------------------------------------------------------------------------
 
-function ReportModal({
+export function ReportModal({
   post,
   groupId,
   onClose,

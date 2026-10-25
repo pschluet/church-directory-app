@@ -4,18 +4,21 @@ import type { Editor } from "@tiptap/react";
 import userEvent from "@testing-library/user-event";
 import type {
   GroupDto,
+  GroupEventRsvpDto,
   GroupFileDto,
   GroupMemberDto,
   GroupPostAttachmentDto,
   GroupPostDto,
   MeDto,
+  PublicEventRsvpDto,
 } from "@shared";
 import { GROUP_POST_MAX_ATTACHMENTS } from "@shared";
 import { ApiError } from "../src/lib/api";
 import { NavStackProvider } from "../src/components/NavStack";
 import { localDayIso } from "../src/lib/format";
 import { resetRecentReactions } from "../src/lib/emoji";
-import { GroupDetail } from "../src/pages/GroupDetail";
+import { GroupDetail, groupTabPath, tabFromPathname } from "../src/pages/GroupDetail";
+import { EventDetail } from "../src/pages/EventDetail";
 import type { GroupAttachmentPicker } from "../src/components/useGroupAttachmentPicker";
 import { renderWithProviders, chooseOption } from "./utils";
 import { Route, Routes, useLocation, useNavigationType } from "react-router";
@@ -237,7 +240,11 @@ function renderPage(path = "/groups/g1") {
     <NavStackProvider>
       <Routes>
         <Route path="/groups/:id" element={<GroupDetail />} />
+        <Route path="/groups/:id/messages" element={<GroupDetail />} />
+        <Route path="/groups/:id/files" element={<GroupDetail />} />
+        <Route path="/groups/:id/events" element={<GroupDetail />} />
         <Route path="/groups/:id/threads/:postId" element={<GroupDetail />} />
+        <Route path="/groups/:id/events/:postId" element={<EventDetail />} />
       </Routes>
       <Where />
     </NavStackProvider>,
@@ -1353,8 +1360,10 @@ describe("GroupDetail", () => {
           startTime: "18:30",
           endTime: "20:00",
           location: "Parish Hall",
-          rsvpCounts: { yes: 3, no: 1, maybe: 2 },
+          rsvpCounts: { yes: 3, no: 1, maybe: 2, publicAttending: 0 },
           myRsvp: null,
+          shareToken: "01JSHARETOKEN0000000000000",
+          publicRsvpEnabled: false,
           ...overrides,
         },
       });
@@ -2589,6 +2598,415 @@ describe("GroupDetail", () => {
         await userEvent.click(pill);
         await waitFor(() => expect(sent(reactionPath(p.id, FIRE), "PUT")).toBe(true));
         expect(screen.queryByRole("dialog", { name: "Reactions" })).toBeNull();
+      });
+    });
+  });
+
+  describe("event sharing, the event page, and tab URLs", () => {
+    const TOKEN = "01JSHARETOKEN0000000000000";
+    const soon = () => localDayIso(new Date(Date.now() + 7 * 86_400_000));
+    const ev = (
+      eventOverrides: Partial<NonNullable<GroupPostDto["event"]>> = {},
+      postOverrides: Partial<GroupPostDto> = {}
+    ) =>
+      post({
+        id: "e1",
+        kind: "EVENT",
+        body: null,
+        ...postOverrides,
+        event: {
+          title: "Parish Picnic",
+          description: "Bring a dish",
+          eventDate: soon(),
+          startTime: "12:00",
+          endTime: "15:00",
+          location: "The Hall",
+          rsvpCounts: { yes: 2, no: 0, maybe: 1, publicAttending: 0 },
+          myRsvp: null,
+          shareToken: TOKEN,
+          publicRsvpEnabled: false,
+          ...eventOverrides,
+        },
+      });
+
+    const publicRow = (overrides: Partial<PublicEventRsvpDto> = {}): PublicEventRsvpDto => ({
+      id: "pr1",
+      firstName: "Sam",
+      lastName: "Stranger",
+      guestCount: 2,
+      createdAt: "2026-10-09T10:00:00.000Z",
+      email: null,
+      ...overrides,
+    });
+
+    function stubEvent({
+      event = ev(),
+      g = group(),
+      replies = [] as GroupPostDto[],
+      roster = {
+        rsvps: [] as GroupEventRsvpDto[],
+        publicRsvps: [] as PublicEventRsvpDto[],
+        canManagePublicRsvps: false,
+      },
+      groupStatus = 200,
+      postStatus = 200,
+    } = {}) {
+      apiMock.mockImplementation((path: string) => {
+        if (path === "/groups/g1")
+          return groupStatus === 200
+            ? Promise.resolve(g)
+            : Promise.reject(new ApiError(groupStatus, "Group not found"));
+        if (path === "/groups/g1/live") return Promise.resolve({ activityAt: "x", typing: [] });
+        if (path === `/groups/g1/posts/${event.id}`)
+          return postStatus === 200
+            ? Promise.resolve(event)
+            : Promise.reject(new ApiError(postStatus, "Nope"));
+        if (path === `/groups/g1/posts/${event.id}/replies`) return Promise.resolve({ replies });
+        if (path === `/groups/g1/posts/${event.id}/rsvps`) return Promise.resolve(roster);
+        if (path === "/groups/g1/events") return Promise.resolve({ events: [event] });
+        if (path === "/groups/g1/posts")
+          return Promise.resolve({ posts: [event], nextCursor: null });
+        return Promise.resolve(undefined);
+      });
+    }
+
+    describe("tab URLs", () => {
+      it("maps a path to its tab, and anything unknown to Messages", () => {
+        expect(tabFromPathname("/groups/g1")).toBe("messages");
+        expect(tabFromPathname("/groups/g1/files")).toBe("files");
+        expect(tabFromPathname("/groups/g1/events")).toBe("events");
+        expect(tabFromPathname("/groups/g1/bogus")).toBe("messages");
+        expect(groupTabPath("g1", "events")).toBe("/groups/g1/events");
+      });
+
+      it("opens the tab the URL names", async () => {
+        stubEvent();
+        renderPage("/groups/g1/events");
+        expect(await screen.findByRole("button", { name: "Events" })).toHaveAttribute(
+          "aria-current",
+          "page"
+        );
+        expect(await screen.findByRole("heading", { name: /Upcoming/ })).toBeInTheDocument();
+      });
+
+      it("replaces rather than pushes when switching tabs", async () => {
+        stub();
+        renderPage();
+        await userEvent.click(await screen.findByRole("button", { name: "Files" }));
+        expect(where()).toBe("/groups/g1/files");
+        expect(screen.getByTestId("where")).toHaveAttribute("data-nav-type", "REPLACE");
+      });
+    });
+
+    describe("Allow Public RSVP", () => {
+      const WARNING = /Anyone on the internet/;
+
+      it("is off in the composer, warns while ticked, and posts the flag", async () => {
+        stub();
+        renderPage();
+        await userEvent.click(await screen.findByRole("button", { name: "Add to this message" }));
+        await userEvent.click(screen.getByRole("menuitem", { name: "Event…" }));
+        const dialog = await screen.findByRole("dialog", { name: "New event" });
+        const box = within(dialog).getByRole("checkbox", { name: "Allow Public RSVP" });
+        expect(box).not.toBeChecked();
+        expect(within(dialog).queryByText(WARNING)).toBeNull();
+
+        await userEvent.click(box);
+        expect(within(dialog).getByText(WARNING)).toBeInTheDocument();
+        await userEvent.click(box);
+        expect(within(dialog).queryByText(WARNING)).toBeNull();
+        await userEvent.click(box);
+
+        await userEvent.type(within(dialog).getByLabelText("Event title"), "Picnic");
+        fireEvent.change(within(dialog).getByLabelText("Date"), {
+          target: { value: "2030-06-01" },
+        });
+        await userEvent.click(within(dialog).getByRole("button", { name: "Post event" }));
+        await waitFor(() =>
+          expect(apiMock).toHaveBeenCalledWith(
+            "/groups/g1/posts",
+            expect.objectContaining({
+              method: "POST",
+              body: expect.objectContaining({
+                event: expect.objectContaining({ publicRsvpEnabled: true }),
+              }),
+            })
+          )
+        );
+      });
+
+      it("shows the event's own setting when editing, with the warning, and saves a change", async () => {
+        stubEvent({
+          event: ev({ publicRsvpEnabled: true }, { authorPersonId: "person-me", canEdit: true }),
+        });
+        renderPage();
+        await screen.findByRole("heading", { name: "Parish Picnic" });
+        await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+        await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+        const box = await screen.findByRole("checkbox", { name: "Allow Public RSVP" });
+        expect(box).toBeChecked();
+        expect(screen.getByText(WARNING)).toBeInTheDocument();
+
+        await userEvent.click(box);
+        expect(screen.queryByText(WARNING)).toBeNull();
+        await userEvent.click(screen.getByRole("button", { name: "Save" }));
+        await waitFor(() =>
+          expect(apiMock).toHaveBeenCalledWith(
+            "/groups/g1/posts/e1",
+            expect.objectContaining({
+              method: "PATCH",
+              body: expect.objectContaining({
+                event: expect.objectContaining({ publicRsvpEnabled: false }),
+              }),
+            })
+          )
+        );
+      });
+    });
+
+    describe("public RSVPs in the roster", () => {
+      it("lists them after Going, badged, with guests, counted in the total, address hidden", async () => {
+        stubEvent({
+          event: ev({ rsvpCounts: { yes: 1, no: 0, maybe: 0, publicAttending: 3 } }),
+          roster: {
+            rsvps: [
+              {
+                appUserId: "user-bo",
+                personId: "person-bo",
+                name: "Bo Park",
+                thumbUrl: null,
+                response: "YES",
+                guestCount: 1,
+              },
+            ],
+            publicRsvps: [publicRow({ email: null })],
+            canManagePublicRsvps: false,
+          },
+        });
+        renderPage();
+        const summary = await screen.findByRole("button", {
+          name: "1 going · 0 maybe · 0 not going · 3 via link",
+        });
+        await userEvent.click(summary);
+        const dialog = await screen.findByRole("dialog", { name: "Who's RSVP'd" });
+        expect(
+          await within(dialog).findByText(
+            "5 total attending (1 member + 1 guest + 3 via the public link)"
+          )
+        ).toBeInTheDocument();
+        expect(within(dialog).getByText("From the public link (1)")).toBeInTheDocument();
+        expect(within(dialog).getByText("Public RSVP")).toBeInTheDocument();
+        expect(within(dialog).getByText("+2 guests")).toBeInTheDocument();
+        expect(within(dialog).queryByRole("link", { name: /@/ })).toBeNull();
+        expect(within(dialog).queryByRole("button", { name: /Remove/ })).toBeNull();
+      });
+
+      it("shows the organizer the address and lets them remove one", async () => {
+        stubEvent({
+          roster: {
+            rsvps: [],
+            publicRsvps: [publicRow({ email: "sam@example.com" })],
+            canManagePublicRsvps: true,
+          },
+        });
+        renderPage();
+        await userEvent.click(await screen.findByRole("button", { name: /2 going/ }));
+        const dialog = await screen.findByRole("dialog", { name: "Who's RSVP'd" });
+        expect(
+          await within(dialog).findByRole("link", { name: "sam@example.com" })
+        ).toBeInTheDocument();
+        await userEvent.click(
+          within(dialog).getByRole("button", { name: "Remove Sam Stranger's RSVP" })
+        );
+        await userEvent.click(await screen.findByRole("button", { name: "Remove it" }));
+        await waitFor(() =>
+          expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts/e1/public-rsvps/pr1", {
+            method: "DELETE",
+          })
+        );
+      });
+    });
+
+    describe("share actions", () => {
+      it("offers Copy link, QR code and Print flyer in the menu, and copies the share URL", async () => {
+        const writeText = vi.fn().mockResolvedValue(undefined);
+        Object.defineProperty(navigator, "clipboard", {
+          configurable: true,
+          value: { writeText },
+        });
+        stubEvent();
+        renderPage();
+        await screen.findByRole("heading", { name: "Parish Picnic" });
+        await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+        expect(screen.getByRole("menuitem", { name: "QR code" })).toBeInTheDocument();
+        expect(screen.getByRole("menuitem", { name: "Print flyer (PDF)" })).toBeInTheDocument();
+        await userEvent.click(screen.getByRole("menuitem", { name: "Copy link" }));
+        expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/e/${TOKEN}`);
+      });
+
+      it("offers none of them on a cancelled event", async () => {
+        stubEvent({
+          event: ev(
+            {},
+            { deletedAt: "2026-10-09T12:00:00.000Z", deletedBySelf: true, canRestore: true }
+          ),
+        });
+        renderPage();
+        await screen.findByText("Cancelled");
+        await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+        expect(screen.queryByRole("menuitem", { name: "Copy link" })).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "QR code" })).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "Print flyer (PDF)" })).toBeNull();
+      });
+
+      it("puts them in plain sight on the Events tab", async () => {
+        stubEvent();
+        renderPage("/groups/g1/events");
+        await screen.findByRole("heading", { name: "Parish Picnic" });
+        expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "QR code" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "Print flyer (PDF)" })).toBeInTheDocument();
+      });
+    });
+
+    describe("ways into the event page", () => {
+      it("opens it from the card's header in the feed, but not from its RSVP buttons", async () => {
+        stubEvent();
+        renderPage();
+        await screen.findByRole("heading", { name: "Parish Picnic" });
+        await userEvent.click(screen.getByRole("button", { name: "Going" }));
+        expect(where()).toBe("/groups/g1");
+        await userEvent.click(screen.getByRole("link", { name: /Parish Picnic/ }));
+        expect(where()).toBe("/groups/g1/events/e1");
+        expect(
+          await screen.findByRole("heading", { level: 1, name: "Parish Picnic" })
+        ).toBeInTheDocument();
+      });
+
+      it("opens it from the card's header on the Events tab", async () => {
+        stubEvent();
+        renderPage("/groups/g1/events");
+        await userEvent.click(await screen.findByRole("link", { name: /Parish Picnic/ }));
+        expect(where()).toBe("/groups/g1/events/e1");
+      });
+
+      it("opens it from Reply on an event, with the composer focused", async () => {
+        stubEvent();
+        renderPage();
+        await screen.findByRole("heading", { name: "Parish Picnic" });
+        await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+        await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
+        expect(where()).toBe("/groups/g1/events/e1");
+        const bar = await screen.findByRole("textbox", { name: "Reply" });
+        await waitFor(() => expect(bar).toHaveFocus());
+      });
+
+      it("sends an old thread link for an event on to the event page", async () => {
+        stubEvent();
+        renderPage("/groups/g1/threads/e1");
+        await waitFor(() => expect(where()).toBe("/groups/g1/events/e1"));
+        expect(
+          await screen.findByRole("heading", { level: 1, name: "Parish Picnic" })
+        ).toBeInTheDocument();
+      });
+    });
+
+    describe("the event page", () => {
+      it("shows the hero, RSVP as the main action, the roster, the share row and the discussion", async () => {
+        stubEvent({
+          replies: [post({ id: "r1", parentPostId: "e1", body: "Count me in" })],
+          roster: {
+            rsvps: [
+              {
+                appUserId: "user-bo",
+                personId: "person-bo",
+                name: "Bo Park",
+                thumbUrl: null,
+                response: "YES",
+                guestCount: 0,
+              },
+            ],
+            publicRsvps: [],
+            canManagePublicRsvps: false,
+          },
+        });
+        renderPage("/groups/g1/events/e1");
+        expect(
+          await screen.findByRole("heading", { level: 1, name: "Parish Picnic" })
+        ).toBeInTheDocument();
+        expect(screen.getByRole("link", { name: "The Hall" })).toHaveAttribute(
+          "href",
+          expect.stringContaining("google.com/maps/search")
+        );
+        expect(screen.getByText("Bring a dish")).toBeInTheDocument();
+
+        const rsvp = screen.getByRole("group", { name: "Your RSVP" });
+        await userEvent.click(within(rsvp).getByRole("button", { name: "Going" }));
+        await waitFor(() =>
+          expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts/e1/rsvp", {
+            method: "PUT",
+            body: { response: "YES", guestCount: 0 },
+          })
+        );
+
+        for (const name of ["Copy link", "QR code", "Print flyer (PDF)"]) {
+          expect(screen.getByRole("button", { name })).toBeInTheDocument();
+        }
+        expect(await screen.findByText("Count me in")).toBeInTheDocument();
+        expect(screen.getByRole("textbox", { name: "Reply" })).toBeInTheDocument();
+
+        await userEvent.click(screen.getByRole("button", { name: /2 going · 1 maybe/ }));
+        expect(await screen.findByRole("dialog", { name: "Who's RSVP'd" })).toBeInTheDocument();
+      });
+
+      it("shows organizer controls only to whoever may use them", async () => {
+        stubEvent({ event: ev({}, { canEdit: true, canDelete: true }) });
+        const { unmount } = renderPage("/groups/g1/events/e1");
+        expect(await screen.findByRole("button", { name: "Edit event" })).toBeInTheDocument();
+        await userEvent.click(screen.getByRole("button", { name: "Cancel event" }));
+        await userEvent.click(await screen.findByRole("button", { name: "Cancel it" }));
+        await waitFor(() =>
+          expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts/e1", { method: "DELETE" })
+        );
+        unmount();
+
+        stubEvent();
+        renderPage("/groups/g1/events/e1");
+        await screen.findByRole("heading", { level: 1, name: "Parish Picnic" });
+        expect(screen.queryByRole("button", { name: "Edit event" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Cancel event" })).toBeNull();
+      });
+
+      it("hides the RSVP panel and the share row for a cancelled event", async () => {
+        stubEvent({
+          event: ev({}, { deletedAt: "2026-10-09T12:00:00.000Z", deletedBySelf: true }),
+        });
+        renderPage("/groups/g1/events/e1");
+        expect(await screen.findByText("This event has been cancelled.")).toBeInTheDocument();
+        expect(screen.queryByRole("group", { name: "Your RSVP" })).toBeNull();
+        expect(screen.queryByRole("button", { name: "Copy link" })).toBeNull();
+      });
+
+      it("shows a private group's non-member the group page's members-only card", async () => {
+        stubEvent({
+          g: group({ visibility: "PRIVATE", myRole: null, canReply: false, canPost: false }),
+        });
+        renderPage("/groups/g1/events/e1");
+        expect(await screen.findByText("Members only")).toBeInTheDocument();
+        expect(screen.queryByText("Parish Picnic")).toBeNull();
+      });
+
+      it("says the group was not found when a secret group's non-member follows the link", async () => {
+        stubEvent({ groupStatus: 404 });
+        renderPage("/groups/g1/events/e1");
+        expect(await screen.findByText("That group was not found.")).toBeInTheDocument();
+      });
+
+      it("does not focus the composer when opened directly", async () => {
+        stubEvent();
+        renderPage("/groups/g1/events/e1");
+        const bar = await screen.findByRole("textbox", { name: "Reply" });
+        expect(bar).not.toHaveFocus();
       });
     });
   });

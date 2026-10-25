@@ -1,4 +1,5 @@
 import type { PersonDto, SpecialDateDto } from "@shared";
+import { downloadBlob, safeFilename } from "./download";
 import { fullName } from "./format";
 
 /**
@@ -122,11 +123,7 @@ export function buildVCard(person: PersonDto, photo?: VCardPhoto | null): string
 
 /** `Layla Haddad.vcf`, minus anything a filesystem objects to. */
 export function vCardFilename(person: PersonDto): string {
-  const name = fullName(person)
-    // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
-    .replace(/[\\/:*?"<>|\u0000-\u001f]/g, "")
-    .trim();
-  return `${name || "contact"}.vcf`;
+  return `${safeFilename(fullName(person), "contact")}.vcf`;
 }
 
 /**
@@ -159,12 +156,5 @@ async function loadPhotoAsJpegBase64(url: string | null): Promise<VCardPhoto | n
 export async function downloadVCard(person: PersonDto): Promise<void> {
   const photo = await loadPhotoAsJpegBase64(person.fullUrl ?? person.thumbUrl);
   const blob = new Blob([buildVCard(person, photo)], { type: "text/vcard;charset=utf-8" });
-  const url = URL.createObjectURL(blob);
-  const link = document.createElement("a");
-  link.href = url;
-  link.download = vCardFilename(person);
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-  URL.revokeObjectURL(url);
+  downloadBlob(blob, vCardFilename(person));
 }

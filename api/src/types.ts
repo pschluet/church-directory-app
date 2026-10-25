@@ -183,6 +183,7 @@ export const AUDIT_ACTIONS = [
   "group.post.resolveReport",
   "group.post.dismissReport",
   "group.post.expire",
+  "group.publicRsvp.delete",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -251,6 +252,7 @@ const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "group.post.resolveReport": "Group post report resolved",
   "group.post.dismissReport": "Group post report dismissed",
   "group.post.expire": "Group posts expired",
+  "group.publicRsvp.delete": "Public RSVP removed",
 };
 
 /**
@@ -1075,6 +1077,14 @@ const groupEventFieldsSchema = z
       .nullable()
       .optional(),
     location: trimmedOptional(GROUP_EVENT_LOCATION_MAX),
+    /**
+     * Opens the event's share page to anyone with the link, and lets them RSVP
+     * without an account. No `.default()`: absent on a PATCH means "leave it",
+     * not "turn it off" -- an edit that only fixes the time must not quietly
+     * close a page that is printed on a flyer. The create route reads absent
+     * as false.
+     */
+    publicRsvpEnabled: z.boolean().optional(),
   })
   .refine((v) => !v.endTime || Boolean(v.startTime), {
     message: "An end time needs a start time",
@@ -1262,9 +1272,99 @@ export interface GroupEventDto {
   startTime: string | null;
   endTime: string | null;
   location: string | null;
-  rsvpCounts: { yes: number; no: number; maybe: number };
+  /**
+   * Members' headcounts by answer, plus `publicAttending`: everyone who RSVP'd
+   * through the public share page *and their guests*. Members' guests are not
+   * in `yes` -- that is a count of people answering, as it always was.
+   */
+  rsvpCounts: { yes: number; no: number; maybe: number; publicAttending: number };
   /** The caller's own RSVP, or null if they have not answered. */
   myRsvp: { response: GroupRsvpResponse; guestCount: number } | null;
+  /**
+   * What /e/<shareToken> resolves. Only ever on this authenticated DTO, so only
+   * somebody who can already read the event learns it. Never rotated.
+   */
+  shareToken: string;
+  /** Whether the share page is open to people without an account. */
+  publicRsvpEnabled: boolean;
+}
+
+/**
+ * Somebody who RSVP'd through the public share page, without an account.
+ * Always "going" -- the public form has no other answer.
+ */
+export interface PublicEventRsvpDto {
+  id: string;
+  firstName: string;
+  lastName: string;
+  guestCount: number;
+  createdAt: string;
+  /**
+   * Only for the event's author and the group's moderators, who may need to
+   * follow up; null for everyone else. A plain member reading the roster has
+   * no reason to collect a stranger's address.
+   */
+  email: string | null;
+}
+
+/** Most public RSVPs one event takes before the endpoint answers 429. */
+export const PUBLIC_RSVP_MAX_PER_EVENT = 500;
+
+/** The public share page's RSVP form. Every field is required. */
+export const publicEventRsvpSchema = z.object({
+  firstName: z.string().trim().min(1, "Enter your first name").max(100),
+  lastName: z.string().trim().min(1, "Enter your last name").max(100),
+  email: z.string().trim().toLowerCase().email("Enter a valid email address").max(254),
+  // No .default(): the form requires the field, and 0 is a real answer to it.
+  guestCount: z.number({ required_error: "Enter the number of guests" }).int().min(0).max(50),
+});
+export type PublicEventRsvpInput = z.infer<typeof publicEventRsvpSchema>;
+
+/**
+ * "Request to join" from the share page. The organization is the event's,
+ * looked up from the token -- an anonymous caller never gets to name one.
+ */
+export const publicJoinRequestSchema = publicEventRsvpSchema.omit({ guestCount: true });
+export type PublicJoinRequestInput = z.infer<typeof publicJoinRequestSchema>;
+
+/**
+ * An event as the public share page shows it, to anyone holding the URL.
+ *
+ * Only ever returned when the organizer ticked "Allow Public RSVP"; otherwise
+ * the endpoint 404s, indistinguishable from a made-up token. Even then it
+ * carries no names -- not the members', not other strangers' -- and no photos.
+ */
+export interface PublicEventDto {
+  title: string;
+  description: string | null;
+  /** yyyy-mm-dd, naive local, as stored -- see V16__groups.sql. */
+  eventDate: string;
+  startTime: string | null;
+  endTime: string | null;
+  location: string | null;
+  /** The post's soft delete. A cancelled event still answers, so a printed flyer can say so. */
+  cancelled: boolean;
+  publicRsvpEnabled: boolean;
+  organizationName: string;
+  /** PUBLIC groups only; null for PRIVATE and SECRET -- a secret group must not be named. */
+  groupName: string | null;
+  /**
+   * Headcounts only, whatever the group's visibility. Never names.
+   *
+   * `attending` is everyone coming: members who said yes, their guests, and
+   * everybody who RSVP'd through this page with theirs -- the same figure as
+   * the roster's "total attending". `yes` counts members answering only.
+   */
+  rsvpCounts: { yes: number; no: number; maybe: number; attending: number };
+  // No group or post id: a reader who signs in is sent on by
+  // /api/events/by-token, so this payload never needs to carry a secret
+  // group's id to anyone.
+}
+
+/** What /api/events/by-token/:token resolves a share token to, and nothing more. */
+export interface EventTokenTargetDto {
+  groupId: string;
+  postId: string;
 }
 
 /**

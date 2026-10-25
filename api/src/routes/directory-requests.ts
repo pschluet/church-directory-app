@@ -50,11 +50,27 @@ routes.post("/", async (c) => {
   // nothing that GET /churches does not already publish.
   if (!org) return c.json({ error: "Choose a church from the list" }, 400);
 
+  await submitDirectoryRequest(db, { ...payload, organizationId: org.id });
+  return c.json(ACCEPTED, 202);
+});
+
+/**
+ * Files a request to be added to a parish's directory and tells its
+ * administrators. Shared with the event share page's "Request to join"
+ * (routes/public.ts), so both land in the one queue on People & Accounts.
+ *
+ * Says nothing about what happened, on purpose: a duplicate, an address that
+ * already has an account and a new request all look the same to the caller.
+ */
+export async function submitDirectoryRequest(
+  db: Queryable,
+  request: { organizationId: string; firstName: string; lastName: string; email: string }
+): Promise<void> {
   // Someone who can already sign in does not need an administrator's time.
   const existing = await one<{ id: string }>(db, "select id from app_users where email = $1", [
-    payload.email,
+    request.email,
   ]);
-  if (existing) return c.json(ACCEPTED, 202);
+  if (existing) return;
 
   const notified = await db.transaction(async (tx) => {
     // `on conflict do nothing` against directory_requests_one_pending_idx: a
@@ -65,16 +81,18 @@ routes.post("/", async (c) => {
        values ($1, $2, $3, $4)
        on conflict (organization_id, email) where status = 'PENDING' do nothing
        returning id`,
-      [org.id, payload.firstName, payload.lastName, payload.email]
+      [request.organizationId, request.firstName, request.lastName, request.email]
     );
     if (!created) return [];
-    return fanOutDirectoryRequest(tx, { directoryRequestId: created.id, organizationId: org.id });
+    return fanOutDirectoryRequest(tx, {
+      directoryRequestId: created.id,
+      organizationId: request.organizationId,
+    });
   });
 
+  // After the commit, so a failed push never rolls back the request itself.
   await pushDirectoryRequest(db, notified);
-
-  return c.json(ACCEPTED, 202);
-});
+}
 
 /**
  * A count, never the name: a lock screen is not where somebody's request to

@@ -9,6 +9,7 @@ import {
   type GroupNotificationPref,
   type GroupRsvpResponse,
   type GroupVisibility,
+  type PublicEventRsvpDto,
 } from "../types";
 
 /**
@@ -381,5 +382,48 @@ export function toGroupRsvpDto(row: GroupEventRsvpRow) {
     thumbUrl: photoUrls(row.photo_key).thumbUrl,
     response: row.response,
     guestCount: row.guest_count,
+  };
+}
+
+export interface PublicEventRsvpRow {
+  id: string;
+  first_name: string;
+  last_name: string;
+  email: string;
+  guest_count: number;
+  created_at: Date | string;
+}
+
+/** Everyone who RSVP'd through the event's public share page, in the order they did. */
+export async function loadPublicEventRsvps(
+  q: Queryable,
+  postId: string
+): Promise<PublicEventRsvpRow[]> {
+  const { rows } = await q.query<PublicEventRsvpRow>(
+    `select id, first_name, last_name, email::text as email, guest_count, created_at
+       from group_event_public_rsvps
+      where post_id = $1
+      order by created_at, id`,
+    [postId]
+  );
+  return rows;
+}
+
+/**
+ * `showEmail` is for the event's author and the group's moderators only: they
+ * are the ones who might need to follow up with a stranger, and nobody else in
+ * the group has any business collecting the address.
+ */
+export function toPublicEventRsvpDto(
+  row: PublicEventRsvpRow,
+  showEmail: boolean
+): PublicEventRsvpDto {
+  return {
+    id: row.id,
+    firstName: row.first_name,
+    lastName: row.last_name,
+    guestCount: row.guest_count,
+    createdAt: new Date(row.created_at).toISOString(),
+    email: showEmail ? row.email : null,
   };
 }
