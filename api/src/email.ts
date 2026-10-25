@@ -187,7 +187,10 @@ export async function sendSignInCodeEmail(params: { to: string; code: string }):
  * even though the shape is identical, because the two mean different things
  * to read mid-inbox: one signs you in, the other moves where your sign-ins go.
  */
-export async function sendEmailChangeCodeEmail(params: { to: string; code: string }): Promise<void> {
+export async function sendEmailChangeCodeEmail(params: {
+  to: string;
+  code: string;
+}): Promise<void> {
   const subject = `Your verification code: ${params.code}`;
   const heading = FROM_NAME || "Directory";
 

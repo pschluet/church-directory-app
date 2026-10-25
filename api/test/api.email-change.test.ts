@@ -50,9 +50,12 @@ describe.skipIf(!hasDb)("changing a sign-in email", () => {
   const as = (u: CreatedUser) => client(db(), { sub: u.cognitoSub, email: u.email });
 
   const appUserEmail = async (appUserId: string) =>
-    (await db().query<{ email: string }>("select email::text as email from app_users where id = $1", [
-      appUserId,
-    ])).rows[0]!.email;
+    (
+      await db().query<{ email: string }>(
+        "select email::text as email from app_users where id = $1",
+        [appUserId]
+      )
+    ).rows[0]!.email;
 
   const personEmail = async (appUserId: string) =>
     (
@@ -201,11 +204,9 @@ describe.skipIf(!hasDb)("changing a sign-in email", () => {
     });
 
     it("refuses an address already in use", async () => {
-      const { status } = await as(admin).call(
-        "PUT",
-        `/api/admin/users/${member.appUserId}/email`,
-        { email: admin.email }
-      );
+      const { status } = await as(admin).call("PUT", `/api/admin/users/${member.appUserId}/email`, {
+        email: admin.email,
+      });
       expect(status).toBe(409);
     });
 
@@ -236,11 +237,9 @@ describe.skipIf(!hasDb)("changing a sign-in email", () => {
         firstName: "Spouse",
       });
 
-      const { status, body } = await as(member).call(
-        "PATCH",
-        `/api/persons/${member.personId}`,
-        { inheritEmailFromPersonId: spouse }
-      );
+      const { status, body } = await as(member).call("PATCH", `/api/persons/${member.personId}`, {
+        inheritEmailFromPersonId: spouse,
+      });
       expect(status).toBe(400);
       expect(body.error).toMatch(/signs in with their own email/i);
     });

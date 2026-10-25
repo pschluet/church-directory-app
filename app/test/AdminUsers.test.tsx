@@ -440,10 +440,7 @@ describe("AdminUsers", () => {
       await openMenu(/actions for layla haddad/i);
       await userEvent.click(screen.getByRole("menuitem", { name: /change sign-in email/i }));
 
-      await userEvent.type(
-        await screen.findByLabelText(/new sign-in email/i),
-        "new@test.example"
-      );
+      await userEvent.type(await screen.findByLabelText(/new sign-in email/i), "new@test.example");
       await userEvent.click(screen.getByRole("button", { name: /^change email$/i }));
 
       await waitFor(() =>

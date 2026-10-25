@@ -6,7 +6,11 @@ import { audit } from "../audit";
 import { assertCanEditFamily, assertCanEditPerson } from "../services/access";
 import { clearInheritanceFor, validateInheritance } from "../services/inheritance";
 import { cancelPendingJoinRequests } from "../services/membership";
-import { applyEmailChange, assertEmailAvailable, requestEmailChange } from "../services/email-change";
+import {
+  applyEmailChange,
+  assertEmailAvailable,
+  requestEmailChange,
+} from "../services/email-change";
 import { loadPerson, PERSON_WRITE_COLUMNS } from "../services/persons";
 import { deletePhoto, photoChange } from "../photos";
 import { addressToLine, mapViewEnabledFor, resolveAddress } from "../services/addresses";

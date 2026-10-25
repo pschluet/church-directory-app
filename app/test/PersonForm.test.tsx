@@ -277,7 +277,11 @@ describe("PersonForm", () => {
 
     it("abandons the change on cancel, keeping everything else the save already committed", async () => {
       const onSaved = vi.fn();
-      const saved = person({ appUserId: "user-1", email: "old@test.example", firstName: "Changed" });
+      const saved = person({
+        appUserId: "user-1",
+        email: "old@test.example",
+        firstName: "Changed",
+      });
       api.mockImplementation((path: string, options?: { method?: string }) => {
         if (path === `/persons/${PERSON_ID}` && options?.method === "PATCH") {
           return Promise.resolve({

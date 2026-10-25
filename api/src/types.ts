@@ -1740,7 +1740,10 @@ export type RequestEmailChange = z.infer<typeof requestEmailChangeSchema>;
 
 /** `POST /me/email/confirm` -- the code emailed to the new address. */
 export const confirmEmailChangeSchema = z.object({
-  code: z.string().trim().regex(/^\d{6}$/, "Enter the 6-digit code"),
+  code: z
+    .string()
+    .trim()
+    .regex(/^\d{6}$/, "Enter the 6-digit code"),
 });
 export type ConfirmEmailChange = z.infer<typeof confirmEmailChangeSchema>;
 
