@@ -15,6 +15,8 @@ import { Families } from "./pages/Families";
 import { PrayerRequests } from "./pages/PrayerRequests";
 import { Groups } from "./pages/Groups";
 import { GroupDetail } from "./pages/GroupDetail";
+import { EventDetail } from "./pages/EventDetail";
+import { PublicEvent } from "./pages/PublicEvent";
 import { Settings } from "./pages/Settings";
 import { FamilyDetail } from "./pages/FamilyDetail";
 import { AdminUsers } from "./pages/AdminUsers";
@@ -33,6 +35,12 @@ import { AuditLog } from "./pages/AuditLog";
  * render would throw the history away on every pass.
  */
 export const router = createBrowserRouter([
+  /*
+    An event's share link. A sibling of the RootGate layout rather than a child
+    of it: the one page that has to render with no session. It sends a
+    signed-in reader on into the app itself -- see PublicEvent.tsx.
+  */
+  { path: "/e/:token", element: <PublicEvent /> },
   {
     element: <RootGate />,
     children: [
@@ -71,6 +79,20 @@ export const router = createBrowserRouter([
           </GroupGuidelinesGate>
         ),
       },
+      /*
+        Each tab at its own URL, so it can be linked and survives a reload.
+        Explicit segments rather than a `:tab` param, so `*` still catches a
+        typo and this table says exactly which pages exist. `groups/:id` above
+        stays Messages -- the URL everything already links to.
+      */
+      ...(["messages", "files", "events"] as const).map((tab) => ({
+        path: `groups/:id/${tab}`,
+        element: (
+          <GroupGuidelinesGate>
+            <GroupDetail />
+          </GroupGuidelinesGate>
+        ),
+      })),
       // A message's thread, on a page of its own. The same component: it shares
       // the group, the live poll and the modals with the feed.
       {
@@ -78,6 +100,16 @@ export const router = createBrowserRouter([
         element: (
           <GroupGuidelinesGate>
             <GroupDetail />
+          </GroupGuidelinesGate>
+        ),
+      },
+      // An event, on a page of its own -- where its share link, its card's
+      // header and "Reply" on it all lead.
+      {
+        path: "groups/:id/events/:postId",
+        element: (
+          <GroupGuidelinesGate>
+            <EventDetail />
           </GroupGuidelinesGate>
         ),
       },

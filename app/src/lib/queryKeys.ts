@@ -29,6 +29,21 @@ export const qk = {
   notifications: () => ["notifications"] as const,
   notificationPreferences: () => ["notification-preferences"] as const,
 
+  /**
+   * An event's public share page, for somebody with no session. The exception
+   * to the rule above, and on purpose: carrying no orgId is correct here,
+   * because the payload is not org-scoped (the token names the event, and the
+   * event its parish) and there is no session to scope it by. Fetched with
+   * `withOrg: false` to match.
+   */
+  publicEvent: (token: string) => ["public-event", token] as const,
+  /**
+   * The same token resolved for a signed-in reader -- two ids, the same in
+   * every parish, since the resolver does not filter by one (routes/events.ts).
+   * Keyed apart from `publicEvent` so the two answers never share an entry.
+   */
+  eventByToken: (token: string) => ["event-by-token", token] as const,
+
   org: (orgId: string | null) => ["org", orgId] as const,
 
   /**

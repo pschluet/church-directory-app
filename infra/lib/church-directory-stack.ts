@@ -929,7 +929,27 @@ UNIT`,
       authorizer: new apigwv2.HttpNoneAuthorizer(),
     });
 
-    // The one anonymous write, so it gets a ceiling of its own. Route-wide
+    // An event's public share page -- see routes/public.ts. A longer literal
+    // prefix beats the greedy /api/{proxy+}, so this wins for everything under
+    // /api/public/. GET and POST named rather than ANY, so a DELETE cannot turn
+    // up here by accident. The Lambda still 404s every route under it unless
+    // the event's organizer opted in.
+    // Two calls rather than one with both methods, so the POST route is in
+    // hand for the throttle's dependency below.
+    httpApi.addRoutes({
+      path: "/api/public/{proxy+}",
+      methods: [apigwv2.HttpMethod.GET],
+      integration: apiIntegration,
+      authorizer: new apigwv2.HttpNoneAuthorizer(),
+    });
+    const [publicPostRoute] = httpApi.addRoutes({
+      path: "/api/public/{proxy+}",
+      methods: [apigwv2.HttpMethod.POST],
+      integration: apiIntegration,
+      authorizer: new apigwv2.HttpNoneAuthorizer(),
+    });
+
+    // The anonymous writes, so they get ceilings of their own. Route-wide
     // rather than per visitor -- API Gateway has no per-IP limit -- and far
     // above what a parish's sign-in page will ever see, so it only bites on
     // a script hammering the form. The L2 stage has no RouteSettings, hence
@@ -942,9 +962,15 @@ UNIT`,
     const defaultStage = httpApi.defaultStage?.node.defaultChild as apigwv2.CfnStage | undefined;
     defaultStage?.addPropertyOverride("RouteSettings", {
       "POST /api/directory-requests": { ThrottlingRateLimit: 1, ThrottlingBurstLimit: 5 },
+      // Public RSVPs and "Request to join". Higher than the sign-in form's,
+      // since a flyer handed out after a service can bring a burst of real
+      // replies at once; still nothing a script can make expensive.
+      "POST /api/public/{proxy+}": { ThrottlingRateLimit: 5, ThrottlingBurstLimit: 10 },
     });
-    if (defaultStage && directoryRequestRoute)
-      defaultStage.addDependency(directoryRequestRoute.node.defaultChild as apigwv2.CfnRoute);
+    for (const route of [directoryRequestRoute, publicPostRoute]) {
+      if (defaultStage && route)
+        defaultStage.addDependency(route.node.defaultChild as apigwv2.CfnRoute);
+    }
 
     // -------------------------------------------------------------------
     // CloudFront -- SPA at "/", API at "/api/*" on the same origin (no CORS)

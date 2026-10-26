@@ -100,6 +100,28 @@ describe.skipIf(!hasDb)("group retention", () => {
     expect(rows).toHaveLength(1);
   });
 
+  it("takes a purged event's public RSVPs with it", async () => {
+    const groupId = await createGroup(db());
+    const eventPostId = await createPost(db(), groupId, {
+      createdAt: SIX_YEARS_AGO,
+      kind: "EVENT",
+    });
+    await db().query(
+      "insert into group_events (post_id, title, event_date) values ($1, 'Long ago', '2019-01-01')",
+      [eventPostId]
+    );
+    await db().query(
+      `insert into group_event_public_rsvps (post_id, first_name, last_name, email, guest_count)
+       values ($1, 'Sam', 'Stranger', 'sam@example.com', 1)`,
+      [eventPostId]
+    );
+
+    await expireGroupPosts(db(), { now: NOW });
+
+    const { rows } = await db().query("select id from group_event_public_rsvps");
+    expect(rows).toHaveLength(0);
+  });
+
   it("writes one audit row per organization with the counts", async () => {
     const groupId = await createGroup(db());
     await createPost(db(), groupId, { createdAt: SIX_YEARS_AGO });

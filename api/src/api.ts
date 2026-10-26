@@ -25,6 +25,8 @@ import adminRoutes from "./routes/admin";
 import organizationRoutes from "./routes/organizations";
 import auditRoutes from "./routes/audit";
 import directoryRequestRoutes from "./routes/directory-requests";
+import publicRoutes from "./routes/public";
+import eventRoutes from "./routes/events";
 
 // Deployed, this function lives in a VPC whose only route out is IPv6 (see the
 // networking comment in infra/lib/church-directory-stack.ts). Both the Cognito
@@ -105,14 +107,21 @@ export function createApp(queryable?: Queryable) {
   // The two directory-request paths are the sign-in page's "Request to be
   // added" form, for people who by definition cannot sign in yet. They still
   // need the database, which is otherwise handed over by the auth middleware.
+  //
+  // /api/public/ is an event's share page for somebody with no account (see
+  // routes/public.ts), exempted by prefix because the token is in the path.
   const PUBLIC_PATHS = new Set([
     "/api/health",
     "/api/directory-requests",
     "/api/directory-requests/churches",
   ]);
+  const PUBLIC_PREFIXES = ["/api/public/"];
   const auth = authMiddleware(queryable);
   app.use("/api/*", async (c, next) => {
-    if (PUBLIC_PATHS.has(c.req.path)) {
+    if (
+      PUBLIC_PATHS.has(c.req.path) ||
+      PUBLIC_PREFIXES.some((prefix) => c.req.path.startsWith(prefix))
+    ) {
       c.set("db", queryable ?? defaultDb);
       return next();
     }
@@ -121,6 +130,7 @@ export function createApp(queryable?: Queryable) {
 
   app.get("/api/health", (c) => c.json({ ok: true }));
   app.route("/api/directory-requests", directoryRequestRoutes);
+  app.route("/api/public", publicRoutes);
 
   app.route("/api/me", meRoutes);
   app.use("/api/groups/*", requireGroupGuidelinesAgreement);
@@ -132,6 +142,9 @@ export function createApp(queryable?: Queryable) {
   app.route("/api/special-dates", specialDateRoutes);
   app.route("/api/prayer-requests", prayerRequestRoutes);
   app.route("/api/groups", groupRoutes);
+  // Not under /api/groups, so the guidelines middleware above does not gate it
+  // -- see routes/events.ts.
+  app.route("/api/events", eventRoutes);
   app.route("/api/notifications", notificationRoutes);
   app.route("/api/push", pushRoutes);
   app.route("/api/uploads", uploadRoutes);

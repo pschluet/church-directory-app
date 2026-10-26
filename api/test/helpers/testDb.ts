@@ -57,6 +57,7 @@ const TABLES = [
   // listing every one here is what matters, not the order they appear in.
   "group_post_reports",
   "group_post_mentions",
+  "group_event_public_rsvps",
   "group_event_rsvps",
   "group_events",
   "group_post_attachments",

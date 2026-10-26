@@ -545,6 +545,43 @@ describe("ChurchDirectoryStack", () => {
       });
     });
 
+    it("leaves the event share page's routes open, GET and POST only, and throttles the writes", () => {
+      const routes = Object.values(template.findResources("AWS::ApiGatewayV2::Route"));
+      const keyOf = (r: (typeof routes)[number]) =>
+        (r.Properties as { RouteKey?: string }).RouteKey;
+      const authOf = (r: (typeof routes)[number]) =>
+        (r.Properties as { AuthorizationType?: string }).AuthorizationType;
+
+      for (const key of ["GET /api/public/{proxy+}", "POST /api/public/{proxy+}"]) {
+        const route = routes.find((r) => keyOf(r) === key);
+        expect(route, key).toBeDefined();
+        expect(authOf(route!)).toBe("NONE");
+      }
+      // No other method reaches the public prefix.
+      expect(routes.filter((r) => keyOf(r)?.endsWith(" /api/public/{proxy+}"))).toHaveLength(2);
+
+      // And nothing else is open: the health check, the sign-in page's
+      // directory request, and this.
+      expect(
+        routes
+          .filter((r) => authOf(r) === "NONE")
+          .map(keyOf)
+          .sort()
+      ).toEqual([
+        "GET /api/directory-requests/churches",
+        "GET /api/health",
+        "GET /api/public/{proxy+}",
+        "POST /api/directory-requests",
+        "POST /api/public/{proxy+}",
+      ]);
+
+      template.hasResourceProperties("AWS::ApiGatewayV2::Stage", {
+        RouteSettings: Match.objectLike({
+          "POST /api/public/{proxy+}": Match.objectLike({ ThrottlingRateLimit: 5 }),
+        }),
+      });
+    });
+
     it("creates the throttled route before the stage that throttles it", () => {
       // RouteSettings names the route by key, which CloudFormation cannot see
       // as a reference; without DependsOn the stage can update first and fail.
@@ -553,11 +590,15 @@ describe("ChurchDirectoryStack", () => {
         ([, r]) =>
           (r.Properties as { RouteKey?: string }).RouteKey === "POST /api/directory-requests"
       )!;
+      const [publicRouteId] = Object.entries(routes).find(
+        ([, r]) => (r.Properties as { RouteKey?: string }).RouteKey === "POST /api/public/{proxy+}"
+      )!;
       const stages = Object.values(template.findResources("AWS::ApiGatewayV2::Stage"));
       const throttled = stages.find(
         (s) => (s.Properties as { RouteSettings?: unknown }).RouteSettings
       )!;
       expect(throttled.DependsOn).toContain(routeId);
+      expect(throttled.DependsOn).toContain(publicRouteId);
     });
   });
 

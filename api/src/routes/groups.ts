@@ -1,5 +1,6 @@
 import { Hono, type Context } from "hono";
 import { HTTPException } from "hono/http-exception";
+import { ulid } from "ulid";
 import { requireOrganizationId, requireRole, type AppEnv } from "../auth";
 import { one, type Queryable } from "../db";
 import { audit } from "../audit";
@@ -31,8 +32,10 @@ import {
   loadGroupMembers,
   loadGroupRow,
   loadMembership,
+  loadPublicEventRsvps,
   toGroupMemberDto,
   toGroupRsvpDto,
+  toPublicEventRsvpDto,
   type GroupAccess,
   type GroupRow,
 } from "../services/groups";
@@ -1197,9 +1200,15 @@ routes.post("/:id/posts", async (c) => {
     if (!created) throw new HTTPException(500, { message: "Could not create that post" });
 
     if (payload.kind === "EVENT" && payload.event) {
+      // The share token is a ULID: 26 characters of uppercase Crockford
+      // base32, which survives being printed on a flyer and typed back in,
+      // and packs into a QR code more densely than mixed case. Set once here
+      // and never again (see V30__event_share_and_public_rsvp.sql).
       await tx.query(
-        `insert into group_events (post_id, title, description, event_date, start_time, end_time, location)
-         values ($1, $2, $3, $4, $5, $6, $7)`,
+        `insert into group_events
+           (post_id, title, description, event_date, start_time, end_time, location,
+            share_token, public_rsvp_enabled)
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
         [
           created.id,
           payload.event.eventTitle,
@@ -1208,6 +1217,8 @@ routes.post("/:id/posts", async (c) => {
           payload.event.startTime ?? null,
           payload.event.endTime ?? null,
           payload.event.location,
+          ulid(),
+          payload.event.publicRsvpEnabled ?? false,
         ]
       );
     }
@@ -1329,9 +1340,12 @@ routes.patch("/:id/posts/:postId", async (c) => {
       await insertAttachments(tx, postId, addAttachments, Number(rows[0]?.next ?? 0));
     }
     if (payload.event && row.kind === "EVENT") {
+      // Never the share token: a printed flyer has to keep working. An
+      // absent publicRsvpEnabled leaves the flag as it was.
       await tx.query(
         `update group_events
-            set title = $2, description = $3, event_date = $4, start_time = $5, end_time = $6, location = $7
+            set title = $2, description = $3, event_date = $4, start_time = $5, end_time = $6,
+                location = $7, public_rsvp_enabled = coalesce($8, public_rsvp_enabled)
           where post_id = $1`,
         [
           postId,
@@ -1341,6 +1355,7 @@ routes.patch("/:id/posts/:postId", async (c) => {
           payload.event.startTime ?? null,
           payload.event.endTime ?? null,
           payload.event.location,
+          payload.event.publicRsvpEnabled ?? null,
         ]
       );
       await tx.query("update group_posts set edited_at = now() where id = $1", [postId]);
@@ -1568,6 +1583,9 @@ routes.put("/:id/posts/:postId/rsvp", async (c) => {
  * own `rsvpCounts` can't say, since that's a headcount only. Gated exactly
  * like the RSVP write above: same group content access, same "is this
  * actually an event" check.
+ *
+ * `publicRsvps` are the strangers who answered through the share page. Their
+ * addresses go only to the event's author and the group's moderators.
  */
 routes.get("/:id/posts/:postId/rsvps", async (c) => {
   const caller = c.get("caller");
@@ -1584,7 +1602,69 @@ routes.get("/:id/posts/:postId/rsvps", async (c) => {
   if (row?.kind !== "EVENT") throw new HTTPException(404, { message: "Event not found" });
 
   const rsvps = await loadGroupEventRsvps(db, postId);
-  return c.json({ rsvps: rsvps.map(toGroupRsvpDto) });
+  const publicRsvps = await loadPublicEventRsvps(db, postId);
+  const showEmail = canManagePublicRsvps(row, access, caller.personId);
+  return c.json({
+    rsvps: rsvps.map(toGroupRsvpDto),
+    publicRsvps: publicRsvps.map((r) => toPublicEventRsvpDto(r, showEmail)),
+    // Whether the caller may see addresses and remove a public RSVP -- what
+    // the roster's delete buttons render off, rather than guessing from them.
+    canManagePublicRsvps: showEmail,
+  });
+});
+
+/** The event's author, or anyone who can moderate the group. */
+function canManagePublicRsvps(
+  row: GroupPostRow,
+  access: GroupAccess,
+  callerPersonId: string | null
+): boolean {
+  return (callerPersonId !== null && row.author_person_id === callerPersonId) || access.canModerate;
+}
+
+/**
+ * Takes a public RSVP off an event -- the organizer's answer to a bogus one.
+ * Not optional: without it, a single spam row on a printed event would be
+ * permanent. Audited, since the person it removes has no account to notice.
+ */
+routes.delete("/:id/posts/:postId/public-rsvps/:rsvpId", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const postId = uuidSchema.parse(c.req.param("postId"));
+  const rsvpId = uuidSchema.parse(c.req.param("rsvpId"));
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroupContent(access);
+
+  const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  if (row?.kind !== "EVENT") throw new HTTPException(404, { message: "Event not found" });
+  if (!canManagePublicRsvps(row, access, caller.personId)) {
+    throw new HTTPException(403, { message: "Only the organizer can remove that" });
+  }
+
+  const removed = await one<{ first_name: string; last_name: string; email: string }>(
+    db,
+    `delete from group_event_public_rsvps where id = $1 and post_id = $2
+     returning first_name, last_name, email::text as email`,
+    [rsvpId, postId]
+  );
+  if (!removed) throw new HTTPException(404, { message: "That RSVP is not on this event" });
+
+  await audit(db, caller, {
+    action: "group.publicRsvp.delete",
+    entityType: "groupPost",
+    entityId: postId,
+    changes: {
+      groupId: id,
+      name: `${removed.first_name} ${removed.last_name}`,
+      email: removed.email,
+    },
+  });
+
+  return c.body(null, 204);
 });
 
 // ---------------------------------------------------------------------------

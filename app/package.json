@@ -30,6 +30,8 @@
     "aws-amplify": "^6.19.0",
     "emojibase-data": "^16.0.3",
     "frimousse": "^0.4.0",
+    "jspdf": "^4.2.1",
+    "qrcode-generator": "^2.0.4",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",
     "react-image-crop": "^11.1.2",

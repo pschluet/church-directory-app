@@ -45,6 +45,8 @@ export const GROUP_POST_SELECT = `
          ge.start_time,
          ge.end_time,
          ge.location as event_location,
+         ge.share_token,
+         ge.public_rsvp_enabled,
          (select count(*)::int from group_posts r where r.parent_post_id = p.id) as reply_count,
          (select max(r.created_at) from group_posts r where r.parent_post_id = p.id) as last_reply_at,
          (
@@ -93,7 +95,9 @@ export const GROUP_POST_SELECT = `
          (select r.response from group_event_rsvps r
            where r.post_id = p.id and r.app_user_id = $1) as my_rsvp_response,
          (select r.guest_count from group_event_rsvps r
-           where r.post_id = p.id and r.app_user_id = $1) as my_rsvp_guest_count
+           where r.post_id = p.id and r.app_user_id = $1) as my_rsvp_guest_count,
+         (select coalesce(sum(1 + pr.guest_count), 0)::int
+            from group_event_public_rsvps pr where pr.post_id = p.id) as rsvp_public_attending
     from group_posts p
     join persons_resolved a on a.id = p.author_person_id
     left join group_events ge on ge.post_id = p.id
@@ -138,6 +142,8 @@ export interface GroupPostRow {
   start_time: string | null;
   end_time: string | null;
   event_location: string | null;
+  share_token: string | null;
+  public_rsvp_enabled: boolean | null;
   reply_count: number;
   last_reply_at: Date | string | null;
   attachments: AttachmentRow[];
@@ -148,6 +154,7 @@ export interface GroupPostRow {
   rsvp_maybe: number;
   my_rsvp_response: GroupRsvpResponse | null;
   my_rsvp_guest_count: number | null;
+  rsvp_public_attending: number;
 }
 
 function toAttachmentDto(row: AttachmentRow): GroupPostAttachmentDto {
@@ -221,11 +228,18 @@ export function toGroupPostDto(
             startTime: toHm(row.start_time),
             endTime: toHm(row.end_time),
             location: row.event_location,
-            rsvpCounts: { yes: row.rsvp_yes, no: row.rsvp_no, maybe: row.rsvp_maybe },
+            rsvpCounts: {
+              yes: row.rsvp_yes,
+              no: row.rsvp_no,
+              maybe: row.rsvp_maybe,
+              publicAttending: row.rsvp_public_attending,
+            },
             myRsvp:
               row.my_rsvp_response !== null
                 ? { response: row.my_rsvp_response, guestCount: row.my_rsvp_guest_count ?? 0 }
                 : null,
+            shareToken: row.share_token ?? "",
+            publicRsvpEnabled: row.public_rsvp_enabled === true,
           }
         : null,
     replyCount: row.reply_count,

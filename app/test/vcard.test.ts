@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { PersonDto, SpecialDateDto } from "@shared";
+import { stubDownload } from "./utils";
 import { buildVCard, downloadVCard, vCardFilename } from "../src/lib/vcard";
 
 function date(overrides: Partial<SpecialDateDto> = {}): SpecialDateDto {
@@ -152,19 +153,6 @@ describe("downloadVCard", () => {
     vi.restoreAllMocks();
   });
 
-  function stubDownload() {
-    const create = vi.fn().mockReturnValue("blob:vcard");
-    const revoke = vi.fn();
-    vi.stubGlobal("URL", { createObjectURL: create, revokeObjectURL: revoke });
-    let clicked: HTMLAnchorElement | null = null;
-    vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(function (
-      this: HTMLAnchorElement
-    ) {
-      clicked = this;
-    });
-    return { create, revoke, clicked: () => clicked };
-  }
-
   it("downloads a .vcf blob", async () => {
     const { create, revoke, clicked } = stubDownload();
     await downloadVCard(person());
@@ -173,7 +161,7 @@ describe("downloadVCard", () => {
     expect(blob.type).toBe("text/vcard;charset=utf-8");
     expect(await blob.text()).toContain("FN:Layla Haddad");
     expect(clicked()?.download).toBe("Layla Haddad.vcf");
-    expect(revoke).toHaveBeenCalledWith("blob:vcard");
+    expect(revoke).toHaveBeenCalledWith("blob:download");
   });
 
   it("still downloads when the photo cannot be loaded", async () => {
