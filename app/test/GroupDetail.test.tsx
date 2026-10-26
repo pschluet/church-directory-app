@@ -2901,6 +2901,44 @@ describe("GroupDetail", () => {
         await waitFor(() => expect(bar).toHaveFocus());
       });
 
+      it("leaves for the Messages tab by popping history when opened from the feed", async () => {
+        stubEvent();
+        renderPage();
+        await screen.findByRole("heading", { name: "Parish Picnic" });
+        await userEvent.click(screen.getByRole("link", { name: /Parish Picnic/ }));
+        await userEvent.click(await screen.findByRole("link", { name: "Youth Group" }));
+        await waitFor(() => expect(where()).toBe("/groups/g1"));
+        expect(navType()).toBe("POP");
+      });
+
+      it("leaves for the Events tab by popping history when opened from it", async () => {
+        stubEvent();
+        renderPage("/groups/g1/events");
+        await userEvent.click(await screen.findByRole("link", { name: /Parish Picnic/ }));
+        await userEvent.click(await screen.findByRole("link", { name: "Youth Group" }));
+        await waitFor(() => expect(where()).toBe("/groups/g1/events"));
+        expect(navType()).toBe("POP");
+      });
+
+      it("leaves for the Messages tab after Reply from the feed", async () => {
+        stubEvent();
+        renderPage();
+        await screen.findByRole("heading", { name: "Parish Picnic" });
+        await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+        await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
+        await userEvent.click(await screen.findByRole("link", { name: "Youth Group" }));
+        await waitFor(() => expect(where()).toBe("/groups/g1"));
+        expect(navType()).toBe("POP");
+      });
+
+      it("leaves for the Events tab by replacing when opened directly", async () => {
+        stubEvent();
+        renderPage("/groups/g1/events/e1");
+        await userEvent.click(await screen.findByRole("link", { name: "Youth Group" }));
+        await waitFor(() => expect(where()).toBe("/groups/g1/events"));
+        expect(navType()).toBe("REPLACE");
+      });
+
       it("sends an old thread link for an event on to the event page", async () => {
         stubEvent();
         renderPage("/groups/g1/threads/e1");

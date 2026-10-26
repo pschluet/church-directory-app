@@ -8,6 +8,7 @@ import { formatDayLabel, formatEventTimes, formatPostedAt, todayIso } from "../l
 import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
 import { Link } from "../components/nav";
+import { useNavStack } from "../components/NavStack";
 import { useGroupLive } from "../components/useGroupLive";
 import { Button, ConfirmDialog, ErrorNotice, Spinner, useNow } from "../components/ui";
 import {
@@ -26,6 +27,7 @@ import {
   ReplyList,
   ReportModal,
   RsvpControl,
+  type FeedState,
   RsvpListModal,
   groupTabPath,
   joinState,
@@ -159,14 +161,26 @@ export function EventDetail() {
   );
 }
 
-/** "Event" over the group's name, which leads back to its Events tab. */
+/** "Event" over the group's name, which leads back to the tab the event was opened from. */
 function EventPageHeader({ group, groupId }: { group: GroupDto; groupId: string }) {
+  const { canGoBack, goBack } = useNavStack();
+  const state = useLocation().state as FeedState | null;
   return (
     <header className="mb-4">
       <p className="text-xs font-bold uppercase tracking-[0.2em] text-ink-muted">Event</p>
       <Link
-        to={groupTabPath(groupId, "events")}
+        // Opened with no tab behind it (a share link, a reload), the Events tab.
+        to={groupTabPath(groupId, state?.fromTab ?? "events")}
         viewTransition
+        // As a thread's way out: reached from a tab, leaving is a back rather than
+        // a second push; opened directly there is nothing to pop, so it replaces.
+        replace
+        onClick={(event) => {
+          if (canGoBack && state?.fromFeed) {
+            event.preventDefault();
+            goBack();
+          }
+        }}
         className="-ml-1 mt-0.5 inline-flex max-w-full items-center gap-0.5 rounded-md px-1 font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
       >
         <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 shrink-0 fill-current">
