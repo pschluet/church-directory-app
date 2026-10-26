@@ -1484,6 +1484,21 @@ export function eventDetailPath(groupId: string, postId: string): string {
   return `/groups/${groupId}/events/${postId}`;
 }
 
+/**
+ * The state a tab hands the page it opens: that it came from the feed, so the
+ * page's way out can pop this entry rather than push another, and which tab,
+ * so a fallback lands back on it.
+ */
+export interface FeedState {
+  fromFeed?: boolean;
+  fromTab?: Tab;
+  focusComposer?: boolean;
+}
+
+export function feedState(pathname: string, extra?: Omit<FeedState, "fromFeed" | "fromTab">) {
+  return { fromFeed: true, fromTab: tabFromPathname(pathname), ...extra } satisfies FeedState;
+}
+
 /** An event's page or a message's thread -- wherever replying to this post happens. */
 function discussionPath(groupId: string, post: Pick<GroupPostDto, "id" | "kind">): string {
   return post.kind === "EVENT" ? eventDetailPath(groupId, post.id) : threadPath(groupId, post.id);
@@ -1503,11 +1518,12 @@ function ChatBubbleIcon({ className = "h-4 w-4" }: { className?: string }) {
  * quiet accent pill that tints on hover -- rather than as plain text.
  */
 function ReplySummary({ post, groupId, now }: { post: GroupPostDto; groupId: string; now: Date }) {
+  const { pathname } = useLocation();
   return (
     <Link
       to={discussionPath(groupId, post)}
       // Remembered so the thread's way out can pop this entry rather than push another.
-      state={{ fromFeed: true }}
+      state={feedState(pathname)}
       className="-ml-2 mt-1 inline-flex max-w-full items-center gap-1.5 rounded-md px-2 py-1 text-sm font-bold text-accent transition hover:bg-accent-light/30 focus-visible:outline-2 focus-visible:outline-accent"
     >
       <ChatBubbleIcon />
@@ -1572,6 +1588,7 @@ export function ChatRow({
   isReply?: boolean;
 }) {
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const isRoot = variant === "root";
@@ -1621,7 +1638,7 @@ export function ChatRow({
       onSelect: () =>
         void navigate(discussionPath(groupId, post), {
           viewTransition: true,
-          state: { focusComposer: true, fromFeed: true },
+          state: feedState(pathname, { focusComposer: true }),
         }),
     });
   // Advertising the event. Not for a cancelled one: there is nothing to invite
@@ -3671,6 +3688,8 @@ function EventBlock({
   const past = event.eventDate < todayIso();
   const times = formatEventTimes(event.startTime, event.endTime);
   const pagePath = eventDetailPath(groupId, postId);
+  // Remembered so the event page's way out returns to this tab, by popping this entry.
+  const pageState = feedState(useLocation().pathname);
 
   return (
     <div
@@ -3680,12 +3699,20 @@ function EventBlock({
     >
       <div className="flex gap-3 p-4">
         {/* The tile is a second way into the same page; the title link names it. */}
-        <Link to={pagePath} viewTransition aria-hidden="true" tabIndex={-1} className="shrink-0">
+        <Link
+          to={pagePath}
+          state={pageState}
+          viewTransition
+          aria-hidden="true"
+          tabIndex={-1}
+          className="shrink-0"
+        >
           <EventDateTile iso={event.eventDate} past={past || cancelled} />
         </Link>
         <div className="min-w-0 flex-1 space-y-1.5">
           <Link
             to={pagePath}
+            state={pageState}
             viewTransition
             className="group/title flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md focus-visible:outline-2 focus-visible:outline-accent"
           >
