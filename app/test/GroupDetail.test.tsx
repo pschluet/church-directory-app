@@ -2828,7 +2828,7 @@ describe("GroupDetail", () => {
     });
 
     describe("share actions", () => {
-      it("offers Copy link, QR code and Print flyer in the menu, and copies the share URL", async () => {
+      it("offers Copy link, QR code and PDF flyer in the menu, and copies the share URL", async () => {
         const writeText = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(navigator, "clipboard", {
           configurable: true,
@@ -2839,7 +2839,7 @@ describe("GroupDetail", () => {
         await screen.findByRole("heading", { name: "Parish Picnic" });
         await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
         expect(screen.getByRole("menuitem", { name: "QR code" })).toBeInTheDocument();
-        expect(screen.getByRole("menuitem", { name: "Print flyer (PDF)" })).toBeInTheDocument();
+        expect(screen.getByRole("menuitem", { name: "PDF flyer" })).toBeInTheDocument();
         await userEvent.click(screen.getByRole("menuitem", { name: "Copy link" }));
         expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/e/${TOKEN}`);
       });
@@ -2856,7 +2856,7 @@ describe("GroupDetail", () => {
         await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
         expect(screen.queryByRole("menuitem", { name: "Copy link" })).toBeNull();
         expect(screen.queryByRole("menuitem", { name: "QR code" })).toBeNull();
-        expect(screen.queryByRole("menuitem", { name: "Print flyer (PDF)" })).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "PDF flyer" })).toBeNull();
       });
 
       it("puts them in plain sight on the Events tab", async () => {
@@ -2865,7 +2865,7 @@ describe("GroupDetail", () => {
         await screen.findByRole("heading", { name: "Parish Picnic" });
         expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
         expect(screen.getByRole("button", { name: "QR code" })).toBeInTheDocument();
-        expect(screen.getByRole("button", { name: "Print flyer (PDF)" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "PDF flyer" })).toBeInTheDocument();
       });
     });
 
@@ -2987,7 +2987,7 @@ describe("GroupDetail", () => {
           })
         );
 
-        for (const name of ["Copy link", "QR code", "Print flyer (PDF)"]) {
+        for (const name of ["Copy link", "QR code", "PDF flyer"]) {
           expect(screen.getByRole("button", { name })).toBeInTheDocument();
         }
         expect(await screen.findByText("Count me in")).toBeInTheDocument();

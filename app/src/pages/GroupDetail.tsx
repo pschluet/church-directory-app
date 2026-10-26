@@ -1646,7 +1646,7 @@ export function ChatRow({
   if (canShare) {
     actions.push({ label: "Copy link", onSelect: share.copyLink });
     actions.push({ label: "QR code", onSelect: share.openQr });
-    actions.push({ label: "Print flyer (PDF)", onSelect: share.printFlyer });
+    actions.push({ label: "PDF flyer", onSelect: share.printFlyer });
   }
   if (!isDeleted && post.canEdit)
     actions.push({
@@ -3387,7 +3387,7 @@ export function useEventShare(event: GroupPostDto["event"], cancelled = false) {
   };
 }
 
-/** Copy link, QR code and Print flyer as a row of buttons. */
+/** Copy link, QR code and PDF flyer as a row of buttons. */
 export function EventShareButtons({
   share,
   size = "sm",
@@ -3419,7 +3419,7 @@ export function EventShareButtons({
           <svg aria-hidden="true" viewBox="0 0 20 20" className={iconClass}>
             <path d="M5 2h7.6L16 5.4V17a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1Zm1 1.6v12.8h8.4V6.2h-2.6a.8.8 0 0 1-.8-.8V3.6H6Zm1.6 6.2h4.8a.8.8 0 0 1 0 1.6H7.6a.8.8 0 0 1 0-1.6Zm0 3h4.8a.8.8 0 0 1 0 1.6H7.6a.8.8 0 0 1 0-1.6Z" />
           </svg>
-          Print flyer (PDF)
+          PDF flyer
         </button>
       </div>
       {share.flyerError && (
