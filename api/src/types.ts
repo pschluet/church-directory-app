@@ -968,7 +968,7 @@ export const GROUP_JOIN_REQUEST_STATUSES = ["PENDING", "APPROVED", "DENIED", "CA
 export const groupJoinRequestStatusSchema = z.enum(GROUP_JOIN_REQUEST_STATUSES);
 export type GroupJoinRequestStatus = z.infer<typeof groupJoinRequestStatusSchema>;
 
-export const GROUP_POST_KINDS = ["MESSAGE", "EVENT"] as const;
+export const GROUP_POST_KINDS = ["MESSAGE", "EVENT", "POLL"] as const;
 export const groupPostKindSchema = z.enum(GROUP_POST_KINDS);
 export type GroupPostKind = z.infer<typeof groupPostKindSchema>;
 
@@ -1011,6 +1011,11 @@ export const GROUP_EVENT_LOCATION_MAX = 200;
 export const GROUP_EVENT_TITLE_MAX = 150;
 export const GROUP_EVENT_DESCRIPTION_MAX = 2000;
 export const GROUP_REPORT_REASON_MAX = 500;
+export const GROUP_POLL_QUESTION_MAX = 300;
+export const GROUP_POLL_OPTION_MAX = 100;
+export const GROUP_POLL_MIN_OPTIONS = 2;
+/** Enough for any real choice, and a card that still fits on a phone screen. */
+export const GROUP_POLL_MAX_OPTIONS = 10;
 /** Matches PRAYER_REQUEST_MAX_IMAGES's reasoning: a feed stays readable. */
 export const GROUP_POST_MAX_ATTACHMENTS = 10;
 
@@ -1091,6 +1096,21 @@ const groupEventFieldsSchema = z
     path: ["endTime"],
   });
 
+const groupPollFieldsSchema = z
+  .object({
+    question: z.string().trim().min(1, "Ask a question").max(GROUP_POLL_QUESTION_MAX),
+    options: z
+      .array(z.string().trim().min(1, "An option cannot be blank").max(GROUP_POLL_OPTION_MAX))
+      .min(GROUP_POLL_MIN_OPTIONS, `A poll needs at least ${GROUP_POLL_MIN_OPTIONS} options`)
+      .max(GROUP_POLL_MAX_OPTIONS, `A poll can have at most ${GROUP_POLL_MAX_OPTIONS} options`),
+    /** Whether a member may pick several options rather than one. */
+    allowsMultiple: z.boolean().default(false),
+  })
+  .refine((v) => new Set(v.options.map((o) => o.toLowerCase())).size === v.options.length, {
+    message: "Each option must be different",
+    path: ["options"],
+  });
+
 export const groupPostCreateSchema = z
   .object({
     kind: groupPostKindSchema.default("MESSAGE"),
@@ -1100,6 +1120,7 @@ export const groupPostCreateSchema = z
     mentionsEveryone: z.boolean().default(false),
     attachments: z.array(groupPostAttachmentSchema).max(GROUP_POST_MAX_ATTACHMENTS).default([]),
     event: groupEventFieldsSchema.optional(),
+    poll: groupPollFieldsSchema.optional(),
   })
   .superRefine((value, ctx) => {
     // Words, or at least a picture or file to show: an attachment alone is a message.
@@ -1122,6 +1143,20 @@ export const groupPostCreateSchema = z
         code: z.ZodIssueCode.custom,
         path: ["parentPostId"],
         message: "A reply cannot be an event",
+      });
+    }
+    if (value.kind === "POLL" && !value.poll) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["poll"],
+        message: "A poll needs a question and options",
+      });
+    }
+    if (value.kind === "POLL" && value.parentPostId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["parentPostId"],
+        message: "A reply cannot be a poll",
       });
     }
   });
@@ -1147,6 +1182,15 @@ export const groupRsvpSchema = z.object({
   guestCount: z.number().int().min(0).max(50).default(0),
 });
 export type GroupRsvp = z.infer<typeof groupRsvpSchema>;
+
+/**
+ * The caller's whole ballot on a poll, replacing whatever they had. Empty takes
+ * their vote back; more than one id is only allowed on a multiple-choice poll.
+ */
+export const groupPollVoteSchema = z.object({
+  optionIds: z.array(uuidSchema).max(GROUP_POLL_MAX_OPTIONS),
+});
+export type GroupPollVote = z.infer<typeof groupPollVoteSchema>;
 
 /**
  * Most different emoji one group post or prayer request can carry, as Slack
@@ -1383,6 +1427,30 @@ export interface GroupEventRsvpDto {
   guestCount: number;
 }
 
+export interface GroupPollVoterDto {
+  personId: string;
+  name: string;
+}
+
+export interface GroupPollOptionDto {
+  id: string;
+  label: string;
+  voteCount: number;
+  /** Whether the caller picked this option -- what marks it selected. */
+  votedByMe: boolean;
+  /** Everyone who picked it, earliest first. Polls are not anonymous. */
+  voters: GroupPollVoterDto[];
+}
+
+export interface GroupPollDto {
+  question: string;
+  allowsMultiple: boolean;
+  /** People who voted at all -- on a multiple-choice poll, fewer than the sum of the counts. */
+  voterCount: number;
+  /** In the order the author listed them. */
+  options: GroupPollOptionDto[];
+}
+
 export interface GroupPostAttachmentDto {
   id: string;
   kind: GroupAttachmentKind;
@@ -1446,6 +1514,8 @@ export interface GroupPostDto {
   /** In the order each emoji was first used; empty for a deleted post. */
   reactions: ReactionDto[];
   event: GroupEventDto | null;
+  /** Null for anything but a poll, and for a deleted one. */
+  poll: GroupPollDto | null;
   /** How many replies exist, whether or not this response included them. */
   replyCount: number;
   /** When the newest reply was posted, or null with none -- what the feed's reply summary says. */

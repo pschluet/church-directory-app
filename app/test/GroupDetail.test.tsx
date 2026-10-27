@@ -161,6 +161,7 @@ function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
     mentions: [],
     mentionsEveryone: false,
     event: null,
+    poll: null,
     replyCount: 0,
     lastReplyAt: null,
     canEdit: false,
@@ -1571,6 +1572,159 @@ describe("GroupDetail", () => {
       expect(screen.getByRole("heading", { name: /Upcoming/ })).toBeInTheDocument();
       expect(screen.getByRole("heading", { name: /Past/ })).toBeInTheDocument();
       expect(screen.getAllByText(/Posted by/)).toHaveLength(4);
+    });
+  });
+
+  describe("polls", () => {
+    const poll = (
+      overrides: Partial<NonNullable<GroupPostDto["poll"]>> = {},
+      postOverrides: Partial<GroupPostDto> = {}
+    ) =>
+      post({
+        id: "poll1",
+        kind: "POLL",
+        body: null,
+        canEdit: false,
+        poll: {
+          question: "Where shall we eat?",
+          allowsMultiple: false,
+          voterCount: 4,
+          options: [
+            {
+              id: "o1",
+              label: "Pizza",
+              voteCount: 3,
+              votedByMe: false,
+              voters: [{ personId: "person-bo", name: "Bo Park" }],
+            },
+            { id: "o2", label: "Tacos", voteCount: 1, votedByMe: true, voters: [] },
+            { id: "o3", label: "Sushi", voteCount: 0, votedByMe: false, voters: [] },
+          ],
+          ...overrides,
+        },
+        ...postOverrides,
+      });
+    const votes = () =>
+      apiMock.mock.calls.filter((c) => String(c[0]).endsWith("/vote")).map((c) => c[1].body);
+
+    it("starts a poll from the + menu, with options added, removed and several allowed", async () => {
+      stub();
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Add to this message" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Poll…" }));
+      const dialog = await screen.findByRole("dialog", { name: "New poll" });
+      const post = within(dialog).getByRole("button", { name: "Post poll" });
+
+      await userEvent.type(within(dialog).getByLabelText("Question"), "Where shall we eat?");
+      await userEvent.type(within(dialog).getByLabelText("Option 1"), "Pizza");
+      expect(post).toBeDisabled();
+      // Enter in the last option adds the next one and moves there.
+      await userEvent.type(within(dialog).getByLabelText("Option 2"), "Tacos{Enter}");
+      expect(within(dialog).getByLabelText("Option 3")).toHaveFocus();
+      await userEvent.keyboard("Sushi{Enter}Thai");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Remove option 3" }));
+      await userEvent.click(within(dialog).getByRole("button", { name: "Several options" }));
+      expect(post).toBeEnabled();
+      await userEvent.click(post);
+
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith(
+          "/groups/g1/posts",
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({
+              kind: "POLL",
+              poll: {
+                question: "Where shall we eat?",
+                options: ["Pizza", "Tacos", "Thai"],
+                allowsMultiple: true,
+              },
+            }),
+          })
+        )
+      );
+    });
+
+    it("will not post a poll whose options repeat", async () => {
+      stub();
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Add to this message" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Poll…" }));
+      const dialog = await screen.findByRole("dialog", { name: "New poll" });
+      await userEvent.type(within(dialog).getByLabelText("Question"), "Yes?");
+      await userEvent.type(within(dialog).getByLabelText("Option 1"), "Yes");
+      await userEvent.type(within(dialog).getByLabelText("Option 2"), "yes ");
+      expect(within(dialog).getByText("Each option must be different.")).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Post poll" })).toBeDisabled();
+    });
+
+    it("shows the results as a share of the people who voted", async () => {
+      stub({ pages: [{ posts: [poll()], nextCursor: null }] });
+      renderPage();
+      expect(
+        await screen.findByRole("heading", { name: "Where shall we eat?" })
+      ).toBeInTheDocument();
+      expect(screen.getByText(/Choose one/)).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "Pizza, 3 votes, 75%" })).toHaveAttribute(
+        "aria-pressed",
+        "false"
+      );
+      expect(screen.getByRole("button", { name: "Tacos, 1 vote, 25%" })).toHaveAttribute(
+        "aria-pressed",
+        "true"
+      );
+      expect(screen.getByRole("button", { name: "4 people voted" })).toBeInTheDocument();
+    });
+
+    it("moves a single-choice vote, and takes it back on a second tap", async () => {
+      stub({ pages: [{ posts: [poll()], nextCursor: null }] });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: /^Pizza,/ }));
+      await waitFor(() => expect(votes()).toEqual([{ optionIds: ["o1"] }]));
+
+      await userEvent.click(screen.getByRole("button", { name: /^Tacos,/ }));
+      await waitFor(() => expect(votes()).toEqual([{ optionIds: ["o1"] }, { optionIds: [] }]));
+    });
+
+    it("toggles each option on its own on a multiple-choice poll", async () => {
+      stub({ pages: [{ posts: [poll({ allowsMultiple: true })], nextCursor: null }] });
+      renderPage();
+      expect(await screen.findByText(/Choose any/)).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: /^Sushi,/ }));
+      await waitFor(() => expect(votes()).toEqual([{ optionIds: ["o2", "o3"] }]));
+    });
+
+    it("lists who voted for what", async () => {
+      stub({ pages: [{ posts: [poll()], nextCursor: null }] });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "4 people voted" }));
+      const dialog = await screen.findByRole("dialog", { name: "Votes" });
+      expect(within(dialog).getByRole("link", { name: "Bo Park" })).toHaveAttribute(
+        "href",
+        "/people/person-bo"
+      );
+    });
+
+    it("shows the results but no voting to someone who cannot take part", async () => {
+      stub({ group: group({ canReact: false }), pages: [{ posts: [poll()], nextCursor: null }] });
+      renderPage();
+      expect(await screen.findByRole("button", { name: /^Pizza,/ })).toBeDisabled();
+      expect(screen.queryByText("Tap an option to vote")).not.toBeInTheDocument();
+    });
+
+    it("leaves a placeholder for a deleted poll", async () => {
+      stub({
+        pages: [
+          {
+            posts: [
+              poll({}, { poll: null, deletedAt: "2026-10-09T12:00:00.000Z", deletedBySelf: true }),
+            ],
+            nextCursor: null,
+          },
+        ],
+      });
+      renderPage();
+      expect(await screen.findByText("Poll deleted")).toBeInTheDocument();
     });
   });
 

@@ -75,6 +75,7 @@ import { isEmojiOnly } from "../lib/emoji";
 import { eventShareUrl } from "../lib/eventShare";
 import { downloadEventFlyer } from "../lib/eventFlyer";
 import { EventQrModal } from "../components/EventQrModal";
+import { PollBlock, PollComposerModal } from "../components/GroupPoll";
 import { parseBody, toPlainText, type Inline, type ListBlock } from "../lib/richText";
 import type { Editor } from "@tiptap/react";
 import {
@@ -847,8 +848,8 @@ function buildChatItems(posts: GroupPostDto[], now: Date): ChatItem[] {
       previous.authorPersonId !== post.authorPersonId ||
       new Date(post.createdAt).getTime() - new Date(previous.createdAt).getTime() >
         GROUPING_WINDOW_MS ||
-      post.kind === "EVENT" ||
-      previous.kind === "EVENT" ||
+      post.kind !== "MESSAGE" ||
+      previous.kind !== "MESSAGE" ||
       post.deletedAt !== null ||
       previous.deletedAt !== null;
     items.push({ type: "post", key: post.id, post, showHeader });
@@ -1137,7 +1138,7 @@ function MessagesTab({
                   groupId={groupId}
                   members={group.members}
                   placeholder={`Message ${group.title}`}
-                  canStartEvent
+                  canStartEventOrPoll
                   editing={editing}
                   onEditDone={() => setEditing(null)}
                   onPosted={editing ? async () => void (await onChanged()) : posted}
@@ -1811,7 +1812,11 @@ export function ChatRow({
           />
         ) : isDeleted ? (
           <p className="italic text-ink-muted">
-            {post.kind === "EVENT" ? "Event cancelled" : "Message deleted"}
+            {post.kind === "EVENT"
+              ? "Event cancelled"
+              : post.kind === "POLL"
+                ? "Poll deleted"
+                : "Message deleted"}
           </p>
         ) : editing ? (
           <EditForm
@@ -1830,6 +1835,16 @@ export function ChatRow({
                 mentionsEveryone={post.mentionsEveryone}
                 postId={post.id}
                 groupId={groupId}
+                onChanged={onChanged}
+                wide={isCard}
+              />
+            )}
+            {post.kind === "POLL" && post.poll && (
+              <PollBlock
+                poll={post.poll}
+                groupId={groupId}
+                postId={post.id}
+                canVote={canReact}
                 onChanged={onChanged}
                 wide={isCard}
               />
@@ -2003,7 +2018,13 @@ export function ChatRow({
 
       {confirmDelete && (
         <ConfirmDialog
-          title={post.kind === "EVENT" ? "Cancel this event?" : "Delete this post?"}
+          title={
+            post.kind === "EVENT"
+              ? "Cancel this event?"
+              : post.kind === "POLL"
+                ? "Delete this poll?"
+                : "Delete this post?"
+          }
           confirmLabel={post.kind === "EVENT" ? "Cancel it" : "Delete it"}
           busy={remove.isPending}
           onConfirm={() => remove.mutate()}
@@ -2777,7 +2798,7 @@ export function ChatComposer({
   members,
   parentPostId,
   placeholder,
-  canStartEvent = false,
+  canStartEventOrPoll = false,
   autoFocus = false,
   editing = null,
   onEditDone,
@@ -2787,8 +2808,8 @@ export function ChatComposer({
   members: GroupMemberDto[];
   parentPostId?: string;
   placeholder: string;
-  /** Offer "Event…" in the + menu. Never for a reply: a reply cannot be an event. */
-  canStartEvent?: boolean;
+  /** Offer "Event…" and "Poll…" in the + menu. Never for a reply: a reply cannot be either. */
+  canStartEventOrPoll?: boolean;
   /** Focus the bar on arrival -- for a reply started from a message's menu. */
   autoFocus?: boolean;
   /**
@@ -2803,6 +2824,7 @@ export function ChatComposer({
 }) {
   const [body, setBody] = useState("");
   const [eventOpen, setEventOpen] = useState(false);
+  const [pollOpen, setPollOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const picker = useGroupAttachmentPicker();
@@ -2953,9 +2975,15 @@ export function ChatComposer({
   }
 
   const expanded =
-    active || hasText || editing !== null || emojiOpen || attachmentCount > 0 || eventOpen;
+    active ||
+    hasText ||
+    editing !== null ||
+    emojiOpen ||
+    attachmentCount > 0 ||
+    eventOpen ||
+    pollOpen;
 
-  // An edit can add pictures and files, but a message cannot become an event.
+  // An edit can add pictures and files, but a message cannot become an event or a poll.
   const plusMenu = (
     <MenuButton
       portal
@@ -2976,7 +3004,12 @@ export function ChatComposer({
       >
         Photo or file
       </MenuItem>
-      {canStartEvent && !editing && <MenuItem onSelect={() => setEventOpen(true)}>Event…</MenuItem>}
+      {canStartEventOrPoll && !editing && (
+        <MenuItem onSelect={() => setEventOpen(true)}>Event…</MenuItem>
+      )}
+      {canStartEventOrPoll && !editing && (
+        <MenuItem onSelect={() => setPollOpen(true)}>Poll…</MenuItem>
+      )}
     </MenuButton>
   );
 
@@ -3182,6 +3215,16 @@ export function ChatComposer({
           onClose={() => setEventOpen(false)}
           onPosted={async () => {
             setEventOpen(false);
+            await onPosted();
+          }}
+        />
+      )}
+      {pollOpen && (
+        <PollComposerModal
+          groupId={groupId}
+          onClose={() => setPollOpen(false)}
+          onPosted={async () => {
+            setPollOpen(false);
             await onPosted();
           }}
         />

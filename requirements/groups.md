@@ -73,6 +73,13 @@ For a Private group, non-members see the title, description, image, and a member
   - Members can RSVP Yes, No, or Maybe, and optionally note how many guests they're bringing.
   - If an event's date, time, or location changes after people have RSVP'd, their RSVPs are kept and they're notified of the change.
   - The Events tab separates upcoming events from past events.
+- **Polls** are another special post type, started from the message bar's **+** menu like an event:
+  - A question (required) and 2 to 10 options, each different from the others.
+  - The person starting the poll chooses whether people can pick one option or several.
+  - Members vote by tapping an option. On a one-option poll, tapping a different option moves the vote and tapping your own choice again takes it back; on a several-options poll each option toggles on its own.
+  - Results are always visible to everyone who can see the poll: each option shows a bar and the share of voters who picked it, and the results change live as people vote. Votes are not anonymous — "N people voted" opens who picked what.
+  - Who can vote follows the rule for reactions: anyone who can post or reply, but not in an archived group, and not a parish admin looking into a group they haven't joined.
+  - A poll cannot be edited once posted, since changing an option would change what people voted for. It can be deleted, which leaves a "Poll deleted" placeholder.
 
 # Reporting & Moderation
 - Any member who can see a post can report it for review. This includes a parish admin viewing inside a Secret group, consistent with their broader visibility into every group.
@@ -97,7 +104,7 @@ For a Private group, non-members see the title, description, image, and a member
 - Posts and their attachments are automatically and permanently removed 5 years after they were posted. This is a hard deletion with no way to recover the content afterward, and no individual warning is given beforehand.
 - A thread — the original post plus its replies — stays alive as long as any reply within it is still inside the 5-year window. A post that keeps getting replies won't disappear out from under an active conversation; the whole thread is only removed once it has gone quiet for 5+ years.
 - For events, the 5-year retention clock starts after the event date, not the post date, so a far-future event scheduled today won't be deleted before it happens.
-- Reports, mentions, reactions, and RSVPs tied to a post are removed along with it.
+- Reports, mentions, reactions, RSVPs, and poll votes tied to a post are removed along with it.
 
 # Considerations for a Future Revision
 - There's no way today to report content with full anonymity assurance. The UI doesn't disclose who filed a report, but a resolving admin could, in some cases, infer who it was from context.
