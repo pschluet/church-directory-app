@@ -779,8 +779,12 @@ routes.put("/:id/member-order", async (c) => {
 });
 
 /**
- * Delete an empty family. Admin-only, because the people who can create a
- * family for someone else are the ones who need to undo a typo.
+ * Delete a family. Anyone who can edit it may -- an admin, or one of its own
+ * members with an account.
+ *
+ * Its members are detached rather than deleted: they stay in the directory with
+ * no family, exactly as if each had been removed one by one, so nobody's record
+ * is lost along with the household it sat in.
  */
 routes.delete("/:id", async (c) => {
   const caller = c.get("caller");
@@ -789,28 +793,36 @@ routes.delete("/:id", async (c) => {
   const id = uuidSchema.parse(c.req.param("id"));
 
   const family = await loadFamilyRow(db, id, organizationId);
-  if (!caller.isAdmin) {
-    throw new HTTPException(403, { message: "Only an administrator can remove a family" });
-  }
+  assertCanEditFamily(caller, { id: family.id, organizationId: family.organization_id });
 
-  const remaining = await one<{ count: string }>(
-    db,
-    "select count(*) as count from persons where family_id = $1 and deleted_at is null",
-    [id]
-  );
-  if (Number(remaining?.count ?? 0) > 0) {
-    throw new HTTPException(409, { message: "Remove its members first" });
-  }
-
-  // Join requests cascade with the family row; the photo does not.
-  await db.query("delete from families where id = $1", [id]);
+  const memberIds = await db.transaction(async (tx) => {
+    const { rows } = await tx.query<{ id: string }>(
+      "select id from persons where family_id = $1 and deleted_at is null",
+      [id]
+    );
+    // The same steps as removing each member: what they shared with relatives
+    // goes, and so does every request they had out to join somewhere else.
+    for (const { id: personId } of rows) {
+      await clearInheritanceFor(tx, personId);
+      await cancelPendingJoinRequests(tx, personId);
+    }
+    // Every row, soft-deleted ones included -- the foreign key's `on delete set
+    // null` would clear `family_id` too, but not `family_order`.
+    await tx.query(
+      "update persons set family_id = null, family_order = null where family_id = $1",
+      [id]
+    );
+    // Join requests to this family cascade with the row; the photo does not.
+    await tx.query("delete from families where id = $1", [id]);
+    return rows.map((row) => row.id);
+  });
   await deletePhoto(family.photo_key);
 
   await audit(db, caller, {
     action: "family.delete",
     entityType: "family",
     entityId: id,
-    changes: { name: family.name },
+    changes: { name: family.name, memberIds },
   });
   return c.body(null, 204);
 });
@@ -843,8 +855,8 @@ routes.delete("/:id/members/:personId", async (c) => {
   }
 
   // A family with nobody in it is editable only by an admin and still shows up
-  // in the families list, so let members step back from that cliff. An admin
-  // emptying a family is the deliberate first step of deleting it.
+  // in the families list, so let members step back from that cliff. Deleting
+  // the family is the way to be rid of it.
   if (!caller.isAdmin) {
     const remaining = await one<{ count: string }>(
       db,
@@ -854,7 +866,7 @@ routes.delete("/:id/members/:personId", async (c) => {
     );
     if (Number(remaining?.count ?? 0) === 0) {
       throw new HTTPException(409, {
-        message: "A family needs at least one member. Ask an administrator to remove it instead.",
+        message: "A family needs at least one member. Delete the family instead.",
       });
     }
   }
