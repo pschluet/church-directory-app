@@ -3,7 +3,7 @@ import { HTTPException } from "hono/http-exception";
 import { requireOrganizationId, requireRole, type AppEnv } from "../auth";
 import { one, type Queryable } from "../db";
 import { audit } from "../audit";
-import { assertCanGrantRole } from "../services/access";
+import { assertCanGrantRole, assertCanManageAccount } from "../services/access";
 import { deleteUser, setUserEnabled } from "../cognito";
 import { applyEmailChange, assertEmailAvailable } from "../services/email-change";
 import { clearInheritanceFor } from "../services/inheritance";
@@ -152,9 +152,7 @@ routes.patch("/users/:id", async (c) => {
   if (target.organization_id !== requireOrganizationId(c)) {
     throw new HTTPException(404, { message: "Account not found" });
   }
-  if (!caller.isSuperAdmin && target.role === "SUPER_ADMIN") {
-    throw new HTTPException(403, { message: "Only a super admin can change a super admin" });
-  }
+  assertCanManageAccount(caller, target);
   if (payload.role) {
     assertCanGrantRole(caller, payload.role, payload.organizationId ?? target.organization_id);
   }
@@ -263,7 +261,7 @@ routes.delete("/users/:id", async (c) => {
   const target = await one<{
     id: string;
     email: string;
-    role: string;
+    role: AppUserDto["role"];
     organization_id: string | null;
     cognito_sub: string | null;
     person_id: string | null;
@@ -289,9 +287,7 @@ routes.delete("/users/:id", async (c) => {
   if (target.organization_id !== requireOrganizationId(c)) {
     throw new HTTPException(404, { message: "Account not found" });
   }
-  if (!caller.isSuperAdmin && target.role === "SUPER_ADMIN") {
-    throw new HTTPException(403, { message: "Only a super admin can delete a super admin" });
-  }
+  assertCanManageAccount(caller, target, "delete");
   if (target.id === caller.appUserId) {
     throw new HTTPException(400, { message: "You cannot delete your own account" });
   }
@@ -363,15 +359,19 @@ routes.put("/users/:id/email", async (c) => {
     id: string;
     cognito_sub: string | null;
     email: string;
+    role: AppUserDto["role"];
     organization_id: string | null;
   }>(
     db,
-    "select id, cognito_sub, email::text as email, organization_id from app_users where id = $1",
+    "select id, cognito_sub, email::text as email, role, organization_id from app_users where id = $1",
     [id]
   );
   if (!target || target.organization_id !== requireOrganizationId(c)) {
     throw new HTTPException(404, { message: "Account not found" });
   }
+  // Takes effect with no code to the new address, so pointing a super admin's
+  // sign-in at an address the caller controls would be a takeover.
+  assertCanManageAccount(caller, target);
   if (email === target.email) {
     throw new HTTPException(400, { message: "That is already their sign-in address" });
   }

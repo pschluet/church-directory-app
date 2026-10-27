@@ -3,7 +3,11 @@ import { HTTPException } from "hono/http-exception";
 import { requireOrganizationId, type AppEnv, type Caller } from "../auth";
 import { one, type Queryable } from "../db";
 import { audit } from "../audit";
-import { assertCanEditFamily, assertCanEditPerson } from "../services/access";
+import {
+  assertCanEditFamily,
+  assertCanEditPerson,
+  assertCanManageAccount,
+} from "../services/access";
 import { clearInheritanceFor, validateInheritance } from "../services/inheritance";
 import { cancelPendingJoinRequests } from "../services/membership";
 import {
@@ -22,6 +26,7 @@ import {
   uuidSchema,
   type PendingEmailChangeDto,
   type PersonWrite,
+  type Role,
 } from "../types";
 
 /**
@@ -226,12 +231,17 @@ routes.patch("/:id", async (c) => {
       if (existing.app_user_id === caller.appUserId) {
         pendingEmailChange = await requestEmailChange(db, existing.app_user_id, requested);
       } else {
-        const account = await one<{ cognito_sub: string | null; email: string }>(
-          db,
-          "select cognito_sub, email::text as email from app_users where id = $1",
-          [existing.app_user_id]
-        );
+        const account = await one<{
+          cognito_sub: string | null;
+          email: string;
+          role: Role;
+        }>(db, "select cognito_sub, email::text as email, role from app_users where id = $1", [
+          existing.app_user_id,
+        ]);
         if (!account) throw new HTTPException(404, { message: "Account not found" });
+        // Same rule as PUT /admin/users/:id/email: an immediate change to a
+        // super admin's sign-in address is a takeover of that account.
+        assertCanManageAccount(caller, account);
         await assertEmailAvailable(db, requested);
         await applyEmailChange(db, caller, {
           appUserId: existing.app_user_id,

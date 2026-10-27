@@ -76,6 +76,30 @@ export function assertCanEditFamily(
 }
 
 /**
+ * Whether a caller may act on another *account* -- change it, delete it, or
+ * move its sign-in address. An admin may manage anyone in their organization
+ * except a super admin, whose account reaches every organization: letting a
+ * parish admin point its sign-in email at an address they control would hand
+ * them that reach.
+ *
+ * Every handler that acts on an account goes through this one check, so the
+ * paths cannot drift apart. They have before -- the email-change paths once
+ * had no role check while PATCH and DELETE did.
+ *
+ * Organization scope is the caller's job and comes first, so a parish-less
+ * super admin stays a 404 rather than confirming the account exists.
+ */
+export function assertCanManageAccount(
+  caller: Caller,
+  target: { role: Role },
+  action: "change" | "delete" = "change"
+): void {
+  if (target.role === "SUPER_ADMIN" && !caller.isSuperAdmin) {
+    throw new HTTPException(403, { message: `Only a super admin can ${action} a super admin` });
+  }
+}
+
+/**
  * Which roles a caller may hand out. An admin may create admins, prayer
  * request admins and users inside their own organization; only a super admin
  * may mint another super admin, or place someone in a different organization.

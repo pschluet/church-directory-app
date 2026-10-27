@@ -222,6 +222,66 @@ describe.skipIf(!hasDb)("changing a sign-in email", () => {
       expect(body.pendingEmailChange).toBeUndefined();
       expect(await appUserEmail(member.appUserId)).toBe("rescued2@test.example");
     });
+
+    describe("a super admin in the admin's own parish", () => {
+      // A super admin who has adopted a parish passes the org-scope check, so
+      // the role check is all that stands between a parish admin and pointing
+      // that account's sign-in at an address they control.
+      let localSuper: CreatedUser;
+      beforeEach(async () => {
+        localSuper = await createUser(db(), {
+          organizationId: orgId,
+          role: "SUPER_ADMIN",
+          email: "local-super@test.example",
+        });
+      });
+
+      it("cannot have its email changed by an admin through PUT /admin/users/:id/email", async () => {
+        const updateEmail = vi.spyOn(cognito, "updateUserEmail").mockResolvedValue();
+        const notice = vi.spyOn(email, "sendEmailChangedNoticeEmail").mockResolvedValue();
+
+        const { status } = await as(admin).call(
+          "PUT",
+          `/api/admin/users/${localSuper.appUserId}/email`,
+          { email: "attacker@test.example" }
+        );
+        expect(status).toBe(403);
+        expect(updateEmail).not.toHaveBeenCalled();
+        expect(notice).not.toHaveBeenCalled();
+        expect(await appUserEmail(localSuper.appUserId)).toBe(localSuper.email);
+        expect(await personEmail(localSuper.appUserId)).toBe(localSuper.email);
+      });
+
+      it("cannot have its email changed by an admin through PATCH /persons/:id", async () => {
+        const updateEmail = vi.spyOn(cognito, "updateUserEmail").mockResolvedValue();
+
+        const { status } = await as(admin).call("PATCH", `/api/persons/${localSuper.personId}`, {
+          email: "attacker@test.example",
+        });
+        expect(status).toBe(403);
+        expect(updateEmail).not.toHaveBeenCalled();
+        expect(await appUserEmail(localSuper.appUserId)).toBe(localSuper.email);
+        expect(await personEmail(localSuper.appUserId)).toBe(localSuper.email);
+      });
+
+      it("can still have its email changed by another super admin", async () => {
+        vi.spyOn(email, "sendEmailChangedNoticeEmail").mockResolvedValue();
+        vi.spyOn(cognito, "updateUserEmail").mockResolvedValue();
+        const otherSuper = await createUser(db(), {
+          organizationId: orgId,
+          role: "SUPER_ADMIN",
+          email: "other-super@test.example",
+        });
+
+        const { status } = await as(otherSuper).call(
+          "PUT",
+          `/api/admin/users/${localSuper.appUserId}/email`,
+          { email: "rescued-super@test.example" }
+        );
+        expect(status).toBe(200);
+        expect(await appUserEmail(localSuper.appUserId)).toBe("rescued-super@test.example");
+      });
+    });
   });
 
   describe("email inheritance", () => {
