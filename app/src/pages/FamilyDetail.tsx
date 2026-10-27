@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useParams } from "react-router";
+import { useNavigate, useParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import type { FamilyDto, FamilyMemberDto, PersonDto, UpcomingDatesDto } from "@shared";
 import { api } from "../lib/api";
@@ -54,6 +54,7 @@ export function FamilyDetail() {
   const { id } = useParams<{ id: string }>();
   const { me, organizationId, reload: reloadMe } = useMe();
   const queryClient = useQueryClient();
+  const navigate = useNavigate();
   const [addingMember, setAddingMember] = useState(false);
   const [newFirstName, setNewFirstName] = useState("");
   const [newLastName, setNewLastName] = useState("");
@@ -62,6 +63,7 @@ export function FamilyDetail() {
   const [name, setName] = useState("");
   const [removing, setRemoving] = useState<FamilyMemberDto | null>(null);
   const [addingExisting, setAddingExisting] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
   /*
    * Only ever set by a mutation. The read's own failure is `familyQuery.error`,
    * and keeping the two apart is what lets the page below stay on screen when a
@@ -187,6 +189,24 @@ export function FamilyDetail() {
     }
   }
 
+  async function deleteFamily(): Promise<void> {
+    setBusy(true);
+    setActionError(null);
+    try {
+      await api(`/families/${family!.id}`, { method: "DELETE" });
+      void navigate("/families", { viewTransition: true });
+      // Gone for good: drop its cached page and recount the list behind it.
+      queryClient.removeQueries({ queryKey: qk.family(organizationId, family!.id) });
+      await reload();
+      // The caller's own family may be the one that just went.
+      await reloadMe();
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : "Could not delete this family");
+      setConfirmingDelete(false);
+      setBusy(false);
+    }
+  }
+
   async function reorder(personIds: string[]): Promise<void> {
     setPendingOrder(personIds);
     setActionError(null);
@@ -255,6 +275,9 @@ export function FamilyDetail() {
                   }}
                 >
                   Rename family
+                </MenuItem>
+                <MenuItem danger onSelect={() => setConfirmingDelete(true)}>
+                  Delete family
                 </MenuItem>
               </MenuButton>
             )}
@@ -480,6 +503,29 @@ export function FamilyDetail() {
             <>
               {removing.firstName} has no account of their own. Removing them clears any details
               they share with the family — they will have no family until someone adds them back.
+            </>
+          )}
+        </ConfirmDialog>
+      )}
+
+      {confirmingDelete && (
+        <ConfirmDialog
+          title="Delete this family?"
+          confirmLabel="Delete family"
+          busy={busy}
+          onConfirm={() => void deleteFamily()}
+          onClose={() => setConfirmingDelete(false)}
+        >
+          {family.members.length === 0 ? (
+            <>The {family.name} family will be deleted. This cannot be undone.</>
+          ) : (
+            <>
+              The {family.name} family will be deleted. Its{" "}
+              {family.members.length === 1
+                ? "member stays"
+                : `${family.members.length} members stay`}{" "}
+              in the directory but will no longer belong to a family, and any details they share
+              with relatives will be cleared. This cannot be undone.
             </>
           )}
         </ConfirmDialog>

@@ -754,15 +754,75 @@ describe.skipIf(!hasDb)("families and the gated join flow", () => {
       expect(Number(rows[0]!.count)).toBe(0);
     });
 
-    it("refuses to delete a family that still has members", async () => {
-      const { status, body } = await as(admin).call("DELETE", `/api/families/${schlueters}`);
-      expect(status).toBe(409);
-      expect(body.error).toMatch(/members first/i);
+    it("lets an admin delete a family that still has members, keeping the people", async () => {
+      const child = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Anna",
+      });
+
+      expect((await as(admin).call("DELETE", `/api/families/${schlueters}`)).status).toBe(204);
+
+      const families = await db().query("select id from families where id = $1", [schlueters]);
+      expect(families.rows).toEqual([]);
+      const { rows } = await db().query<{
+        id: string;
+        family_id: string | null;
+        family_order: number | null;
+        deleted_at: Date | null;
+      }>("select id, family_id, family_order, deleted_at from persons where id = any($1)", [
+        [member.personId, child],
+      ]);
+      expect(rows).toHaveLength(2);
+      for (const row of rows) {
+        expect(row.family_id).toBeNull();
+        expect(row.family_order).toBeNull();
+        expect(row.deleted_at).toBeNull();
+      }
     });
 
-    it("is not something an ordinary member can do", async () => {
-      const { status } = await as(member).call("DELETE", `/api/families/${schlueters}`);
+    it("lets a member delete their own family", async () => {
+      expect((await as(member).call("DELETE", `/api/families/${schlueters}`)).status).toBe(204);
+
+      const { body } = await as(member).call("GET", "/api/me");
+      expect(body.person.familyId).toBeNull();
+    });
+
+    it("is not something anyone outside the family can do", async () => {
+      const { status } = await as(joiner).call("DELETE", `/api/families/${schlueters}`);
       expect(status).toBe(403);
+
+      const { rows } = await db().query("select id from families where id = $1", [schlueters]);
+      expect(rows).toHaveLength(1);
+    });
+
+    it("clears what the members shared and every request around the family", async () => {
+      const child = await createNonUserPerson(db(), {
+        organizationId: orgId,
+        familyId: schlueters,
+        firstName: "Anna",
+      });
+      await setInheritance(db(), child, { lastName: member.personId! });
+      const popovs = await createFamily(db(), orgId, "Popov");
+      await db().query(
+        `insert into family_join_requests (organization_id, family_id, person_id)
+         values ($1, $2, $3), ($1, $4, $5)`,
+        [orgId, popovs, child, schlueters, joiner.personId]
+      );
+
+      expect((await as(member).call("DELETE", `/api/families/${schlueters}`)).status).toBe(204);
+
+      const inherit = await db().query<{ inherit_last_name_from_person_id: string | null }>(
+        "select inherit_last_name_from_person_id from persons where id = $1",
+        [child]
+      );
+      expect(inherit.rows[0]!.inherit_last_name_from_person_id).toBeNull();
+      const requests = await db().query<{ person_id: string; status: string }>(
+        "select person_id, status from family_join_requests"
+      );
+      // The child's request elsewhere is cancelled; the joiner's request to the
+      // deleted family went with it.
+      expect(requests.rows).toEqual([{ person_id: child, status: "CANCELLED" }]);
     });
 
     it("cancels the removed person's outstanding requests", async () => {
