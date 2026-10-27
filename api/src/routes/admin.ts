@@ -56,7 +56,8 @@ const APP_USER_SELECT = `
          p.last_name
     from app_users u
     left join organizations o on o.id = u.organization_id
-    left join persons p on p.app_user_id = u.id and p.deleted_at is null
+    -- Resolved, so someone sharing a relative's last name is listed with it.
+    left join persons_resolved p on p.app_user_id = u.id and p.deleted_at is null
 `;
 
 function toAppUser(row: AppUserRow): AppUserDto {

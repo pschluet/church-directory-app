@@ -207,6 +207,30 @@ describe.skipIf(!hasDb)("account management", () => {
       const there = await as(superAdmin).call("GET", `/api/admin/users?orgId=${otherOrgId}`);
       expect(emails(there.body)).toEqual(["there@test.example"]);
     });
+
+    it("names someone by the last name they share with a relative", async () => {
+      const familyId = await createFamily(db(), orgId, "Popov");
+      const head = await createUser(db(), {
+        organizationId: orgId,
+        email: "boris@test.example",
+        firstName: "Boris",
+        lastName: "Popov",
+        familyId,
+      });
+      const child = await createUser(db(), {
+        organizationId: orgId,
+        email: "anna@test.example",
+        firstName: "Anna",
+        familyId,
+      });
+      // Stored the way the directory stores someone sharing a last name: none.
+      await db().query("update persons set last_name = null where id = $1", [child.personId]);
+      await setInheritance(db(), child.personId!, { lastName: head.personId! });
+
+      const { body } = await as(admin).call("GET", `/api/admin/users?orgId=${orgId}`);
+      const anna = body.users.find((u: any) => u.email === "anna@test.example");
+      expect(anna.personName).toBe("Anna Popov");
+    });
   });
 
   describe("changing an account", () => {
