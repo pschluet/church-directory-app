@@ -65,6 +65,7 @@ import {
   groupPostReportSchema,
   groupPostUpdateSchema,
   reactionEmojiSchema,
+  groupPollVoteSchema,
   groupRsvpSchema,
   groupSettingsSchema,
   groupUpdateSchema,
@@ -1223,6 +1224,19 @@ routes.post("/:id/posts", async (c) => {
       );
     }
 
+    if (payload.kind === "POLL" && payload.poll) {
+      await tx.query(
+        "insert into group_polls (post_id, question, allows_multiple) values ($1, $2, $3)",
+        [created.id, payload.poll.question, payload.poll.allowsMultiple]
+      );
+      await tx.query(
+        `insert into group_poll_options (post_id, label, position)
+         select $1, label, position - 1
+           from unnest($2::text[]) with ordinality as t(label, position)`,
+        [created.id, payload.poll.options]
+      );
+    }
+
     await insertAttachments(tx, created.id, payload.attachments, 0);
 
     if (payload.mentionedAppUserIds.length > 0) {
@@ -1278,6 +1292,8 @@ routes.patch("/:id/posts/:postId", async (c) => {
   if (row.author_person_id !== caller.personId) {
     throw new HTTPException(403, { message: "You can only edit your own posts" });
   }
+  // Changing an option under somebody's vote would change what they voted for.
+  if (row.kind === "POLL") throw new HTTPException(400, { message: "A poll cannot be edited" });
 
   if (payload.mentionedAppUserIds) {
     await assertMentionsAreMembers(db, id, payload.mentionedAppUserIds);
@@ -1579,6 +1595,57 @@ routes.put("/:id/posts/:postId/rsvp", async (c) => {
 });
 
 /**
+ * Casting, changing or taking back a vote. The body is the caller's whole
+ * ballot, which replaces whatever they had in one transaction -- that is what
+ * holds a single-choice poll to one vote each (see V31__group_polls.sql).
+ * Gated like a reaction: anyone who can post or reply may vote, which rules out
+ * an archived group and a parish admin looking into a group they are not in.
+ */
+routes.put("/:id/posts/:postId/vote", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const postId = uuidSchema.parse(c.req.param("postId"));
+  const payload = groupPollVoteSchema.parse(await c.req.json());
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroupContent(access);
+  assertCanReact(access);
+
+  const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  if (row?.kind !== "POLL") throw new HTTPException(404, { message: "Poll not found" });
+  if (row.deleted_at) throw new HTTPException(409, { message: "That poll was deleted" });
+
+  const optionIds = [...new Set(payload.optionIds)];
+  const onPoll = new Set(row.poll_options.map((option) => option.id));
+  if (!optionIds.every((optionId) => onPoll.has(optionId))) {
+    throw new HTTPException(400, { message: "That option is not on this poll" });
+  }
+  if (optionIds.length > 1 && !row.poll_allows_multiple) {
+    throw new HTTPException(400, { message: "This poll takes only one choice" });
+  }
+
+  await db.transaction(async (tx) => {
+    await tx.query("delete from group_poll_votes where post_id = $1 and app_user_id = $2", [
+      postId,
+      caller.appUserId,
+    ]);
+    if (optionIds.length > 0) {
+      await tx.query(
+        `insert into group_poll_votes (post_id, option_id, app_user_id)
+         select $1, o, $3 from unnest($2::uuid[]) as o`,
+        [postId, optionIds, caller.appUserId]
+      );
+    }
+  });
+
+  const updated = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  return c.json(toGroupPostDto(updated!, access, caller.personId));
+});
+
+/**
  * The full RSVP roster, names and guest counts included -- what the post's
  * own `rsvpCounts` can't say, since that's a headcount only. Gated exactly
  * like the RSVP write above: same group content access, same "is this
@@ -1762,6 +1829,8 @@ routes.post("/:id/posts/:postId/report", async (c) => {
   let excerpt: string;
   if (row.kind === "EVENT") {
     excerpt = `[Event] ${row.event_title ?? ""}`;
+  } else if (row.kind === "POLL") {
+    excerpt = `[Poll] ${row.poll_question ?? ""}`.slice(0, 280);
   } else if (row.body) {
     excerpt = row.body.slice(0, 280);
   } else {

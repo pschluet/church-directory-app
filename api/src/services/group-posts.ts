@@ -17,7 +17,9 @@ import {
  * attachments and mentions as JSON, the same way `PRAYER_REQUEST_SELECT`
  * aggregates its images, so a list of N posts costs one query rather than N+1.
  * RSVP counts and the caller's own RSVP are scalar subqueries for the same
- * reason -- cheap, and only ever relevant for an EVENT-kind post.
+ * reason -- cheap, and only ever relevant for an EVENT-kind post. A poll's
+ * options come back as one JSON array with each option's voters inside it, so
+ * results need no second query either.
  *
  * `$1` is always the caller's own `app_user_id`, bound first in every query
  * that uses this SELECT, so "my RSVP" can be resolved without a second round
@@ -47,6 +49,41 @@ export const GROUP_POST_SELECT = `
          ge.location as event_location,
          ge.share_token,
          ge.public_rsvp_enabled,
+         gpl.question as poll_question,
+         gpl.allows_multiple as poll_allows_multiple,
+         (
+           select coalesce(
+                    json_agg(
+                      json_build_object(
+                        'id', o.id,
+                        'label', o.label,
+                        'voters', (
+                          select coalesce(
+                                   json_agg(
+                                     json_build_object(
+                                       'appUserId', v.app_user_id,
+                                       'personId', vp.id,
+                                       'firstName', vp.first_name,
+                                       'lastName', vp.last_name
+                                     )
+                                     order by v.created_at
+                                   ),
+                                   '[]'::json
+                                 )
+                            from group_poll_votes v
+                            join persons_resolved vp on vp.app_user_id = v.app_user_id
+                           where v.option_id = o.id
+                        )
+                      )
+                      order by o.position
+                    ),
+                    '[]'::json
+                  )
+             from group_poll_options o
+            where o.post_id = p.id
+         ) as poll_options,
+         (select count(distinct v.app_user_id)::int
+            from group_poll_votes v where v.post_id = p.id) as poll_voter_count,
          (select count(*)::int from group_posts r where r.parent_post_id = p.id) as reply_count,
          (select max(r.created_at) from group_posts r where r.parent_post_id = p.id) as last_reply_at,
          (
@@ -101,6 +138,7 @@ export const GROUP_POST_SELECT = `
     from group_posts p
     join persons_resolved a on a.id = p.author_person_id
     left join group_events ge on ge.post_id = p.id
+    left join group_polls gpl on gpl.post_id = p.id
 `;
 
 interface AttachmentRow {
@@ -112,6 +150,12 @@ interface AttachmentRow {
   photoKey: string;
   width: number | null;
   height: number | null;
+}
+
+interface PollOptionRow {
+  id: string;
+  label: string;
+  voters: MentionRow[];
 }
 
 interface MentionRow {
@@ -144,6 +188,10 @@ export interface GroupPostRow {
   event_location: string | null;
   share_token: string | null;
   public_rsvp_enabled: boolean | null;
+  poll_question: string | null;
+  poll_allows_multiple: boolean | null;
+  poll_options: PollOptionRow[];
+  poll_voter_count: number;
   reply_count: number;
   last_reply_at: Date | string | null;
   attachments: AttachmentRow[];
@@ -242,9 +290,29 @@ export function toGroupPostDto(
             publicRsvpEnabled: row.public_rsvp_enabled === true,
           }
         : null,
+    // A deleted poll is gone entirely, as a deleted message's text is.
+    poll:
+      row.kind === "POLL" && row.poll_question !== null && !isDeleted
+        ? {
+            question: row.poll_question,
+            allowsMultiple: row.poll_allows_multiple === true,
+            voterCount: row.poll_voter_count,
+            options: row.poll_options.map((option) => ({
+              id: option.id,
+              label: option.label,
+              voteCount: option.voters.length,
+              votedByMe: option.voters.some((v) => v.personId === callerPersonId),
+              voters: option.voters.map((v) => ({
+                personId: v.personId,
+                name: fullName({ firstName: v.firstName, lastName: v.lastName }),
+              })),
+            })),
+          }
+        : null,
     replyCount: row.reply_count,
     lastReplyAt: row.last_reply_at ? new Date(row.last_reply_at).toISOString() : null,
-    canEdit: !isDeleted && isMine,
+    // A poll is never edited: changing an option would change what people voted for.
+    canEdit: !isDeleted && isMine && row.kind !== "POLL",
     canDelete: !isDeleted && (isMine || access.canModerate),
     canReport: !isDeleted && !isMine && access.canReadContent,
     canRestore: isDeleted && row.kind === "EVENT" && isMine && row.deleted_by_self === true,

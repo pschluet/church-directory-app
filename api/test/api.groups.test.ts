@@ -566,19 +566,21 @@ describe.skipIf(!hasDb)("groups", () => {
         expect(edit.body.attachments).toHaveLength(1);
       });
 
-      it("still never stores text on an event", async () => {
+      it("still never stores text on an event or a poll", async () => {
         const { rows } = await db().query(
-          "select conname from pg_constraint where conname = 'group_posts_event_has_no_body'"
+          "select conname from pg_constraint where conname = 'group_posts_only_message_has_body'"
         );
         expect(rows).toHaveLength(1);
         const groupId = await createGroup(creator, "PUBLIC");
-        await expect(
-          db().query(
-            `insert into group_posts (group_id, author_person_id, kind, body)
-             values ($1, $2, 'EVENT', 'text')`,
-            [groupId, creator.personId]
-          )
-        ).rejects.toThrow(/group_posts_event_has_no_body/);
+        for (const kind of ["EVENT", "POLL"]) {
+          await expect(
+            db().query(
+              `insert into group_posts (group_id, author_person_id, kind, body)
+               values ($1, $2, $3, 'text')`,
+              [groupId, creator.personId, kind]
+            )
+          ).rejects.toThrow(/group_posts_only_message_has_body/);
+        }
       });
     });
 
@@ -1938,6 +1940,180 @@ describe.skipIf(!hasDb)("groups", () => {
       await as(member).call("PUT", path(groupId, post.body.id, FIRE));
       await db().query("delete from groups where id = $1", [groupId]);
       expect(await count()).toBe(0);
+    });
+  });
+
+  describe("polls", () => {
+    interface PollOption {
+      id: string;
+      label: string;
+      voteCount: number;
+      votedByMe: boolean;
+      voters: { personId: string; name: string }[];
+    }
+
+    async function setup(
+      allowsMultiple = false
+    ): Promise<{ groupId: string; postId: string; options: PollOption[] }> {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const res = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "POLL",
+        poll: {
+          question: "Where shall we eat?",
+          options: ["Pizza", "Tacos", "Sushi"],
+          allowsMultiple,
+        },
+      });
+      expect(res.status).toBe(201);
+      return { groupId, postId: res.body.id, options: res.body.poll.options };
+    }
+    const vote = (u: CreatedUser, groupId: string, postId: string, optionIds: string[]) =>
+      as(u).call("PUT", `/api/groups/${groupId}/posts/${postId}/vote`, { optionIds });
+
+    it("creates a poll with its options in order and no votes", async () => {
+      const { groupId, postId } = await setup();
+      const feed = await as(member).call("GET", `/api/groups/${groupId}/posts`);
+      const post = feed.body.posts.find((p: { id: string }) => p.id === postId);
+      expect(post.kind).toBe("POLL");
+      expect(post.body).toBeNull();
+      expect(post.canEdit).toBe(false);
+      expect(post.poll).toMatchObject({
+        question: "Where shall we eat?",
+        allowsMultiple: false,
+        voterCount: 0,
+      });
+      expect(post.poll.options.map((o: PollOption) => [o.label, o.voteCount, o.votedByMe])).toEqual(
+        [
+          ["Pizza", 0, false],
+          ["Tacos", 0, false],
+          ["Sushi", 0, false],
+        ]
+      );
+    });
+
+    it("refuses a poll with too few options, duplicate options, or as a reply", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      const post = (body: object) => as(creator).call("POST", `/api/groups/${groupId}/posts`, body);
+
+      expect(
+        (await post({ kind: "POLL", poll: { question: "Q?", options: ["Only"] } })).status
+      ).toBe(400);
+      expect(
+        (await post({ kind: "POLL", poll: { question: "Q?", options: ["Yes", "yes"] } })).status
+      ).toBe(400);
+      expect((await post({ kind: "POLL" })).status).toBe(400);
+
+      const root = await post({ body: "Hi" });
+      expect(
+        (
+          await post({
+            kind: "POLL",
+            parentPostId: root.body.id,
+            poll: { question: "Q?", options: ["A", "B"] },
+          })
+        ).status
+      ).toBe(400);
+    });
+
+    it("holds a single-choice poll to one vote, which a new vote replaces", async () => {
+      const { groupId, postId, options } = await setup();
+      const [pizza, tacos] = options;
+
+      const first = await vote(member, groupId, postId, [pizza!.id]);
+      expect(first.status).toBe(200);
+      expect(first.body.poll.options[0]).toMatchObject({ voteCount: 1, votedByMe: true });
+      expect(first.body.poll.options[0].voters).toEqual([
+        { personId: member.personId, name: "Mo Member" },
+      ]);
+
+      const second = await vote(member, groupId, postId, [tacos!.id]);
+      expect(second.body.poll.options.map((o: PollOption) => o.voteCount)).toEqual([0, 1, 0]);
+      expect(second.body.poll.voterCount).toBe(1);
+
+      expect((await vote(member, groupId, postId, [pizza!.id, tacos!.id])).status).toBe(400);
+    });
+
+    it("counts several choices on a multiple-choice poll, and people once", async () => {
+      const { groupId, postId, options } = await setup(true);
+      const [pizza, tacos, sushi] = options;
+
+      await vote(member, groupId, postId, [pizza!.id, sushi!.id]);
+      const res = await vote(creator, groupId, postId, [pizza!.id]);
+      expect(res.body.poll.options.map((o: PollOption) => [o.voteCount, o.votedByMe])).toEqual([
+        [2, true],
+        [0, false],
+        [1, false],
+      ]);
+      expect(res.body.poll.voterCount).toBe(2);
+      void tacos;
+    });
+
+    it("takes a vote back with an empty ballot", async () => {
+      const { groupId, postId, options } = await setup();
+      await vote(member, groupId, postId, [options[0]!.id]);
+      const res = await vote(member, groupId, postId, []);
+      expect(res.status).toBe(200);
+      expect(res.body.poll.voterCount).toBe(0);
+      expect(res.body.poll.options[0].votedByMe).toBe(false);
+    });
+
+    it("refuses an option from another poll, a deleted poll, and a non-poll", async () => {
+      const { groupId, postId } = await setup();
+      const other = await setup();
+      expect((await vote(member, groupId, postId, [other.options[0]!.id])).status).toBe(400);
+
+      const message = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hi",
+      });
+      expect((await vote(member, groupId, message.body.id, [])).status).toBe(404);
+
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${postId}`);
+      expect((await vote(member, groupId, postId, [])).status).toBe(409);
+      const feed = await as(member).call("GET", `/api/groups/${groupId}/posts`);
+      expect(feed.body.posts.find((p: { id: string }) => p.id === postId).poll).toBeNull();
+    });
+
+    it("lets only those who can take part vote", async () => {
+      const { groupId, postId, options } = await setup();
+      // Not a member of the public group: may read it, not vote in it.
+      expect((await vote(outsider, groupId, postId, [options[0]!.id])).status).toBe(403);
+      await as(creator).call("POST", `/api/groups/${groupId}/archive`);
+      expect((await vote(member, groupId, postId, [options[0]!.id])).status).toBe(403);
+    });
+
+    it("cannot be edited", async () => {
+      const { groupId, postId } = await setup();
+      const res = await as(creator).call("PATCH", `/api/groups/${groupId}/posts/${postId}`, {
+        body: "Changed",
+      });
+      expect(res.status).toBe(400);
+    });
+
+    it("moves the live stamp when someone votes, so open pages refresh", async () => {
+      const { groupId, postId, options } = await setup();
+      const stamp = async () =>
+        (await as(creator).call("GET", `/api/groups/${groupId}/live`)).body.activityAt as string;
+      const before = await stamp();
+      await vote(member, groupId, postId, [options[1]!.id]);
+      expect(await stamp()).not.toBe(before);
+    });
+
+    it("quotes the question when a poll is reported", async () => {
+      const { groupId, postId } = await setup();
+      const res = await as(member).call(
+        "POST",
+        `/api/groups/${groupId}/posts/${postId}/report`,
+        {}
+      );
+      expect(res.status).toBe(204);
+      const { rows } = await db().query<{ post_excerpt: string }>(
+        "select post_excerpt from group_post_reports where post_id = $1",
+        [postId]
+      );
+      expect(rows[0]!.post_excerpt).toBe("[Poll] Where shall we eat?");
     });
   });
 });
