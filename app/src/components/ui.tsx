@@ -1159,6 +1159,41 @@ export function MultiSelect<T extends string>({
   );
 }
 
+/**
+ * The part of the window actually on screen, as `top` and `height` for a
+ * `position: fixed` box, kept current as it moves. Null where there is no
+ * `visualViewport` to read (jsdom, old browsers); callers fall back to `inset-0`.
+ *
+ * On iOS `position: fixed` is relative to the layout viewport, which the
+ * keyboard does not shrink. A bottom sheet pinned there has its fields behind
+ * the keyboard, so focusing one makes Safari pan the page to reveal it -- and
+ * carries the fixed sheet up off the screen with it. Sized to the visual
+ * viewport instead, the sheet sits right above the keyboard with the field
+ * already in view, and there is nothing to pan.
+ */
+function useVisualViewportBox(): { top: number; height: number } | null {
+  const read = () => {
+    const viewport = window.visualViewport;
+    return viewport ? { top: viewport.offsetTop, height: viewport.height } : null;
+  };
+  const [box, setBox] = useState(read);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const update = () => setBox(read());
+    update();
+    viewport.addEventListener("resize", update);
+    viewport.addEventListener("scroll", update);
+    return () => {
+      viewport.removeEventListener("resize", update);
+      viewport.removeEventListener("scroll", update);
+    };
+  }, []);
+
+  return box;
+}
+
 export function Modal({
   title,
   onClose,
@@ -1186,6 +1221,8 @@ export function Modal({
   noSelect?: boolean;
 }) {
   useDismissable(dismissable ? onClose : () => {});
+  // Over what is on screen, not the layout viewport -- see useVisualViewportBox.
+  const onScreen = useVisualViewportBox();
 
   /*
    * Portalled to the body, like PhotoLightbox, rather than rendered where it
@@ -1201,9 +1238,10 @@ export function Modal({
    */
   return createPortal(
     <div
-      className={`fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 md:items-center md:p-6 ${
-        noSelect ? "select-none [-webkit-touch-callout:none]" : ""
-      }`}
+      className={`fixed inset-x-0 z-50 flex items-end justify-center bg-ink/40 p-0 md:items-center md:p-6 ${
+        onScreen ? "" : "inset-y-0"
+      } ${noSelect ? "select-none [-webkit-touch-callout:none]" : ""}`}
+      style={onScreen ? { top: onScreen.top, height: onScreen.height } : undefined}
       role="dialog"
       aria-modal="true"
       aria-label={title}
@@ -1211,9 +1249,10 @@ export function Modal({
         if (dismissable && event.target === event.currentTarget) onClose();
       }}
     >
-      {/* Full-height sheet on a phone, centred dialog from md up. */}
+      {/* Full-height sheet on a phone, centred dialog from md up. A share of the
+          overlay, not of `vh`, which on iOS includes the part under the keyboard. */}
       <div
-        className={`max-h-[92vh] w-full overflow-y-auto rounded-t-xl bg-surface p-5 shadow-xl md:rounded-xl md:p-6 ${
+        className={`max-h-[92%] w-full overflow-y-auto rounded-t-xl bg-surface p-5 shadow-xl md:rounded-xl md:p-6 ${
           wide ? "md:max-w-4xl" : "md:max-w-2xl"
         }`}
       >
