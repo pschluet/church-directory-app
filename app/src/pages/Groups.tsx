@@ -185,13 +185,13 @@ export function Groups() {
           {pinned.length > 0 && (
             <section className="mb-8">
               <h2 className="mb-3 font-bold text-ink">Starred</h2>
-              <GroupGrid groups={pinned} terms={terms} onTogglePin={pinMutation.mutate} />
+              <GroupList groups={pinned} terms={terms} onTogglePin={pinMutation.mutate} />
             </section>
           )}
           {mine.length > 0 && (
             <section className="mb-8">
               <h2 className="mb-3 font-bold text-ink">Yours</h2>
-              <GroupGrid groups={mine} terms={terms} onTogglePin={pinMutation.mutate} />
+              <GroupList groups={mine} terms={terms} onTogglePin={pinMutation.mutate} />
             </section>
           )}
           {others.length > 0 && (
@@ -199,7 +199,7 @@ export function Groups() {
               {(pinned.length > 0 || mine.length > 0) && (
                 <h2 className="mb-3 font-bold text-ink">More groups</h2>
               )}
-              <GroupGrid groups={others} terms={terms} onTogglePin={pinMutation.mutate} />
+              <GroupList groups={others} terms={terms} onTogglePin={pinMutation.mutate} />
             </section>
           )}
         </>
@@ -220,16 +220,11 @@ export function Groups() {
 }
 
 /*
- * A plain grid, not CSS multi-column: columns-N + break-inside-avoid balances
- * column height, and at some widths (observed at ~927px with a photo card in
- * the mix) the balance estimate comes in shorter than one unbreakable card,
- * which then renders past where its column box ends instead of the container
- * growing to contain it. Grid's row sizing has no balancing step -- a row is
- * exactly as tall as its tallest cell, and the container always grows to fit
- * every row -- which trades the masonry technique's tighter packing of
- * photo-less cards for not overflowing at all.
+ * One line per group, no card around it: the page is for finding a group, so
+ * it fits as many on screen as it can. A hairline between rows keeps them
+ * readable without boxing each one in.
  */
-function GroupGrid({
+function GroupList({
   groups,
   terms,
   onTogglePin,
@@ -239,23 +234,51 @@ function GroupGrid({
   onTogglePin: (args: { groupId: string; pinned: boolean }) => void;
 }) {
   return (
-    <ul className="grid grid-cols-1 items-start gap-4 sm:grid-cols-2 lg:grid-cols-3">
+    <ul className="divide-y divide-line border-y border-line">
       {groups.map((group) => (
         <li key={group.id}>
-          <GroupCard group={group} terms={terms} onTogglePin={onTogglePin} />
+          <GroupRow group={group} terms={terms} onTogglePin={onTogglePin} />
         </li>
       ))}
     </ul>
   );
 }
 
-const VISIBILITY_TONE: Record<GroupVisibility, "neutral" | "accent" | "primary"> = {
-  PUBLIC: "neutral",
-  PRIVATE: "accent",
-  SECRET: "primary",
+/** Gray open padlock, plain closed padlock, red closed padlock. */
+const VISIBILITY_ICON_CLASS: Record<GroupVisibility, string> = {
+  PUBLIC: "text-ink-muted",
+  PRIVATE: "text-ink",
+  SECRET: "text-primary",
 };
 
-function GroupCard({
+function VisibilityIcon({ visibility }: { visibility: GroupVisibility }) {
+  const label = `${groupVisibilityLabel(visibility)} group`;
+  return (
+    <span title={label} className={`shrink-0 ${VISIBILITY_ICON_CLASS[visibility]}`}>
+      <svg
+        aria-hidden="true"
+        viewBox="0 0 20 20"
+        className="h-4 w-4 fill-none stroke-current"
+        strokeWidth={1.8}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      >
+        <rect x="4" y="9" width="12" height="9" rx="1.5" className="fill-current" />
+        {/* The shackle: closed drops back into the body, open swings clear of it. */}
+        <path
+          d={
+            visibility === "PUBLIC"
+              ? "M6.5 9V6a3.5 3.5 0 0 1 6.8-1.2"
+              : "M6.5 9V6a3.5 3.5 0 0 1 7 0v3"
+          }
+        />
+      </svg>
+      <span className="sr-only">{label}</span>
+    </span>
+  );
+}
+
+function GroupRow({
   group,
   terms,
   onTogglePin,
@@ -264,75 +287,64 @@ function GroupCard({
   terms: readonly string[];
   onTogglePin: (args: { groupId: string; pinned: boolean }) => void;
 }) {
-  const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  const image = group.cardUrl ?? group.thumbUrl;
-  const photo = image && failedUrl !== image ? image : null;
-
+  const unread = group.unreadCount > 0;
   return (
     <Link
       to={`/groups/${group.id}`}
-      className="group relative flex flex-col overflow-hidden rounded-card-photo border border-line bg-surface shadow-sm transition hover:border-accent hover:shadow-md"
+      className="group flex min-h-11 items-center gap-3 px-1 py-1.5 transition hover:bg-surface-muted"
     >
+      <VisibilityIcon visibility={group.visibility} />
+
+      {/* Truncated rather than wrapped, so a long name never takes a second line.
+          Bold is the only unread marker, like an inbox; the sr-only text says it aloud. */}
+      <h3
+        className={`min-w-0 flex-1 truncate text-ink transition group-hover:text-accent ${
+          unread ? "font-bold" : "font-normal"
+        }`}
+      >
+        <Highlight text={group.title} ranges={highlightRanges(group.title, terms)} />
+        {unread && <span className="sr-only">, unread messages</span>}
+      </h3>
+
+      {group.pendingJoinRequestId && (
+        <span title="Waiting for approval" className="shrink-0">
+          <Badge tone="accent">
+            <span aria-hidden="true">Pending</span>
+            <span className="sr-only">Waiting for approval</span>
+          </Badge>
+        </span>
+      )}
+
+      <span className="flex shrink-0 items-center gap-1 text-sm tabular-nums text-ink-muted">
+        <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+          <circle cx="7.5" cy="6.5" r="3" />
+          <path d="M1.5 16.5c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5v.5h-12v-.5Z" />
+          <circle cx="14" cy="7" r="2.4" />
+          <path d="M14.5 17h4v-.6c0-2.7-2-4.6-4.6-4.6-.7 0-1.3.1-1.9.4 1.5 1.1 2.5 2.8 2.5 4.8Z" />
+        </svg>
+        {group.memberCount}
+        <span className="sr-only">{group.memberCount === 1 ? "member" : "members"}</span>
+      </span>
+
       <button
         type="button"
         aria-label={group.pinned ? `Unstar ${group.title}` : `Star ${group.title}`}
         aria-pressed={group.pinned}
         onClick={(event) => {
-          // The card underneath is one big link -- without these this would
+          // The row underneath is one big link -- without these this would
           // navigate instead of toggling the pin.
           event.preventDefault();
           event.stopPropagation();
           onTogglePin({ groupId: group.id, pinned: group.pinned });
         }}
-        className={`tap-target absolute right-2 top-2 z-10 flex h-8 w-8 items-center justify-center rounded-full border transition ${
-          group.pinned
-            ? "border-accent bg-accent text-white"
-            : "border-line bg-surface/90 text-ink-muted hover:text-accent"
+        className={`tap-target -my-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition ${
+          group.pinned ? "text-accent" : "text-line hover:text-accent"
         }`}
       >
         <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
           <path d="M10 1.8l2.4 5.1 5.6.7-4.1 3.9 1 5.5L10 14.2 5.1 17l1-5.5L2 7.6l5.6-.7L10 1.8Z" />
         </svg>
       </button>
-
-      {photo && (
-        <div className="aspect-card-photo overflow-hidden border-b border-line bg-surface-muted">
-          <img
-            src={photo}
-            alt=""
-            loading="lazy"
-            decoding="async"
-            onError={() => setFailedUrl(photo)}
-            className="h-full w-full object-cover transition duration-300 group-hover:scale-[1.03]"
-          />
-        </div>
-      )}
-
-      <div className="flex flex-1 flex-col gap-2 p-4">
-        {/* With no photo the star button sits over the top-right of this row, so
-            the row stops short of it and a long name wraps instead of running under. */}
-        <div className={`flex items-start justify-between gap-2 ${photo ? "" : "pr-8"}`}>
-          <h3 className="min-w-0 break-words text-lg font-bold leading-snug text-ink transition group-hover:text-accent">
-            <Highlight text={group.title} ranges={highlightRanges(group.title, terms)} />
-          </h3>
-          {group.unreadCount > 0 && <Badge tone="primary">{group.unreadCount} new</Badge>}
-        </div>
-
-        {group.description && (
-          <p className="line-clamp-2 break-words text-sm text-ink-muted">{group.description}</p>
-        )}
-
-        <div className="mt-auto flex flex-wrap items-center gap-2 pt-1">
-          <Badge tone={VISIBILITY_TONE[group.visibility]}>
-            {groupVisibilityLabel(group.visibility)}
-          </Badge>
-          <span className="text-sm text-ink-muted">
-            {group.memberCount} {group.memberCount === 1 ? "member" : "members"}
-          </span>
-          {group.myRole === "ADMIN" && <Badge tone="accent">Admin</Badge>}
-          {group.pendingJoinRequestId && <Badge tone="accent">Waiting for approval</Badge>}
-        </div>
-      </div>
     </Link>
   );
 }

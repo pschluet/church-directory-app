@@ -62,7 +62,6 @@ import { useFillViewport } from "../components/useFillViewport";
 import { useInfiniteScroll } from "../components/useInfiniteScroll";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import { PersonPicker, type PickedPerson } from "../components/PersonPicker";
-import { usePhotoPicker } from "../components/usePhotoPicker";
 import { useGroupAttachmentPicker } from "../components/useGroupAttachmentPicker";
 import {
   AddReactionButton,
@@ -676,69 +675,6 @@ function GroupDescription({ text }: { text: string }) {
         >
           {expanded ? "Show less" : "Show more"}
         </button>
-      )}
-    </div>
-  );
-}
-
-/**
- * The group's cover photo, as the admin's preview in group settings.
- *
- * It is deliberately not shown on the group's own page any more: the photo was
- * framed for the card on the groups page, which is the one place it is for, and
- * on the conversation page it only pushed the messages down (and, with the
- * messages in their own scroll area, off the bottom of a short window). Shown
- * whole rather than as `Avatar` -- the same reasoning FamilyPhoto gives: a
- * group photo is a group, and a circle crops most of one out.
- */
-function GroupPhoto({
-  thumbUrl,
-  fullUrl,
-  width,
-  height,
-  title,
-  className = "",
-}: {
-  className?: string;
-  thumbUrl: string;
-  fullUrl: string | null;
-  width: number | null;
-  height: number | null;
-  title: string;
-}) {
-  const [zoomed, setZoomed] = useState(false);
-  const [failedUrl, setFailedUrl] = useState<string | null>(null);
-  if (failedUrl === thumbUrl) return null;
-
-  const image = (
-    <img
-      src={thumbUrl}
-      alt={title}
-      width={width ?? 4}
-      height={height ?? 3}
-      loading="lazy"
-      decoding="async"
-      onError={() => setFailedUrl(thumbUrl)}
-      className="h-auto w-full rounded-lg border border-line bg-surface-muted object-contain"
-    />
-  );
-
-  return (
-    <div className={`max-w-48 ${className}`}>
-      {fullUrl ? (
-        <button
-          type="button"
-          onClick={() => setZoomed(true)}
-          aria-label={`Show the ${title} photo full screen`}
-          className="block w-full rounded-lg transition hover:opacity-90 focus:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-        >
-          {image}
-        </button>
-      ) : (
-        image
-      )}
-      {zoomed && fullUrl && (
-        <PhotoLightbox src={fullUrl} alt={title} onClose={() => setZoomed(false)} />
       )}
     </div>
   );
@@ -4553,27 +4489,6 @@ function AdminSettingsPanel({
     },
   });
 
-  async function attachPhoto(
-    photoKey: string | null,
-    width?: number,
-    height?: number,
-    hasCard?: boolean
-  ): Promise<void> {
-    await api(`/groups/${groupId}/photo`, {
-      method: "PUT",
-      body: photoKey
-        ? { photoKey, photoWidth: width, photoHeight: height, hasCard }
-        : { photoKey: null },
-    });
-    await onChanged();
-  }
-
-  const photoPicker = usePhotoPicker({
-    owner: { groupId },
-    onUploaded: ({ photoKey, width, height, hasCard }) =>
-      attachPhoto(photoKey, width, height, hasCard),
-  });
-
   return (
     <div className="space-y-4 border-t border-line pt-4">
       <p className="font-bold text-ink">Group settings</p>
@@ -4613,31 +4528,6 @@ function AdminSettingsPanel({
           {saveDetails.isPending ? "Saving…" : "Save details"}
         </Button>
       </form>
-
-      {group.thumbUrl && (
-        <GroupPhoto
-          thumbUrl={group.thumbUrl}
-          fullUrl={group.fullUrl}
-          width={group.photoWidth}
-          height={group.photoHeight}
-          title={group.title}
-        />
-      )}
-
-      <div className="flex flex-wrap items-center gap-2">
-        <Button variant="secondary" onClick={photoPicker.open} disabled={photoPicker.busy}>
-          {photoPicker.busy ? "Uploading…" : group.thumbUrl ? "Change photo" : "Add a photo"}
-        </Button>
-        {group.thumbUrl && (
-          <Button variant="ghost" onClick={() => void attachPhoto(null)}>
-            Remove photo
-          </Button>
-        )}
-      </div>
-      {photoPicker.error && (
-        <p className="mt-1 text-sm font-bold text-primary">{photoPicker.error}</p>
-      )}
-      {photoPicker.elements}
 
       <ReportQueue groupId={groupId} onChanged={onChanged} />
 

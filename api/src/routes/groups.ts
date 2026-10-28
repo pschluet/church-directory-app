@@ -7,10 +7,8 @@ import { audit } from "../audit";
 import {
   deleteGroupAttachmentFile,
   deletePhoto,
-  familyCardUrl,
   groupAttachmentFileUrl,
   groupAttachmentPrefix,
-  photoChange,
   photoUrls,
 } from "../photos";
 import { parseLimit } from "./paging";
@@ -73,7 +71,6 @@ import {
   GROUP_POST_MAX_ATTACHMENTS,
   REACTION_MAX_EMOJI,
   fullName,
-  photoAttachSchema,
   uuidSchema,
   type GroupDto,
   type GroupFileDto,
@@ -117,14 +114,10 @@ function toGroupSummary(
   },
   access: GroupAccess
 ): GroupSummaryDto {
-  const { thumbUrl, fullUrl } = photoUrls(row.photo_key);
   return {
     id: row.id,
     title: row.title,
     description: row.description,
-    thumbUrl,
-    fullUrl,
-    cardUrl: familyCardUrl(row.photo_key, row.photo_has_card),
     visibility: row.visibility,
     memberCount: Number(row.member_count),
     archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : null,
@@ -324,14 +317,10 @@ routes.get("/:id", async (c) => {
       )
     : null;
 
-  const { thumbUrl, fullUrl } = photoUrls(group.photo_key);
   const body: GroupDto = {
     id: group.id,
     title: group.title,
     description: group.description,
-    thumbUrl,
-    fullUrl,
-    cardUrl: familyCardUrl(group.photo_key, group.photo_has_card),
     visibility: group.visibility,
     memberCount: Number(memberCount?.count ?? 0),
     archivedAt: group.archived_at ? new Date(group.archived_at).toISOString() : null,
@@ -340,8 +329,6 @@ routes.get("/:id", async (c) => {
     pendingJoinRequestId: pendingJoinRequestId?.id ?? null,
     pinned: pin !== null,
     organizationId: group.organization_id,
-    photoWidth: group.photo_width,
-    photoHeight: group.photo_height,
     postingRestricted: group.posting_restricted,
     invitesRestricted: group.invites_restricted,
     repliesRestricted: group.replies_restricted,
@@ -390,49 +377,6 @@ routes.patch("/:id", async (c) => {
     changes: payload,
   });
   return c.body(null, 204);
-});
-
-routes.put("/:id/photo", async (c) => {
-  const caller = c.get("caller");
-  const db = c.get("db");
-  const organizationId = requireOrganizationId(c);
-  const id = uuidSchema.parse(c.req.param("id"));
-  const { photoKey, photoWidth, photoHeight, hasCard } = photoAttachSchema.parse(
-    await c.req.json()
-  );
-
-  const group = await loadGroupRow(db, id, organizationId);
-  const access = await loadAccess(db, caller, group);
-  assertCanModerate(access);
-
-  if (photoKey && !photoKey.startsWith(`photos/${organizationId}/group/${id}/`)) {
-    throw new HTTPException(400, { message: "That photo does not belong to this group" });
-  }
-
-  // Clearing the photo clears the dimensions and the card flag with it, so
-  // neither can outlive the image it described -- see routes/families.ts's
-  // identical handling.
-  const width = photoKey ? (photoWidth ?? null) : null;
-  const height = photoKey ? (photoHeight ?? null) : null;
-  const card = photoKey ? (hasCard ?? false) : false;
-
-  await db.query(
-    "update groups set photo_key = $2, photo_width = $3, photo_height = $4, photo_has_card = $5 where id = $1",
-    [id, photoKey, width, height, card]
-  );
-
-  const change = photoChange(group.photo_key, photoKey);
-  if (change) {
-    await audit(db, caller, {
-      action: "group.update",
-      entityType: "group",
-      entityId: id,
-      changes: { photo: change },
-    });
-  }
-  if (group.photo_key && group.photo_key !== photoKey) await deletePhoto(group.photo_key);
-
-  return c.json({ ...photoUrls(photoKey), cardUrl: familyCardUrl(photoKey, card) });
 });
 
 routes.post("/:id/visibility", async (c) => {
@@ -531,7 +475,6 @@ routes.delete("/:id", async (c) => {
     changes: { title: group.title },
   });
 
-  if (group.photo_key) await deletePhoto(group.photo_key);
   for (const attachment of attachments) {
     if (attachment.kind === "IMAGE") await deletePhoto(attachment.photo_key);
     else await deleteGroupAttachmentFile(attachment.photo_key);

@@ -3,7 +3,6 @@ import { HTTPException } from "hono/http-exception";
 import { requireOrganizationId, type AppEnv } from "../auth";
 import { one } from "../db";
 import { assertCanEditFamily, assertCanEditPerson } from "../services/access";
-import { groupAccess, loadGroupRow, loadMembership, assertCanModerate } from "../services/groups";
 import { buildPhotoKey, presignGroupAttachmentFile, presignUploads } from "../photos";
 import {
   groupAttachmentUploadSchema,
@@ -62,17 +61,9 @@ routes.post("/photo", async (c) => {
       throw new HTTPException(404, { message: "Family not found" });
     }
     assertCanEditFamily(caller, { id: family.id, organizationId: family.organization_id });
-  } else if (payload.groupId) {
-    const group = await loadGroupRow(db, payload.groupId, organizationId);
-    const membership = await loadMembership(db, group.id, caller.appUserId);
-    assertCanModerate(groupAccess(caller, group, membership));
   }
 
-  const owner = payload.personId
-    ? { personId: payload.personId }
-    : payload.familyId
-      ? { familyId: payload.familyId }
-      : { groupId: payload.groupId! };
+  const owner = payload.personId ? { personId: payload.personId } : { familyId: payload.familyId! };
   const photoKey = buildPhotoKey(organizationId, owner);
   const uploadUrls = await presignUploads(photoKey, payload.contentType, {
     thumb: payload.renditions.thumb.contentLength,

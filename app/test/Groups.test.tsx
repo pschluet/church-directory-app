@@ -24,9 +24,6 @@ function group(overrides: Partial<GroupSummaryDto>): GroupSummaryDto {
     id: "g1",
     title: "Youth Group",
     description: null,
-    thumbUrl: null,
-    fullUrl: null,
-    cardUrl: null,
     visibility: "PUBLIC",
     memberCount: 3,
     archivedAt: null,
@@ -66,31 +63,59 @@ describe("Groups", () => {
     expect(document.querySelector("mark")).toBeNull();
   });
 
-  it("keeps a long name clear of the star when the card has no photo, and not when it has one", async () => {
+  it("shows each group's visibility and member count on one line, without its description", async () => {
     apiMock.mockImplementation((path: string) =>
       path === "/groups"
         ? Promise.resolve({
             groups: [
-              group({ id: "g1", title: "A very long group name without a picture" }),
+              group({ id: "g1", title: "Open", visibility: "PUBLIC", memberCount: 1 }),
               group({
                 id: "g2",
-                title: "A very long group name with a picture",
-                cardUrl: "/card.webp",
+                title: "Closed",
+                visibility: "PRIVATE",
+                memberCount: 12,
+                description: "Not shown here",
               }),
+              group({ id: "g3", title: "Hidden", visibility: "SECRET", memberCount: 4 }),
             ],
           })
         : Promise.resolve({ reports: [] })
     );
     renderWithProviders(<Groups />);
-    const plain = (await screen.findByText("A very long group name without a picture")).closest(
-      "div.flex"
-    );
-    const pictured = screen.getByText("A very long group name with a picture").closest("div.flex");
-    expect(plain?.className).toContain("pr-8");
-    expect(pictured?.className).not.toContain("pr-8");
+    const row = (title: string) => screen.getByText(title).closest("a")!;
+    await screen.findByText("Open");
+    expect(row("Open")).toHaveTextContent("Public group");
+    expect(row("Open")).toHaveTextContent(/1\s*member$/);
+    expect(row("Closed")).toHaveTextContent("Private group");
+    expect(row("Closed")).toHaveTextContent(/12\s*members$/);
+    expect(row("Hidden")).toHaveTextContent("Secret group");
+    expect(row("Hidden").querySelector(".text-primary svg")).not.toBeNull();
+    expect(screen.queryByText("Not shown here")).not.toBeInTheDocument();
   });
 
-  it("toggles a star from the card", async () => {
+  it("bolds a group with unread messages instead of showing unread or admin badges", async () => {
+    apiMock.mockImplementation((path: string) =>
+      path === "/groups"
+        ? Promise.resolve({
+            groups: [
+              group({ id: "g1", title: "Busy", unreadCount: 2, myRole: "ADMIN" }),
+              group({ id: "g2", title: "Quiet", unreadCount: 0 }),
+            ],
+          })
+        : Promise.resolve({ reports: [] })
+    );
+    renderWithProviders(<Groups />);
+    const busy = (await screen.findByText("Busy")).closest("h3")!;
+    const quiet = screen.getByText("Quiet").closest("h3")!;
+    expect(busy).toHaveClass("font-bold");
+    expect(busy).toHaveTextContent("unread messages");
+    expect(quiet).toHaveClass("font-normal");
+    expect(quiet).not.toHaveClass("font-bold");
+    expect(screen.queryByText("2 new")).not.toBeInTheDocument();
+    expect(screen.queryByText("Admin")).not.toBeInTheDocument();
+  });
+
+  it("toggles a star from the row", async () => {
     renderWithProviders(<Groups />);
     const pinned = await screen.findByRole("button", { name: "Unstar Choir" });
     expect(pinned).toHaveAttribute("aria-pressed", "true");

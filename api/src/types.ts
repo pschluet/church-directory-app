@@ -1246,10 +1246,6 @@ export interface GroupSummaryDto {
   id: string;
   title: string;
   description: string | null;
-  thumbUrl: string | null;
-  fullUrl: string | null;
-  /** The groups-page card crop, or null until someone frames one. See FamilySummaryDto.cardUrl. */
-  cardUrl: string | null;
   visibility: GroupVisibility;
   memberCount: number;
   archivedAt: string | null;
@@ -1265,14 +1261,6 @@ export interface GroupSummaryDto {
 
 export interface GroupDto extends GroupSummaryDto {
   organizationId: string;
-  /**
-   * The intrinsic size of the group photo, from its free-form crop -- same
-   * reasoning as FamilyDto.photoWidth/Height: the page needs this to reserve
-   * the box before the image paints. Null when there is no photo, or it
-   * predates this field.
-   */
-  photoWidth: number | null;
-  photoHeight: number | null;
   postingRestricted: boolean;
   invitesRestricted: boolean;
   repliesRestricted: boolean;
@@ -2217,21 +2205,19 @@ export const photoUploadSchema = z
     renditions: z.object({
       thumb: renditionSizeSchema,
       full: renditionSizeSchema,
-      // The families/groups-page card. Family or group only -- a person
+      // The families-page card. Family only -- a person
       // framing their own photo has nothing shaped like a directory card to
       // presign.
       card: renditionSizeSchema.optional(),
     }),
     personId: uuidSchema.optional(),
     familyId: uuidSchema.optional(),
-    /** A group's own cover photo -- free-form crop, thumb/full, and a card. */
-    groupId: uuidSchema.optional(),
   })
-  .refine((v) => [v.personId, v.familyId, v.groupId].filter(Boolean).length === 1, {
-    message: "Provide exactly one of personId, familyId or groupId",
+  .refine((v) => [v.personId, v.familyId].filter(Boolean).length === 1, {
+    message: "Provide exactly one of personId or familyId",
   })
-  .refine((v) => !v.renditions.card || Boolean(v.familyId) || Boolean(v.groupId), {
-    message: "Only a family or group photo can have a card rendition",
+  .refine((v) => !v.renditions.card || Boolean(v.familyId), {
+    message: "Only a family photo can have a card rendition",
     path: ["renditions", "card"],
   });
 export type PhotoUpload = z.infer<typeof photoUploadSchema>;
@@ -2317,8 +2303,8 @@ export interface PhotoUploadDto {
 /**
  * Attaching an already-uploaded photo, or clearing one with a null key.
  *
- * Dimensions are only meaningful for a family or group, whose crop is
- * free-form; the person endpoint ignores them. `hasCard` is family/group only
+ * Dimensions are only meaningful for a family, whose crop is
+ * free-form; the person endpoint ignores them. `hasCard` is family only
  * too, and only meaningful alongside a key -- clearing a photo always clears
  * it.
  */
