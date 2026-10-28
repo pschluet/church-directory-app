@@ -135,3 +135,4 @@ TODO
 - If the group description is long, the description should only show a preview on the group's page with the option to expand so it doesn't take up too much of the messages space.
 - On the group settings page, when you click the 3 dots button next to a group member's name, the modal is hidden. Fix this.
 - The group messages/posts must be realtime. When one user posts a message, it should be immediately visible to everyone (like Slack). The messages page should also indicate when another user (or potentially multiple users) are typing (like Slack).
+- Update the groups page so more groups fit at once: one line per group with no box around it. Show the group type as a padlock (gray unlocked for Public, locked for Private, red locked for Secret) and the member count as a people icon with the number. Do not show the description on this page, and remove group photos entirely.

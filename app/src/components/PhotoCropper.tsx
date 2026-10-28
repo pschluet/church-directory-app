@@ -26,10 +26,9 @@ import { Button, Modal, Spinner } from "./ui";
  *
  * A person crops to a locked square, shown as a circle because that is how the
  * avatar renders -- one step, framing against the shape it will actually take.
- * A family or group crop is two steps: free-form first, for the family's or
- * group's own page, same as it always was; then a second crop shaped like
- * that list's card -- 3:2, rounded top corners, identical box for both lists
- * -- taken from the *whole* original rather than from the first crop, because
+ * A family crop is two steps: free-form first, for the family's own page,
+ * same as it always was; then a second crop shaped like the families list's
+ * card -- 3:2, rounded top corners -- taken from the *whole* original rather than from the first crop, because
  * the card has never been what anyone framed. It opens on the smallest
  * card-shaped rectangle that contains the first crop (`cropAtAspect`), so
  * confirming straight through still shows the subject already chosen.
@@ -49,7 +48,7 @@ export function PhotoCropper({
   onCropped,
 }: {
   file: File;
-  owner: "person" | "family" | "group";
+  owner: "person" | "family";
   onCancel: () => void;
   onCropped: (renditions: Renditions) => Promise<void> | void;
 }) {
@@ -61,9 +60,9 @@ export function PhotoCropper({
   const [error, setError] = useState<string | null>(null);
   const imgRef = useRef<HTMLImageElement>(null);
 
-  /** A family and a group both get a card step; a person has only ever the one. */
-  const hasCardStep = owner === "family" || owner === "group";
-  /** Which step a family/group is on. */
+  /** A family gets a card step; a person has only ever the one. */
+  const hasCardStep = owner === "family";
+  /** Which step a family is on. */
   const [step, setStep] = useState<"main" | "card">("main");
   /** The first crop, in working-copy pixels, kept so Back can restore it. */
   const [mainCrop, setMainCrop] = useState<CropRect>();
@@ -186,13 +185,12 @@ export function PhotoCropper({
         ? "Choose what to show"
         : "Frame the directory card";
 
-  const listName = owner === "group" ? "groups list" : "families list";
   const body =
     owner === "person"
       ? "Drag and resize the circle to frame the face."
       : step === "main"
         ? "Drag a box around what the photo should show. Any shape is fine."
-        : `This is the shape the photo takes in the ${listName}. Pick any part of the original — it does not have to match the last step.`;
+        : "This is the shape the photo takes in the families list. Pick any part of the original — it does not have to match the last step.";
 
   return (
     <Modal wide title={title} onClose={onCancel}>

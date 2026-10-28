@@ -104,9 +104,6 @@ function group(overrides: Partial<GroupDto> = {}): GroupDto {
     id: "g1",
     title: "Youth Group",
     description: null,
-    thumbUrl: "/photo-thumb.webp",
-    fullUrl: "/photo-full.webp",
-    cardUrl: null,
     visibility: "PUBLIC",
     memberCount: 3,
     archivedAt: null,
@@ -115,8 +112,6 @@ function group(overrides: Partial<GroupDto> = {}): GroupDto {
     pendingJoinRequestId: null,
     pinned: false,
     organizationId: "org-1",
-    photoWidth: 400,
-    photoHeight: 300,
     postingRestricted: false,
     invitesRestricted: false,
     repliesRestricted: false,
@@ -282,13 +277,6 @@ describe("GroupDetail", () => {
     pickerOverride.value = null;
     seq = 0;
     resetRecentReactions();
-  });
-
-  it("does not show the group photo on the group's own page", async () => {
-    stub();
-    renderPage();
-    await screen.findByRole("heading", { name: "Youth Group" });
-    expect(document.querySelector('img[src="/photo-thumb.webp"]')).toBeNull();
   });
 
   it("links the author's name to their page", async () => {

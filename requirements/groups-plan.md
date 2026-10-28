@@ -138,7 +138,7 @@ These were not in the original draft and were not worth blocking on. Override an
 
 Match the existing migrations' heavy-comment style: justify every constraint and index.
 
-- `groups` — `id`, `organization_id`, `title`, `description`, `photo_key`, `photo_width/height`,
+- `groups` — `id`, `organization_id`, `title`, `description` (the photo columns were dropped in V32),
   `visibility` (CHECK `PUBLIC|PRIVATE|SECRET`), `posting_restricted`, `invites_restricted`,
   `replies_restricted`, `archived_at`, `created_by_person_id`, timestamps.
 - `group_members` — PK `(group_id, app_user_id)`, `person_id`, `role` (CHECK `ADMIN|MEMBER`),

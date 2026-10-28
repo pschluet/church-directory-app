@@ -66,8 +66,6 @@ export type PhotoOwner =
    * it needs to verify.
    */
   | { prayerRequestAuthorPersonId: string }
-  /** A group's own cover photo -- free-form crop, thumb/full, no card. */
-  | { groupId: string }
   /**
    * A group post attachment, scoped to the *author* for the same reason as a
    * prayer request image above: the post may not exist yet when the files go
@@ -106,9 +104,6 @@ export function buildPhotoKey(organizationId: string, owner: PhotoOwner): string
   if ("familyId" in owner) {
     return `photos/${organizationId}/family/${owner.familyId}/${ulid()}/`;
   }
-  if ("groupId" in owner) {
-    return `photos/${organizationId}/group/${owner.groupId}/${ulid()}/`;
-  }
   if ("groupPostAuthorPersonId" in owner) {
     return `${groupAttachmentPrefix(organizationId, owner.groupPostAuthorPersonId)}${ulid()}/`;
   }
@@ -132,11 +127,9 @@ export function photoVariantKeys(key: string): Record<PhotoRendition, string> {
 }
 
 /**
- * The families/groups-page card rendition's key. Only a family or group photo
- * has one -- a person or attachment key has no `card`, same as a legacy key
- * that predates cropping and is not a prefix at all. Named after the first
- * owner to have one rather than renamed when groups got a second, to avoid
- * rippling the name through routes/families.ts for no behavioral change.
+ * The families-page card rendition's key. Only a family photo has one -- a
+ * person or attachment key has no `card`, same as a legacy key that predates
+ * cropping and is not a prefix at all.
  */
 export function familyCardKey(key: string): string | null {
   if (!key.endsWith("/")) return null;
@@ -166,7 +159,7 @@ export function groupAttachmentFileUrl(key: string): string {
 }
 
 /**
- * The families/groups-page card URL, or null when this photo has no card
+ * The families-page card URL, or null when this photo has no card
  * rendition -- either because `hasCard` is false (nothing has framed one yet)
  * or the key predates cropping.
  */
@@ -319,7 +312,7 @@ export async function deleteGroupAttachmentFile(key: string | null): Promise<voi
 export async function deletePhoto(key: string | null): Promise<void> {
   if (!key || STORAGE === "local") return;
   const keys = photoVariantKeys(key);
-  const hasCardRendition = key.includes("/family/") || key.includes("/group/");
+  const hasCardRendition = key.includes("/family/");
   const all = { ...keys, ...(hasCardRendition ? { card: familyCardKey(key) } : {}) };
   // A legacy key resolves both renditions to the same object; dedupe so the
   // request is not asking S3 to delete it twice.

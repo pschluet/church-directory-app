@@ -33,11 +33,6 @@ export interface GroupRow {
   organization_id: string;
   title: string;
   description: string | null;
-  photo_key: string | null;
-  photo_width: number | null;
-  photo_height: number | null;
-  /** Whether `photo_key` has a third rendition framed for the groups-page card. */
-  photo_has_card: boolean;
   visibility: GroupVisibility;
   posting_restricted: boolean;
   invites_restricted: boolean;
@@ -49,8 +44,7 @@ export interface GroupRow {
 }
 
 export const GROUP_COLUMNS = `
-  g.id, g.organization_id, g.title, g.description, g.photo_key, g.photo_width, g.photo_height,
-  g.photo_has_card, g.visibility, g.posting_restricted, g.invites_restricted,
+  g.id, g.organization_id, g.title, g.description, g.visibility, g.posting_restricted, g.invites_restricted,
   g.replies_restricted, g.archived_at, g.created_by_person_id, g.created_at, g.updated_at
 `;
 
@@ -295,14 +289,6 @@ export async function assertValidReplyParent(
   if (parent.deleted_at !== null) {
     throw new HTTPException(409, { message: "That post has been deleted" });
   }
-}
-
-/** The group photo's thumb/full URLs -- see `familyCardUrl` for the card rendition. */
-export function groupPhotoFields(row: Pick<GroupRow, "photo_key">): {
-  thumbUrl: string | null;
-  fullUrl: string | null;
-} {
-  return photoUrls(row.photo_key);
 }
 
 export interface GroupMemberNameRow {
