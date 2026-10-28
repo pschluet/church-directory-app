@@ -287,6 +287,7 @@ function GroupRow({
   terms: readonly string[];
   onTogglePin: (args: { groupId: string; pinned: boolean }) => void;
 }) {
+  const unread = group.unreadCount > 0;
   return (
     <Link
       to={`/groups/${group.id}`}
@@ -294,13 +295,17 @@ function GroupRow({
     >
       <VisibilityIcon visibility={group.visibility} />
 
-      {/* Truncated rather than wrapped, so a long name never takes a second line. */}
-      <h3 className="min-w-0 flex-1 truncate font-bold text-ink transition group-hover:text-accent">
+      {/* Truncated rather than wrapped, so a long name never takes a second line.
+          Bold is the only unread marker, like an inbox; the sr-only text says it aloud. */}
+      <h3
+        className={`min-w-0 flex-1 truncate text-ink transition group-hover:text-accent ${
+          unread ? "font-bold" : "font-normal"
+        }`}
+      >
         <Highlight text={group.title} ranges={highlightRanges(group.title, terms)} />
+        {unread && <span className="sr-only">, unread messages</span>}
       </h3>
 
-      {group.unreadCount > 0 && <Badge tone="primary">{group.unreadCount} new</Badge>}
-      {group.myRole === "ADMIN" && <Badge tone="accent">Admin</Badge>}
       {group.pendingJoinRequestId && (
         <span title="Waiting for approval" className="shrink-0">
           <Badge tone="accent">

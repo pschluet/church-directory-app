@@ -93,6 +93,28 @@ describe("Groups", () => {
     expect(screen.queryByText("Not shown here")).not.toBeInTheDocument();
   });
 
+  it("bolds a group with unread messages instead of showing unread or admin badges", async () => {
+    apiMock.mockImplementation((path: string) =>
+      path === "/groups"
+        ? Promise.resolve({
+            groups: [
+              group({ id: "g1", title: "Busy", unreadCount: 2, myRole: "ADMIN" }),
+              group({ id: "g2", title: "Quiet", unreadCount: 0 }),
+            ],
+          })
+        : Promise.resolve({ reports: [] })
+    );
+    renderWithProviders(<Groups />);
+    const busy = (await screen.findByText("Busy")).closest("h3")!;
+    const quiet = screen.getByText("Quiet").closest("h3")!;
+    expect(busy).toHaveClass("font-bold");
+    expect(busy).toHaveTextContent("unread messages");
+    expect(quiet).toHaveClass("font-normal");
+    expect(quiet).not.toHaveClass("font-bold");
+    expect(screen.queryByText("2 new")).not.toBeInTheDocument();
+    expect(screen.queryByText("Admin")).not.toBeInTheDocument();
+  });
+
   it("toggles a star from the row", async () => {
     renderWithProviders(<Groups />);
     const pinned = await screen.findByRole("button", { name: "Unstar Choir" });
