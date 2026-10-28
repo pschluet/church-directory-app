@@ -22,8 +22,8 @@ const PHOTO_MAX_EDGE = 512;
 /** Apple's own marker for "no year", which its Contacts reads as a day and month only. */
 const OMIT_YEAR = "1604";
 
-/** RFC 2426 escaping for a text value. */
-function escapeText(value: string): string {
+/** RFC 2426 escaping for a text value -- the same rules as iCalendar (RFC 5545), which `ics.ts` shares. */
+export function escapeText(value: string): string {
   return value
     .replace(/\\/g, "\\\\")
     .replace(/\r?\n/g, "\\n")
@@ -35,7 +35,7 @@ function escapeText(value: string): string {
  * Lines are limited to 75 octets; a longer one continues on the next line after
  * a single space. Counted in UTF-8 bytes, and never split inside a character.
  */
-function fold(line: string): string {
+export function fold(line: string): string {
   const encoder = new TextEncoder();
   if (encoder.encode(line).length <= 75) return line;
   const parts: string[] = [];

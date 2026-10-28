@@ -73,6 +73,7 @@ For a Private group, non-members see the title, description, image, and a member
   - Members can RSVP Yes, No, or Maybe, and optionally note how many guests they're bringing.
   - If an event's date, time, or location changes after people have RSVP'd, their RSVPs are kept and they're notified of the change.
   - The Events tab separates upcoming events from past events.
+  - Anyone who can see an event can add it to their own calendar from the post's menu (the long-press drawer on a phone): it downloads an `.ics` file with the date, times, location and the event's link, which phones and computers offer to add to their calendar.
 - **Polls** are another special post type, started from the message bar's **+** menu like an event:
   - A question (required) and 2 to 10 options, each different from the others.
   - The person starting the poll chooses whether people can pick one option or several.
