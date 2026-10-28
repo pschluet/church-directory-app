@@ -20,7 +20,7 @@ import { resetRecentReactions } from "../src/lib/emoji";
 import { GroupDetail, groupTabPath, tabFromPathname } from "../src/pages/GroupDetail";
 import { EventDetail } from "../src/pages/EventDetail";
 import type { GroupAttachmentPicker } from "../src/components/useGroupAttachmentPicker";
-import { renderWithProviders, chooseOption } from "./utils";
+import { renderWithProviders, chooseOption, stubDownload } from "./utils";
 import { Route, Routes, useLocation, useNavigationType } from "react-router";
 
 /*
@@ -2998,6 +2998,19 @@ describe("GroupDetail", () => {
         expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/e/${TOKEN}`);
       });
 
+      it("offers Add to calendar in the menu, which saves an .ics file", async () => {
+        stubEvent();
+        renderPage();
+        await screen.findByRole("heading", { name: "Parish Picnic" });
+        await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+        const download = stubDownload();
+        await userEvent.click(screen.getByRole("menuitem", { name: "Add to calendar" }));
+        expect(download.clicked()?.download).toBe("Parish Picnic.ics");
+        const blob = download.create.mock.calls[0]?.[0] as Blob;
+        expect(blob.type).toBe("text/calendar;charset=utf-8");
+        vi.unstubAllGlobals();
+      });
+
       it("offers none of them on a cancelled event", async () => {
         stubEvent({
           event: ev(
@@ -3011,6 +3024,7 @@ describe("GroupDetail", () => {
         expect(screen.queryByRole("menuitem", { name: "Copy link" })).toBeNull();
         expect(screen.queryByRole("menuitem", { name: "QR code" })).toBeNull();
         expect(screen.queryByRole("menuitem", { name: "PDF flyer" })).toBeNull();
+        expect(screen.queryByRole("menuitem", { name: "Add to calendar" })).toBeNull();
       });
 
       it("puts them in plain sight on the Events tab", async () => {

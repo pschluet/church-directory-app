@@ -74,6 +74,7 @@ import {
 import { isEmojiOnly } from "../lib/emoji";
 import { eventShareUrl } from "../lib/eventShare";
 import { downloadEventFlyer } from "../lib/eventFlyer";
+import { downloadEventIcs } from "../lib/ics";
 import { EventQrModal } from "../components/EventQrModal";
 import { PollBlock, PollComposerModal } from "../components/GroupPoll";
 import { parseBody, toPlainText, type Inline, type ListBlock } from "../lib/richText";
@@ -1642,9 +1643,10 @@ export function ChatRow({
           state: feedState(pathname, { focusComposer: true }),
         }),
     });
-  // Advertising the event. Not for a cancelled one: there is nothing to invite
+  // Saving and advertising the event. Not for a cancelled one: there is nothing to invite
   // anybody to, and its public page already says it was cancelled.
   if (canShare) {
+    actions.push({ label: "Add to calendar", onSelect: share.addToCalendar });
     actions.push({ label: "Copy link", onSelect: share.copyLink });
     actions.push({ label: "QR code", onSelect: share.openQr });
     actions.push({ label: "PDF flyer", onSelect: share.printFlyer });
@@ -3407,6 +3409,10 @@ export function useEventShare(event: GroupPostDto["event"], cancelled = false) {
       void navigator.clipboard?.writeText(url).then(() => setCopied(true));
     },
     openQr: () => setQrOpen(true),
+    /** Downloads an .ics file, which the phone or computer offers to add to its calendar. */
+    addToCalendar: () => {
+      if (event) downloadEventIcs(event, url);
+    },
     printFlyer: () => {
       if (!event) return;
       setFlyerError(null);
