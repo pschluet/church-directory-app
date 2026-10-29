@@ -84,7 +84,8 @@ describe("Groups", () => {
     renderWithProviders(<Groups />);
     const row = (title: string) => screen.getByText(title).closest("a")!;
     await screen.findByText("Open");
-    expect(row("Open")).toHaveTextContent("Public group");
+    expect(row("Open")).not.toHaveTextContent("Public group");
+    expect(row("Open").querySelector("svg title, [title$='group']")).toBeNull();
     expect(row("Open")).toHaveTextContent(/1\s*member$/);
     expect(row("Closed")).toHaveTextContent("Private group");
     expect(row("Closed")).toHaveTextContent(/12\s*members$/);
