@@ -244,14 +244,15 @@ function GroupList({
   );
 }
 
-/** Gray open padlock, plain closed padlock, red closed padlock. */
-const VISIBILITY_ICON_CLASS: Record<GroupVisibility, string> = {
-  PUBLIC: "text-ink-muted",
+/** Plain closed padlock, red closed padlock; public groups go unmarked. */
+const VISIBILITY_ICON_CLASS: Record<Exclude<GroupVisibility, "PUBLIC">, string> = {
   PRIVATE: "text-ink",
   SECRET: "text-primary",
 };
 
 function VisibilityIcon({ visibility }: { visibility: GroupVisibility }) {
+  // An empty slot the icon's size, so public titles line up with the rest.
+  if (visibility === "PUBLIC") return <span aria-hidden="true" className="h-4 w-4 shrink-0" />;
   const label = `${groupVisibilityLabel(visibility)} group`;
   return (
     <span title={label} className={`shrink-0 ${VISIBILITY_ICON_CLASS[visibility]}`}>
@@ -264,14 +265,7 @@ function VisibilityIcon({ visibility }: { visibility: GroupVisibility }) {
         strokeLinejoin="round"
       >
         <rect x="4" y="9" width="12" height="9" rx="1.5" className="fill-current" />
-        {/* The shackle: closed drops back into the body, open swings clear of it. */}
-        <path
-          d={
-            visibility === "PUBLIC"
-              ? "M6.5 9V6a3.5 3.5 0 0 1 6.8-1.2"
-              : "M6.5 9V6a3.5 3.5 0 0 1 7 0v3"
-          }
-        />
+        <path d="M6.5 9V6a3.5 3.5 0 0 1 7 0v3" />
       </svg>
       <span className="sr-only">{label}</span>
     </span>
