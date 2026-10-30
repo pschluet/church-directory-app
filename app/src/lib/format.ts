@@ -1,7 +1,7 @@
-import { formatPhone } from "@shared";
-import type { PersonSummaryDto, SpecialDateDto, SpecialDateType } from "@shared";
+import { formatPhone, formatSpecialDateRule, resolveSpecialDateRule } from "@shared";
+import type { PersonSummaryDto, SpecialDateDto, SpecialDateRule, SpecialDateType } from "@shared";
 
-export { formatPhone, fullName, normalizePhone } from "@shared";
+export { formatPhone, formatSpecialDateRule, fullName, normalizePhone } from "@shared";
 
 const MONTHS = [
   "January",
@@ -207,6 +207,42 @@ export function specialDateDetail(date: {
   if (date.yearCount == null) return null;
   if (date.type === "BIRTHDAY") return `Turning ${date.yearCount}`;
   return `${date.yearCount} ${date.yearCount === 1 ? "year" : "years"} married`;
+}
+
+/**
+ * "2nd Sunday after Pascha" for a name day that moves with a feast; null for
+ * a fixed one. A separate, quieter fact from `specialDateDetail` (the patron
+ * saint) -- the two coexist rather than compete for the one bold slot.
+ */
+export function specialDateRuleText(date: { rule?: SpecialDateRule | null }): string | null {
+  return date.rule ? formatSpecialDateRule(date.rule) : null;
+}
+
+/**
+ * The date to show for a special date: the stored month and day for a fixed
+ * one, or the next occurrence on or after `today` for one that moves with a
+ * feast. The year is included for a moving date specifically because it is
+ * not the same one every time -- that is the visible evidence that the date
+ * moves, the same way the live preview in the form shows three different
+ * years for the same rule.
+ */
+export function specialDateDateText(
+  date: Pick<SpecialDateDto, "month" | "day" | "year" | "rule">,
+  today: string = todayIso()
+): string {
+  if (!date.rule) return formatMonthDay(date.month ?? 1, date.day ?? 1, date.year ?? null);
+
+  const todayDate = parseIsoDate(today);
+  const anchorYear = todayDate.getFullYear();
+  const rule = date.rule;
+  const next =
+    [anchorYear - 1, anchorYear, anchorYear + 1]
+      .map((year) => resolveSpecialDateRule(rule, year))
+      .find(
+        (resolved) =>
+          new Date(resolved.year, resolved.month - 1, resolved.day).getTime() >= todayDate.getTime()
+      ) ?? resolveSpecialDateRule(rule, anchorYear + 1);
+  return formatMonthDay(next.month, next.day, next.year);
 }
 
 /**

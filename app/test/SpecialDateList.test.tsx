@@ -17,6 +17,7 @@ function occurrence(overrides: Partial<SpecialDateOccurrenceDto>): SpecialDateOc
     relatedPersonId: null,
     relatedPersonName: null,
     patronSaint: null,
+    rule: null,
     date: "2026-05-04",
     yearCount: null,
     ...overrides,
@@ -86,6 +87,34 @@ describe("SpecialDateList", () => {
 
     expect(screen.getByText("Name Day")).toBeInTheDocument();
     expect(screen.getByText("St. Anna")).toBeInTheDocument();
+  });
+
+  it("shows the patron saint and the feast rule together for a relative name day", () => {
+    renderList([
+      {
+        date: "2026-04-19",
+        dates: [
+          occurrence({
+            type: "FEAST_DAY",
+            year: null,
+            patronSaint: "St. Thomas",
+            rule: {
+              reference: "PASCHA",
+              direction: "AFTER",
+              unit: "WEEKDAY",
+              count: 1,
+              weekday: 0,
+            },
+          }),
+        ],
+      },
+    ]);
+
+    expect(screen.getByText("Name Day")).toBeInTheDocument();
+    expect(screen.getByText("St. Thomas")).toBeInTheDocument();
+    expect(screen.getByText("1st Sunday after Pascha")).toBeInTheDocument();
+    // The resolved date leads, as the day heading.
+    expect(screen.getByRole("heading", { level: 3 })).toHaveTextContent(/19/);
   });
 
   it("skips days with nothing on them", () => {

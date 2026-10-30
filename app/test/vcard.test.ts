@@ -16,6 +16,7 @@ function date(overrides: Partial<SpecialDateDto> = {}): SpecialDateDto {
     relatedPersonId: null,
     relatedPersonName: null,
     patronSaint: null,
+    rule: null,
     ...overrides,
   };
 }
@@ -121,6 +122,34 @@ describe("buildVCard", () => {
     // A custom label: wrapped, Apple would show the wrapper itself.
     expect(card).toContain("item2.X-ABLabel:name day\r\n");
     expect(card).not.toContain("BDAY");
+  });
+
+  it("leaves out a name day set relative to a feast, rather than exporting one year's answer as if it recurred", () => {
+    const card = buildVCard(
+      person({
+        specialDates: [
+          date({ id: "d4", type: "BIRTHDAY", month: 5, day: 4, year: 1985 }),
+          date({
+            id: "d5",
+            type: "FEAST_DAY",
+            month: null,
+            day: null,
+            year: null,
+            rule: {
+              reference: "PASCHA",
+              direction: "AFTER",
+              unit: "WEEKDAY",
+              count: 1,
+              weekday: 0,
+            },
+          }),
+        ],
+      })
+    );
+    expect(card).not.toContain("X-ABDATE");
+    expect(card).not.toContain("name day");
+    // The fixed birthday is unaffected.
+    expect(card).toContain("BDAY:1985-05-04");
   });
 
   it("embeds a photo and folds it to 75 octets a line", () => {

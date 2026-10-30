@@ -5,6 +5,7 @@ import {
   formatRelativeDay,
   specialDateDetail,
   specialDateLabel,
+  specialDateRuleText,
 } from "../lib/format";
 import { EmptyState } from "./ui";
 
@@ -53,6 +54,7 @@ export function SpecialDateList({
 
 function SpecialDateRow({ entry }: { entry: SpecialDateOccurrenceDto }) {
   const detail = specialDateDetail(entry);
+  const ruleText = specialDateRuleText(entry);
 
   return (
     <li className="flex flex-col gap-0.5 rounded-md bg-surface-muted px-3 py-2 sm:flex-row sm:items-baseline sm:justify-between sm:gap-4">
@@ -79,6 +81,7 @@ function SpecialDateRow({ entry }: { entry: SpecialDateOccurrenceDto }) {
       <span className="flex flex-wrap items-baseline gap-x-2 text-sm text-ink-muted">
         <span>{specialDateLabel(entry.type)}</span>
         {detail && <span className="font-bold text-accent">{detail}</span>}
+        {ruleText && <span className="text-xs">{ruleText}</span>}
       </span>
     </li>
   );

@@ -7,6 +7,7 @@
  * Safe to re-run: it clears the tables first. Never point this at production.
  */
 import { Pool } from "pg";
+import type { SpecialDateRule } from "../src/types";
 
 const DB_NAME = process.env.DB_NAME ?? "directory";
 const SUPER_ADMIN_EMAIL = process.env.SUPER_ADMIN_EMAIL ?? "paul@paulschlueter.com";
@@ -222,6 +223,17 @@ async function main(): Promise<void> {
     );
   }
 
+  /** A name day set relative to a reference feast, e.g. "1 Sunday after Pascha". */
+  async function addRelativeFeastDay(personId: string, rule: SpecialDateRule): Promise<void> {
+    await pool.query(
+      `insert into special_dates
+         (organization_id, person_id, type, rule_reference, rule_direction, rule_unit,
+          rule_count, rule_weekday)
+       values ($1, $2, 'FEAST_DAY', $3, $4, $5, $6, $7)`,
+      [allSaints, personId, rule.reference, rule.direction, rule.unit, rule.count, rule.weekday]
+    );
+  }
+
   // Spread across the next few days so the default 7-day window has content,
   // and a couple further out for the 30-day range and the calendar view.
   const today = relativeDate(0);
@@ -243,8 +255,15 @@ async function main(): Promise<void> {
   });
   // Feast days -- the patron saint's day, month and day only.
   await addDate(anna, "FEAST_DAY", today.month, today.day);
-  await addDate(ivan, "FEAST_DAY", inFive.month, inFive.day);
   await addDate(boris, "FEAST_DAY", inTwo.month, inTwo.day);
+  // Ivan's moves with Pascha -- Thomas Sunday, the first Sunday after it.
+  await addRelativeFeastDay(ivan, {
+    reference: "PASCHA",
+    direction: "AFTER",
+    unit: "WEEKDAY",
+    count: 1,
+    weekday: 0,
+  });
   // One anniversary, linking two people, years shown.
   await addDate(paul, "ANNIVERSARY", inFive.month, inFive.day, {
     year: 2010,

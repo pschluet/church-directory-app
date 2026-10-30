@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   allMonthDayKeys,
+  anchorYearsFor,
   compareByTypeThenName,
   completedYearsOn,
   expandMonth,
@@ -8,8 +9,10 @@ import {
   MAX_WINDOW_DAYS,
   monthDayKey,
   parseIsoDate,
+  resolveRelativeRows,
   yearCountFor,
 } from "../src/services/upcoming-dates";
+import type { SpecialDateRule } from "../src/types";
 
 describe("expandWindow", () => {
   it("covers today and the next six days by default", () => {
@@ -168,5 +171,109 @@ describe("completedYearsOn", () => {
 
   it("counts a birth earlier this year as zero", () => {
     expect(completedYearsOn("2026-09-01", 5, 4, 2026, true)).toBe(0);
+  });
+});
+
+describe("anchorYearsFor", () => {
+  it("adds one year on each side of a short window", () => {
+    const window = expandWindow("2026-04-06", 14);
+    expect(anchorYearsFor(window)).toEqual([2025, 2026, 2027]);
+  });
+
+  it("spans every year a 366-day window touches, plus one on each side", () => {
+    const window = expandWindow("2026-06-01", 366);
+    expect(anchorYearsFor(window)).toEqual([2025, 2026, 2027, 2028]);
+  });
+
+  it("returns nothing for an empty window", () => {
+    expect(anchorYearsFor([])).toEqual([]);
+  });
+});
+
+describe("resolveRelativeRows", () => {
+  const thomasSunday: SpecialDateRule = {
+    reference: "PASCHA",
+    direction: "AFTER",
+    unit: "WEEKDAY",
+    count: 1,
+    weekday: 0,
+  };
+
+  it("places a rule on the one day it resolves to", () => {
+    // Pascha 2026-04-12, so Thomas Sunday is 2026-04-19.
+    const window = expandWindow("2026-04-06", 14);
+    const row = { id: "sd-1", rule: thomasSunday };
+    const byIso = resolveRelativeRows(window, [row]);
+    expect([...byIso.keys()]).toEqual(["2026-04-19"]);
+    expect(byIso.get("2026-04-19")).toEqual([row]);
+  });
+
+  it("finds nothing when the window misses every occurrence", () => {
+    const window = expandWindow("2026-04-20", 14);
+    expect(resolveRelativeRows(window, [{ id: "sd-1", rule: thomasSunday }]).size).toBe(0);
+  });
+
+  /*
+   * Consecutive Orthodox Paschas can be as little as 350 days apart (e.g.
+   * 2026-04-12 to 2027-05-02 inclusive is 385 days, but 2024-05-05 to
+   * 2025-04-20 is 350), so a 366-day window can hold two occurrences of a
+   * Pascha-anchored rule -- or, symmetrically, none at all. Both are correct
+   * behaviour for a moving date, not an edge case to special-case away.
+   */
+  it("surfaces two occurrences when a 366-day window spans a short Pascha-to-Pascha gap", () => {
+    // Pascha 2025-04-20 and 2026-04-12 are 357 days apart.
+    const window = expandWindow("2025-04-20", 366);
+    const row = { id: "sd-1", rule: { ...thomasSunday, unit: "DAYS" as const, count: 0 } };
+    const byIso = resolveRelativeRows(window, [row]);
+    expect([...byIso.keys()].sort()).toEqual(["2025-04-20", "2026-04-12"]);
+  });
+
+  it("surfaces zero occurrences when a 366-day window spans a long Pascha-to-Pascha gap", () => {
+    // Pascha 2026-04-12 and 2027-05-02 are 385 days apart, outside any
+    // 366-day window that starts the day after the first.
+    const window = expandWindow("2026-04-13", 366);
+    const row = { id: "sd-1", rule: { ...thomasSunday, unit: "DAYS" as const, count: 0 } };
+    expect(resolveRelativeRows(window, [row]).size).toBe(0);
+  });
+
+  it("can resolve into the January following the window's own year", () => {
+    const window = expandMonth(2026, 12);
+    const row = {
+      id: "sd-1",
+      rule: {
+        reference: "NATIVITY" as const,
+        direction: "AFTER" as const,
+        unit: "DAYS" as const,
+        count: 15,
+        weekday: null,
+      },
+    };
+    // Falls in January 2027, outside a December-only window.
+    expect(resolveRelativeRows(window, [row]).size).toBe(0);
+
+    const januaryWindow = expandMonth(2027, 1);
+    expect([...resolveRelativeRows(januaryWindow, [row]).keys()]).toEqual(["2027-01-09"]);
+  });
+
+  it("does not let the 29 Feb carry-over collide with a rule resolving onto 1 March", () => {
+    // In 2027 (not a leap year), expandWindow gives 1 March the extra key 229
+    // so a stored (2, 29) birthday still surfaces there. A *rule* resolving to
+    // 2027-03-01 must land there once, from its own resolved ISO date, with no
+    // interaction with that fallback.
+    const window = expandWindow("2027-02-25", 10);
+    // Pascha 2027-05-02 minus 62 days.
+    const row = {
+      id: "sd-1",
+      rule: {
+        reference: "PASCHA" as const,
+        direction: "BEFORE" as const,
+        unit: "DAYS" as const,
+        count: 62,
+        weekday: null,
+      },
+    };
+    const byIso = resolveRelativeRows(window, [row]);
+    expect([...byIso.keys()]).toEqual(["2027-03-01"]);
+    expect(byIso.get("2027-03-01")).toHaveLength(1);
   });
 });

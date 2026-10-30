@@ -189,6 +189,50 @@ export const inputClass =
   "w-full rounded-md border border-line bg-surface px-3 py-2 text-ink placeholder:text-ink-muted/60 focus:border-accent focus:outline-none";
 
 /**
+ * A visible switch between a small, fixed set of options, for a choice that
+ * changes which fields are on screen rather than just picking a value --
+ * RsvpControl in GroupDetail.tsx hand-rolls the same `role="group"` +
+ * `aria-pressed` shape for Going/Maybe/Not going; this is that shape made
+ * reusable, so a second mode switch does not become a third copy of it.
+ */
+export function SegmentedControl<T extends string>({
+  label,
+  value,
+  onChange,
+  options,
+}: {
+  label: string;
+  value: T;
+  onChange: (next: T) => void;
+  options: { value: T; label: string }[];
+}) {
+  return (
+    <div
+      role="group"
+      aria-label={label}
+      className="inline-flex overflow-hidden rounded-lg border border-line bg-surface"
+    >
+      {options.map((option) => {
+        const active = option.value === value;
+        return (
+          <button
+            key={option.value}
+            type="button"
+            aria-pressed={active}
+            onClick={() => onChange(option.value)}
+            className={`border-l border-line px-3 py-1.5 text-sm font-bold transition first:border-l-0 ${
+              active ? "bg-primary text-white" : "text-ink hover:bg-surface-muted"
+            }`}
+          >
+            {option.label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+/**
  * The page-scroll half of `useDismissable`, factored out and reference-counted
  * so two dismissables open at once (the group photo lightbox over the members
  * modal, say) don't fight over `document.body.style.overflow`. Each caller's

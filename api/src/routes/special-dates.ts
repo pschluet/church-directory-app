@@ -13,12 +13,17 @@ import {
   expandWindow,
   monthDayKey,
   parseIsoDate,
+  resolveRelativeRows,
   toIsoDate,
   yearCountFor,
 } from "../services/upcoming-dates";
 import {
+  formatSpecialDateRule,
   specialDateWriteSchema,
   uuidSchema,
+  type MoveableFeast,
+  type RuleDirection,
+  type RuleUnit,
   type SpecialDateOccurrenceDto,
   type UpcomingDatesDto,
 } from "../types";
@@ -32,7 +37,8 @@ import {
 const routes = new Hono<AppEnv>();
 
 interface OccurrenceRow extends SpecialDateRow {
-  month_day_key: number;
+  /** Null for a relative row -- it has no fixed (month, day) to key on. */
+  month_day_key: number | null;
 }
 
 async function loadOccurrences(
@@ -51,7 +57,14 @@ async function loadOccurrences(
         -- keeps appearing here with one spouse's name rendered as a link
         -- that 404s. Null-safe: only an anniversary has a second person.
         and (sd.related_person_id is null or rp.deleted_at is null)
-        and (sd.month * 100 + sd.day) = any($2::int[])
+        and (
+          -- Fixed: the stored month and day fall inside the window.
+          (sd.month is not null and (sd.month * 100 + sd.day) = any($2::int[]))
+          -- Relative: every rule in the organization, resolved in JS below.
+          -- At most one name day per person (special_dates_one_feast_day_idx),
+          -- so this is bounded by the parish and cheap to resolve in bulk.
+          or sd.rule_reference is not null
+        )
         -- The related person as well as the owner: an anniversary is stored
         -- once against one spouse, so a couple where only the related half is
         -- in this family is still that family's anniversary, and has to
@@ -59,13 +72,17 @@ async function loadOccurrences(
         and ($3::uuid is null or p.family_id = $3 or rp.family_id = $3)`,
     [organizationId, keys, familyId]
   );
-  return rows.map((row) => ({ ...row, month_day_key: monthDayKey(row.month, row.day) }));
+  return rows.map((row) => ({
+    ...row,
+    month_day_key: row.month != null && row.day != null ? monthDayKey(row.month, row.day) : null,
+  }));
 }
 
 /**
- * Maps rows onto the calendar days of a window. A row can land on more than one
- * day only when the window is long enough to wrap a year, which the 366-day cap
- * makes the outer limit.
+ * Maps rows onto the calendar days of a window. A fixed row can land on more
+ * than one day only when the window is long enough to wrap a year, which the
+ * 366-day cap makes the outer limit. A relative row can land on zero, one, or
+ * two days in a window of that length -- see resolveRelativeRows.
  */
 function groupByDay(
   caller: AppEnv["Variables"]["caller"],
@@ -74,10 +91,26 @@ function groupByDay(
 ): UpcomingDatesDto["days"] {
   const byKey = new Map<number, OccurrenceRow[]>();
   for (const row of rows) {
+    if (row.month_day_key == null) continue;
     const list = byKey.get(row.month_day_key);
     if (list) list.push(row);
     else byKey.set(row.month_day_key, [row]);
   }
+  const byIso = resolveRelativeRows(
+    window,
+    rows
+      .filter((row) => row.rule_reference != null)
+      .map((row) => ({
+        row,
+        rule: {
+          reference: row.rule_reference!,
+          direction: row.rule_direction!,
+          unit: row.rule_unit!,
+          count: row.rule_count!,
+          weekday: row.rule_weekday,
+        },
+      }))
+  );
 
   return window.map((day) => {
     const occurrences: SpecialDateOccurrenceDto[] = [];
@@ -90,6 +123,17 @@ function groupByDay(
           yearCount: yearCountFor(day.year, row.year, row.show_year_count),
         });
       }
+    }
+    for (const { row } of byIso.get(day.iso) ?? []) {
+      // A relative date is always a FEAST_DAY (special_dates_rule_only_feast_day),
+      // which never has a year or show_year_count, so yearCount is always null --
+      // call the real function rather than hardcoding that, so the two paths
+      // can never silently disagree.
+      occurrences.push({
+        ...toSpecialDate(caller, row),
+        date: day.iso,
+        yearCount: yearCountFor(day.year, row.year, row.show_year_count),
+      });
     }
     // "Dates are grouped by date then special date type."
     occurrences.sort(compareByTypeThenName);
@@ -213,6 +257,21 @@ async function assertRelatedPersonIsUsable(
   if (!related) throw new HTTPException(404, { message: "The other person was not found" });
 }
 
+/**
+ * `payload.rule`, if any, as the pretty string the audit log should carry.
+ *
+ * Never put the raw rule object on an audit `changes` payload: AuditChanges's
+ * `asRenderableFields` requires every value to be a scalar or an array of
+ * scalars, so one nested object makes it give up on the *entire* entry and
+ * fall back to a raw JSON dump -- not just this field.
+ */
+function auditChangesFor(
+  personId: string,
+  payload: ReturnType<typeof specialDateWriteSchema.parse>
+): Record<string, unknown> {
+  return { personId, ...payload, rule: payload.rule ? formatSpecialDateRule(payload.rule) : null };
+}
+
 routes.post("/", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
@@ -228,18 +287,24 @@ routes.post("/", async (c) => {
   const created = await one<{ id: string }>(
     db,
     `insert into special_dates
-       (organization_id, person_id, related_person_id, type, month, day, year, show_year_count)
-     values ($1, $2, $3, $4, $5, $6, $7, $8)
+       (organization_id, person_id, related_person_id, type, month, day, year,
+        show_year_count, rule_reference, rule_direction, rule_unit, rule_count, rule_weekday)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
      returning id`,
     [
       organizationId,
       personId,
       payload.relatedPersonId ?? null,
       payload.type,
-      payload.month,
-      payload.day,
+      payload.month ?? null,
+      payload.day ?? null,
       payload.year ?? null,
       payload.showYearCount,
+      payload.rule?.reference ?? null,
+      payload.rule?.direction ?? null,
+      payload.rule?.unit ?? null,
+      payload.rule?.count ?? null,
+      payload.rule?.weekday ?? null,
     ]
   );
   if (!created) throw new HTTPException(500, { message: "Could not save that date" });
@@ -248,7 +313,7 @@ routes.post("/", async (c) => {
     action: "specialDate.create",
     entityType: "specialDate",
     entityId: created.id,
-    changes: { personId, ...payload },
+    changes: auditChangesFor(personId, payload),
   });
 
   const row = await one<SpecialDateRow>(db, `${SPECIAL_DATE_SELECT} where sd.id = $1`, [
@@ -281,16 +346,23 @@ routes.patch("/:id", async (c) => {
   await db.query(
     `update special_dates
         set type = $2, month = $3, day = $4, year = $5,
-            show_year_count = $6, related_person_id = $7
+            show_year_count = $6, related_person_id = $7,
+            rule_reference = $8, rule_direction = $9, rule_unit = $10,
+            rule_count = $11, rule_weekday = $12
       where id = $1`,
     [
       id,
       payload.type,
-      payload.month,
-      payload.day,
+      payload.month ?? null,
+      payload.day ?? null,
       payload.year ?? null,
       payload.showYearCount,
       payload.relatedPersonId ?? null,
+      payload.rule?.reference ?? null,
+      payload.rule?.direction ?? null,
+      payload.rule?.unit ?? null,
+      payload.rule?.count ?? null,
+      payload.rule?.weekday ?? null,
     ]
   );
 
@@ -298,7 +370,7 @@ routes.patch("/:id", async (c) => {
     action: "specialDate.update",
     entityType: "specialDate",
     entityId: id,
-    changes: payload,
+    changes: auditChangesFor(existing.person_id, payload),
   });
 
   const row = await one<SpecialDateRow>(db, `${SPECIAL_DATE_SELECT} where sd.id = $1`, [id]);
@@ -321,13 +393,19 @@ routes.delete("/:id", async (c) => {
     person_id: string;
     related_person_id: string | null;
     type: string;
-    month: number;
-    day: number;
+    month: number | null;
+    day: number | null;
     year: number | null;
     show_year_count: boolean;
+    rule_reference: MoveableFeast | null;
+    rule_direction: RuleDirection | null;
+    rule_unit: RuleUnit | null;
+    rule_count: number | null;
+    rule_weekday: number | null;
   }>(
     db,
-    `select person_id, related_person_id, type, month, day, year, show_year_count
+    `select person_id, related_person_id, type, month, day, year, show_year_count,
+            rule_reference, rule_direction, rule_unit, rule_count, rule_weekday
        from special_dates where id = $1 and organization_id = $2`,
     [id, organizationId]
   );
@@ -336,7 +414,9 @@ routes.delete("/:id", async (c) => {
 
   await db.query("delete from special_dates where id = $1", [id]);
   // The same shape `specialDate.create` writes, so the three entries for one
-  // date read side by side.
+  // date read side by side. `rule` is pre-formatted to a string for the same
+  // reason as `auditChangesFor` above: a nested object here would make
+  // AuditChanges fall back to a raw JSON dump for the whole entry.
   await audit(db, caller, {
     action: "specialDate.delete",
     entityType: "specialDate",
@@ -349,6 +429,15 @@ routes.delete("/:id", async (c) => {
       year: existing.year,
       showYearCount: existing.show_year_count,
       relatedPersonId: existing.related_person_id,
+      rule: existing.rule_reference
+        ? formatSpecialDateRule({
+            reference: existing.rule_reference,
+            direction: existing.rule_direction!,
+            unit: existing.rule_unit!,
+            count: existing.rule_count!,
+            weekday: existing.rule_weekday,
+          })
+        : null,
     },
   });
   return c.body(null, 204);

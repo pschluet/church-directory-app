@@ -88,6 +88,56 @@ export const specialDateTypeSchema = z.enum(SPECIAL_DATE_TYPES);
 export type SpecialDateType = z.infer<typeof specialDateTypeSchema>;
 
 /**
+ * The reference feasts a name day can be set relative to. Pascha is reckoned
+ * by the Orthodox (Julian) Paschalion, rendered on the Gregorian calendar;
+ * Nativity and Theophany are fixed New Calendar dates, per Antiochian
+ * practice. The other three are pure offsets from Pascha -- see
+ * `moveableFeastDate` below.
+ */
+export const MOVEABLE_FEASTS = [
+  "PASCHA",
+  "PALM_SUNDAY",
+  "ASCENSION",
+  "PENTECOST",
+  "NATIVITY",
+  "THEOPHANY",
+] as const;
+export const moveableFeastSchema = z.enum(MOVEABLE_FEASTS);
+export type MoveableFeast = z.infer<typeof moveableFeastSchema>;
+
+export const MOVEABLE_FEAST_LABELS: Record<MoveableFeast, string> = {
+  PASCHA: "Pascha",
+  PALM_SUNDAY: "Palm Sunday",
+  ASCENSION: "Ascension",
+  PENTECOST: "Pentecost",
+  NATIVITY: "Nativity",
+  THEOPHANY: "Theophany",
+};
+
+export function moveableFeastLabel(feast: MoveableFeast): string {
+  return MOVEABLE_FEAST_LABELS[feast];
+}
+
+export const RULE_DIRECTIONS = ["BEFORE", "AFTER"] as const;
+export const ruleDirectionSchema = z.enum(RULE_DIRECTIONS);
+export type RuleDirection = z.infer<typeof ruleDirectionSchema>;
+
+export const RULE_UNITS = ["DAYS", "WEEKDAY"] as const;
+export const ruleUnitSchema = z.enum(RULE_UNITS);
+export type RuleUnit = z.infer<typeof ruleUnitSchema>;
+
+/** Index 0 = Sunday .. 6 = Saturday, matching `special_dates.rule_weekday`. */
+export const WEEKDAY_NAMES = [
+  "Sunday",
+  "Monday",
+  "Tuesday",
+  "Wednesday",
+  "Thursday",
+  "Friday",
+  "Saturday",
+] as const;
+
+/**
  * Every `entity_type` the audit log records. Unlike the enums above this one
  * mirrors no CHECK constraint -- `audit_log.entity_type` is plain text, for the
  * reason V13__audit_log_browse.sql explains -- so it is a label list, not a
@@ -1551,17 +1601,72 @@ export interface GroupFileDto {
 // The refinements here intentionally mirror the CHECK constraints in
 // V1__init.sql: the database is the backstop, this is the useful error message.
 // ---------------------------------------------------------------------------
+
+/**
+ * A name day defined relative to a reference feast, rather than a fixed month
+ * and day -- "the 2nd Sunday after Pascha" rather than "26 April". Mirrors
+ * `special_dates_rule_*` in V33__relative_name_days.sql.
+ *
+ * `count` is 0-based for `unit: "DAYS"` (0 is the feast itself) and 1-based for
+ * `unit: "WEEKDAY"`, because counting weekdays is strict: "1 Sunday after
+ * Pascha" is the Sunday following it, not Pascha itself, which is always a
+ * Sunday.
+ */
+export const specialDateRuleSchema = z
+  .object({
+    reference: moveableFeastSchema,
+    direction: ruleDirectionSchema,
+    unit: ruleUnitSchema,
+    count: z.number().int().min(0).max(365),
+    weekday: z.number().int().min(0).max(6).nullable().optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.unit === "WEEKDAY") {
+      if (value.weekday == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["weekday"],
+          message: "Choose which day of the week to count",
+        });
+      }
+      if (value.count < 1) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["count"],
+          message: 'Counting a day of the week starts at one -- the feast itself is "0 days after"',
+        });
+      }
+    } else if (value.weekday != null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["weekday"],
+        message: "A day offset does not need a day of the week",
+      });
+    }
+  })
+  // `0 days before` and `0 days after` the same feast name the same day, so
+  // direction is normalized to keep stored rules and audit entries from
+  // disagreeing about something that is not actually a difference.
+  .transform((value) => ({
+    ...value,
+    direction: value.unit === "DAYS" && value.count === 0 ? ("AFTER" as const) : value.direction,
+    weekday: value.unit === "WEEKDAY" ? (value.weekday ?? null) : null,
+  }));
+export type SpecialDateRule = z.infer<typeof specialDateRuleSchema>;
+
 export const specialDateWriteSchema = z
   .object({
     type: specialDateTypeSchema,
-    month: z.number().int().min(1).max(12),
-    day: z.number().int().min(1).max(31),
+    month: z.number().int().min(1).max(12).nullable().optional(),
+    day: z.number().int().min(1).max(31).nullable().optional(),
     year: z.number().int().min(1800).max(2200).nullable().optional(),
     showYearCount: z.boolean().default(false),
     relatedPersonId: uuidSchema.nullable().optional(),
+    /** Only a FEAST_DAY may carry a rule in place of a month and day. */
+    rule: specialDateRuleSchema.nullable().optional(),
   })
   .superRefine((value, ctx) => {
-    const { type, year, showYearCount, relatedPersonId, month, day } = value;
+    const { type, year, showYearCount, relatedPersonId, month, day, rule } = value;
 
     if (showYearCount && year == null) {
       ctx.addIssue({
@@ -1602,12 +1707,36 @@ export const specialDateWriteSchema = z
       });
     }
 
-    if (!isRealDate(month, day, year ?? null)) {
+    if (rule != null && type !== "FEAST_DAY") {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        path: ["day"],
-        message: "That date does not exist",
+        path: ["rule"],
+        message: "Only a name day can be set relative to a church feast",
       });
+    }
+
+    if (rule != null && (month != null || day != null)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["rule"],
+        message: "A date is either a fixed day or relative to a feast, not both",
+      });
+    }
+
+    if (rule == null) {
+      if (month == null || day == null) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["day"],
+          message: "Choose a month and day",
+        });
+      } else if (!isRealDate(month, day, year ?? null)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["day"],
+          message: "That date does not exist",
+        });
+      }
     }
   });
 export type SpecialDateWrite = z.infer<typeof specialDateWriteSchema>;
@@ -1617,8 +1746,9 @@ export interface SpecialDateDto {
   personId: string;
   personName: string;
   type: SpecialDateType;
-  month: number;
-  day: number;
+  /** Null when `rule` is set instead -- a relative name day has no fixed day. */
+  month: number | null;
+  day: number | null;
   /**
    * Null both when no year was recorded and when this viewer may not see the
    * one that was -- deliberately indistinguishable, since telling the two apart
@@ -1631,6 +1761,8 @@ export interface SpecialDateDto {
   relatedPersonName: string | null;
   /** The patron saint whose day this is; only set for FEAST_DAY. */
   patronSaint: string | null;
+  /** How a relative name day is set; null for a fixed month and day. */
+  rule: SpecialDateRule | null;
 }
 
 /** One special date on one calendar day, with the age/years already worked out. */
@@ -2349,6 +2481,193 @@ export function isLeapYear(year: number): boolean {
 export function isRealDate(month: number, day: number, year: number | null): boolean {
   if (month < 1 || month > 12 || day < 1) return false;
   return day <= daysInMonth(month, year);
+}
+
+// ---------------------------------------------------------------------------
+// Moveable feasts -- the Paschalion.
+//
+// Everything here works in "day numbers": whole days since 1970-01-01 UTC.
+// That keeps the arithmetic to integers and avoids JS Date's local-timezone
+// footguns entirely -- this module must NOT reuse app/src/lib/format.ts's
+// `parseIsoDate`, which is local-time based for exactly the reason this one
+// cannot be.
+//
+// Supported range: 1800-2200, matching `special_dates_year_valid`.
+// ---------------------------------------------------------------------------
+
+const PASCHALION_MIN_YEAR = 1800;
+const PASCHALION_MAX_YEAR = 2200;
+
+function assertYearInPaschalionRange(year: number): void {
+  if (year < PASCHALION_MIN_YEAR || year > PASCHALION_MAX_YEAR) {
+    throw new Error(
+      `${year} is outside the supported range (${PASCHALION_MIN_YEAR}-${PASCHALION_MAX_YEAR})`
+    );
+  }
+}
+
+/**
+ * Julian Day Number of a date given in *Julian calendar* year/month/day, per
+ * the standard formula (no Gregorian leap-century correction). Used only to
+ * place Julian Easter onto the same day-number line Gregorian dates use below
+ * -- a Julian Day Number counts real days regardless of which calendar's
+ * year/month/day produced it, so this is what makes the +13/+14/+15-day
+ * Julian-Gregorian gap fall out of the arithmetic instead of needing a
+ * hardcoded constant that goes stale at each Gregorian century boundary.
+ */
+function julianCalendarDayNumber(year: number, month: number, day: number): number {
+  const a = Math.floor((14 - month) / 12);
+  const y = year + 4800 - a;
+  const m = month + 12 * a - 3;
+  return day + Math.floor((153 * m + 2) / 5) + 365 * y + Math.floor(y / 4) - 32083;
+}
+
+/** 1970-01-01's Julian Day Number, so JDNs convert to "days since the epoch". */
+const JDN_UNIX_EPOCH = 2440588;
+
+/** Day number (days since 1970-01-01 UTC) of a date given in *Julian calendar* terms. */
+function julianCalendarDate(year: number, month: number, day: number): number {
+  return julianCalendarDayNumber(year, month, day) - JDN_UNIX_EPOCH;
+}
+
+/**
+ * Day number of a date given in *Gregorian calendar* terms -- which Nativity
+ * and Theophany both are. `Date.UTC` already implements the Gregorian
+ * calendar correctly, so there is no JDN formula to get right here.
+ */
+function dayNumber(year: number, month: number, day: number): number {
+  return Math.floor(Date.UTC(year, month - 1, day) / 86400000);
+}
+
+/** 1970-01-01 was a Thursday. 0 = Sunday .. 6 = Saturday, matching WEEKDAY_NAMES. */
+function weekdayOf(dayNum: number): number {
+  return (((dayNum + 4) % 7) + 7) % 7;
+}
+
+function dayNumberToDate(dayNum: number): { year: number; month: number; day: number } {
+  const ms = dayNum * 86400000;
+  const date = new Date(ms);
+  return { year: date.getUTCFullYear(), month: date.getUTCMonth() + 1, day: date.getUTCDate() };
+}
+
+/**
+ * Meeus' algorithm for the date of Easter on the Julian calendar -- which is
+ * how the Orthodox Paschalion is reckoned, independent of which calendar the
+ * fixed feasts (Nativity, Theophany) use.
+ */
+function julianEaster(year: number): { month: number; day: number } {
+  const a = year % 4;
+  const b = year % 7;
+  const c = year % 19;
+  const d = (19 * c + 15) % 30;
+  const e = (2 * a + 4 * b - d + 34) % 7;
+  const total = d + e + 114;
+  return { month: Math.floor(total / 31), day: (total % 31) + 1 };
+}
+
+const paschaDayNumberCache = new Map<number, number>();
+
+/**
+ * The day number of Orthodox Pascha in `year`, converted from the Julian
+ * calendar to the Gregorian one via Julian Day Number -- which is what makes
+ * the +13/+14/+15-day offset fall out of the arithmetic rather than needing a
+ * hardcoded constant that goes stale at each century boundary. Memoized,
+ * since every reference feast and every relative rule anchored to a given
+ * year derives from this one calculation.
+ */
+function paschaDayNumber(year: number): number {
+  assertYearInPaschalionRange(year);
+  const cached = paschaDayNumberCache.get(year);
+  if (cached != null) return cached;
+  const { month, day } = julianEaster(year);
+  const result = julianCalendarDate(year, month, day);
+  paschaDayNumberCache.set(year, result);
+  return result;
+}
+
+/** Gregorian date of Orthodox Pascha in `year`. */
+export function orthodoxPascha(year: number): { year: number; month: number; day: number } {
+  return dayNumberToDate(paschaDayNumber(year));
+}
+
+function referenceFeastDayNumber(feast: MoveableFeast, year: number): number {
+  assertYearInPaschalionRange(year);
+  switch (feast) {
+    case "PASCHA":
+      return paschaDayNumber(year);
+    case "PALM_SUNDAY":
+      return paschaDayNumber(year) - 7;
+    case "ASCENSION":
+      return paschaDayNumber(year) + 39;
+    case "PENTECOST":
+      return paschaDayNumber(year) + 49;
+    case "NATIVITY":
+      return dayNumber(year, 12, 25);
+    case "THEOPHANY":
+      return dayNumber(year, 1, 6);
+    default: {
+      const exhaustive: never = feast;
+      throw new Error(`Unknown reference feast: ${exhaustive}`);
+    }
+  }
+}
+
+/** Gregorian date of any reference feast in `year`. */
+export function moveableFeastDate(
+  feast: MoveableFeast,
+  year: number
+): { year: number; month: number; day: number } {
+  return dayNumberToDate(referenceFeastDayNumber(feast, year));
+}
+
+/**
+ * The Gregorian date a rule resolves to, anchored on `year`'s reference
+ * feast. May fall in `year - 1` or `year + 1` -- "10 days after Nativity"
+ * lands in the following January, "5 days before Theophany" in the preceding
+ * December.
+ */
+export function resolveSpecialDateRule(
+  rule: SpecialDateRule,
+  year: number
+): { year: number; month: number; day: number } {
+  const feast = referenceFeastDayNumber(rule.reference, year);
+  const sign = rule.direction === "AFTER" ? 1 : -1;
+
+  if (rule.unit === "DAYS") {
+    return dayNumberToDate(feast + sign * rule.count);
+  }
+
+  // Strictly after/before: `step` is never 0, so "1 Sunday after Pascha" is
+  // the Sunday following it (Thomas Sunday) rather than Pascha itself, which
+  // is always a Sunday.
+  const target = rule.weekday ?? 0;
+  const feastWeekday = weekdayOf(feast);
+  const forward = (target - feastWeekday + 7) % 7 || 7;
+  const backward = (feastWeekday - target + 7) % 7 || 7;
+  const firstStep = sign === 1 ? forward : backward;
+  return dayNumberToDate(feast + sign * (firstStep + 7 * (rule.count - 1)));
+}
+
+const ORDINAL_SUFFIXES: Record<number, string> = { 1: "st", 2: "nd", 3: "rd" };
+
+function ordinal(n: number): string {
+  const suffix = n % 100 >= 11 && n % 100 <= 13 ? "th" : (ORDINAL_SUFFIXES[n % 10] ?? "th");
+  return `${n}${suffix}`;
+}
+
+/** "2nd Sunday after Pascha", "3 days before Nativity", "Pascha". */
+export function formatSpecialDateRule(rule: SpecialDateRule): string {
+  const feastLabel = MOVEABLE_FEAST_LABELS[rule.reference];
+  const directionWord = rule.direction === "AFTER" ? "after" : "before";
+
+  if (rule.unit === "DAYS") {
+    if (rule.count === 0) return feastLabel;
+    const noun = rule.count === 1 ? "day" : "days";
+    return `${rule.count} ${noun} ${directionWord} ${feastLabel}`;
+  }
+
+  const weekdayName = WEEKDAY_NAMES[rule.weekday ?? 0];
+  return `${ordinal(rule.count)} ${weekdayName} ${directionWord} ${feastLabel}`;
 }
 
 /**

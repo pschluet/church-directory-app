@@ -61,7 +61,10 @@ export function fold(line: string): string {
 const two = (n: number): string => String(n).padStart(2, "0");
 
 /** The date as vCard wants it, and whether the year is real or Apple's placeholder. */
-function dateValue(date: SpecialDateDto): { value: string; omitYear: boolean } {
+function dateValue(date: { month: number; day: number; year: number | null }): {
+  value: string;
+  omitYear: boolean;
+} {
   const omitYear = date.year == null;
   const year = omitYear ? OMIT_YEAR : String(date.year).padStart(4, "0");
   return { value: `${year}-${two(date.month)}-${two(date.day)}`, omitYear };
@@ -95,7 +98,12 @@ export function buildVCard(person: PersonDto, photo?: VCardPhoto | null): string
     lines.push(`ADR;TYPE=HOME:;;${address.map((part) => escapeText(part ?? "")).join(";")}`);
   }
 
-  const birthday = person.specialDates.find((date) => date.type === "BIRTHDAY");
+  // A birthday can never be relative (special_dates_rule_only_feast_day), so
+  // month and day are guaranteed here -- the guard is just for the type-checker.
+  const birthday = person.specialDates.find(
+    (date): date is SpecialDateDto & { month: number; day: number } =>
+      date.type === "BIRTHDAY" && date.month != null && date.day != null
+  );
   if (birthday) {
     const { value, omitYear } = dateValue(birthday);
     lines.push(omitYear ? `BDAY;X-APPLE-OMIT-YEAR=${OMIT_YEAR}:${value}` : `BDAY:${value}`);
@@ -104,9 +112,14 @@ export function buildVCard(person: PersonDto, photo?: VCardPhoto | null): string
   let item = 0;
   for (const date of person.specialDates) {
     const label = EXTRA_DATE_LABELS[date.type];
-    if (!label) continue;
+    // A name day set relative to a feast is left out rather than exported
+    // with one year's answer frozen in: X-ABDATE with X-APPLE-OMIT-YEAR
+    // asserts a fixed month and day recurring every year, which would be
+    // wrong in every year but the one it was saved in, and there is no
+    // vCard property for "the 2nd Sunday after Pascha".
+    if (!label || date.month == null || date.day == null) continue;
     item += 1;
-    const { value, omitYear } = dateValue(date);
+    const { value, omitYear } = dateValue({ month: date.month, day: date.day, year: date.year });
     lines.push(
       omitYear
         ? `item${item}.X-ABDATE;X-APPLE-OMIT-YEAR=${OMIT_YEAR}:${value}`
