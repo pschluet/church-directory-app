@@ -52,6 +52,7 @@ function birthday(overrides: Partial<SpecialDateDto> = {}): SpecialDateDto {
     relatedPersonId: null,
     relatedPersonName: null,
     patronSaint: null,
+    rule: null,
     ...overrides,
   };
 }

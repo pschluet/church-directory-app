@@ -1,4 +1,4 @@
-import { isLeapYear } from "../types";
+import { isLeapYear, resolveSpecialDateRule, type SpecialDateRule } from "../types";
 
 /**
  * Turning stored (month, day, optional year) records into "what is coming up".
@@ -138,6 +138,57 @@ export function completedYearsOn(
   // A year in the future, or a date so recent the count is negative, is bad
   // data rather than something to render as "-1 years old".
   return years >= 0 ? years : null;
+}
+
+/**
+ * The reference-feast years a window could draw a relative date from. A rule
+ * anchored to one year's feast can resolve into the following year ("15 days
+ * after Nativity" lands in January) or the preceding one ("10 days before
+ * Theophany" lands in December), so the window's own calendar years are not
+ * quite enough -- one year is added on each side.
+ */
+export function anchorYearsFor(window: WindowDay[]): number[] {
+  if (window.length === 0) return [];
+  const startYear = window[0]!.year;
+  const endYear = window[window.length - 1]!.year;
+  const years: number[] = [];
+  for (let y = startYear - 1; y <= endYear + 1; y += 1) years.push(y);
+  return years;
+}
+
+/**
+ * Relative rows, resolved onto the calendar days of `window` they actually
+ * fall on. Deliberately not routed through `monthDayKeys`: a rule resolves to
+ * a real date in a real year, so it needs no 29 Feb -> 1 Mar carry-over --
+ * that fallback exists only for a *stored* (month, day) with no year, which a
+ * rule never is.
+ *
+ * A relative date can land on zero, one, or two days of a given window.
+ * Consecutive Orthodox Paschas are 350-385 days apart, so a 366-day window
+ * (the cap this app uses) can hold two occurrences of a Pascha-anchored rule,
+ * or none at all -- both are correct, not a bug to paper over.
+ */
+export function resolveRelativeRows<T extends { rule: SpecialDateRule }>(
+  window: WindowDay[],
+  rows: T[]
+): Map<string, T[]> {
+  const isoDays = new Set(window.map((day) => day.iso));
+  const years = anchorYearsFor(window);
+
+  const byIso = new Map<string, T[]>();
+  for (const row of rows) {
+    const seen = new Set<string>();
+    for (const year of years) {
+      const resolved = resolveSpecialDateRule(row.rule, year);
+      const iso = toIsoDate(new Date(Date.UTC(resolved.year, resolved.month - 1, resolved.day)));
+      if (seen.has(iso) || !isoDays.has(iso)) continue;
+      seen.add(iso);
+      const list = byIso.get(iso);
+      if (list) list.push(row);
+      else byIso.set(iso, [row]);
+    }
+  }
+  return byIso;
 }
 
 /** All the days in one calendar month, for the month-grid view. */

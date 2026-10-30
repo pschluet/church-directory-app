@@ -195,6 +195,86 @@ describe("specialDateWriteSchema", () => {
       true
     );
   });
+
+  describe("a relative name day", () => {
+    const rule = {
+      reference: "PASCHA" as const,
+      direction: "AFTER" as const,
+      unit: "DAYS" as const,
+      count: 0,
+    };
+
+    it("accepts a FEAST_DAY with a rule and no month or day", () => {
+      const result = specialDateWriteSchema.safeParse({ type: "FEAST_DAY", rule });
+      expect(result.success).toBe(true);
+    });
+
+    it("rejects a rule on a birthday or anniversary", () => {
+      expect(specialDateWriteSchema.safeParse({ ...birthday, rule }).success).toBe(false);
+      expect(
+        specialDateWriteSchema.safeParse({
+          type: "ANNIVERSARY",
+          year: 2010,
+          relatedPersonId: "6f2a2d94-1a5f-4c26-9e0e-2f3a4b5c6d7e",
+          rule,
+        }).success
+      ).toBe(false);
+    });
+
+    it("rejects a rule alongside a month and day", () => {
+      const result = specialDateWriteSchema.safeParse({
+        type: "FEAST_DAY",
+        month: 6,
+        day: 29,
+        rule,
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues.map((i) => i.path[0])).toContain("rule");
+    });
+
+    it("rejects a FEAST_DAY with neither a rule nor a month and day", () => {
+      expect(specialDateWriteSchema.safeParse({ type: "FEAST_DAY" }).success).toBe(false);
+    });
+
+    it("requires a weekday when counting by weekday", () => {
+      const result = specialDateWriteSchema.safeParse({
+        type: "FEAST_DAY",
+        rule: { reference: "PASCHA", direction: "AFTER", unit: "WEEKDAY", count: 1 },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues.map((i) => i.path.join("."))).toContain("rule.weekday");
+    });
+
+    it('rejects counting weekdays from zero -- "the feast itself is 0 days after"', () => {
+      const result = specialDateWriteSchema.safeParse({
+        type: "FEAST_DAY",
+        rule: { reference: "PASCHA", direction: "AFTER", unit: "WEEKDAY", count: 0, weekday: 0 },
+      });
+      expect(result.success).toBe(false);
+      expect(result.error?.issues[0]?.message).toMatch(/starts at one/);
+    });
+
+    it("rejects a weekday on a day-count rule", () => {
+      const result = specialDateWriteSchema.safeParse({
+        type: "FEAST_DAY",
+        rule: { reference: "PASCHA", direction: "AFTER", unit: "DAYS", count: 7, weekday: 0 },
+      });
+      expect(result.success).toBe(false);
+    });
+
+    it("normalizes 0 days before and 0 days after to the same canonical rule", () => {
+      const before = specialDateWriteSchema.safeParse({
+        type: "FEAST_DAY",
+        rule: { reference: "PASCHA", direction: "BEFORE", unit: "DAYS", count: 0 },
+      });
+      const after = specialDateWriteSchema.safeParse({
+        type: "FEAST_DAY",
+        rule: { reference: "PASCHA", direction: "AFTER", unit: "DAYS", count: 0 },
+      });
+      expect(before.success && before.data.rule).toEqual(after.success && after.data.rule);
+      expect(before.success && before.data.rule?.direction).toBe("AFTER");
+    });
+  });
 });
 
 describe("personWriteSchema", () => {

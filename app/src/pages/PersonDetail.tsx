@@ -32,13 +32,14 @@ import {
   Spinner,
 } from "../components/ui";
 import {
-  formatMonthDay,
   formatMultilineAddress,
   fullName,
   showYearCountLabel,
+  specialDateDateText,
   specialDateDetail,
   specialDateLabel,
   specialDatePartner,
+  specialDateRuleText,
 } from "../lib/format";
 import { downloadVCard } from "../lib/vcard";
 
@@ -491,6 +492,7 @@ export function PersonDetail() {
           <ul className="divide-y divide-line">
             {person.specialDates.map((date) => {
               const detail = specialDateDetail(date);
+              const ruleText = specialDateRuleText(date);
               const isTheirs = date.personId === person.id;
               const partner = specialDatePartner(date, person.id);
               return (
@@ -500,7 +502,7 @@ export function PersonDetail() {
                   <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-3 gap-y-1">
                     <span className="font-bold text-ink">{specialDateLabel(date.type)}</span>
                     <span className="inline-flex items-center gap-1.5">
-                      {formatMonthDay(date.month, date.day, date.year)}
+                      {specialDateDateText(date)}
                       {/* A year we can see while `showYearCount` is off means the
                           API judged us allowed to -- the person themselves, an
                           admin, or the other half of an anniversary. Everyone
@@ -517,6 +519,7 @@ export function PersonDetail() {
                       )}
                     </span>
                     {detail && <span className="text-sm font-bold text-accent">{detail}</span>}
+                    {ruleText && <span className="text-sm text-ink-muted">{ruleText}</span>}
                     {partner && (
                       <span className="text-sm text-ink-muted">
                         with{" "}
@@ -534,7 +537,7 @@ export function PersonDetail() {
                     // holding two of the same type, and "Actions for
                     // anniversary" twice over tells a screen reader nothing.
                     <MenuButton
-                      label={`Actions for ${specialDateLabel(date.type).toLowerCase()} on ${formatMonthDay(date.month, date.day)}`}
+                      label={`Actions for ${specialDateLabel(date.type).toLowerCase()} on ${specialDateDateText(date)}`}
                       className="shrink-0"
                     >
                       <MenuItem onSelect={() => setEditingDateId(date.id)}>Edit date</MenuItem>
@@ -571,8 +574,8 @@ export function PersonDetail() {
           onConfirm={() => void removeDate(removingDate)}
           onClose={() => setRemovingDate(null)}
         >
-          {formatMonthDay(removingDate.month, removingDate.day, removingDate.year)} will no longer
-          appear on {person.firstName}'s record or in Special Dates.
+          {specialDateDateText(removingDate)} will no longer appear on {person.firstName}'s record
+          or in Special Dates.
         </ConfirmDialog>
       )}
 

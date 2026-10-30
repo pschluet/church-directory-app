@@ -544,6 +544,7 @@ describe("FamilyDetail", () => {
                 relatedPersonId: null,
                 relatedPersonName: null,
                 patronSaint: null,
+                rule: null,
                 date: "2026-09-04",
                 yearCount: 12,
               },

@@ -1,5 +1,5 @@
 import type { Queryable } from "../../src/db";
-import { GROUP_GUIDELINES_VERSION, type Role } from "../../src/types";
+import { GROUP_GUIDELINES_VERSION, type Role, type SpecialDateRule } from "../../src/types";
 
 /**
  * Builders for the shapes these tests keep needing: a parish, some families,
@@ -141,26 +141,35 @@ export async function createSpecialDate(
     organizationId: string;
     personId: string;
     type: "BIRTHDAY" | "ANNIVERSARY" | "FEAST_DAY";
-    month: number;
-    day: number;
+    /** Omit both when `rule` is given -- a relative name day has no fixed day. */
+    month?: number | null;
+    day?: number | null;
     year?: number | null;
     showYearCount?: boolean;
     relatedPersonId?: string | null;
+    /** A FEAST_DAY set relative to a reference feast, instead of month/day. */
+    rule?: SpecialDateRule | null;
   }
 ): Promise<string> {
   const { rows } = await db.query<{ id: string }>(
     `insert into special_dates
-       (organization_id, person_id, related_person_id, type, month, day, year, show_year_count)
-     values ($1, $2, $3, $4, $5, $6, $7, $8) returning id`,
+       (organization_id, person_id, related_person_id, type, month, day, year, show_year_count,
+        rule_reference, rule_direction, rule_unit, rule_count, rule_weekday)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13) returning id`,
     [
       options.organizationId,
       options.personId,
       options.relatedPersonId ?? null,
       options.type,
-      options.month,
-      options.day,
+      options.month ?? null,
+      options.day ?? null,
       options.year ?? null,
       options.showYearCount ?? false,
+      options.rule?.reference ?? null,
+      options.rule?.direction ?? null,
+      options.rule?.unit ?? null,
+      options.rule?.count ?? null,
+      options.rule?.weekday ?? null,
     ]
   );
   return rows[0]!.id;

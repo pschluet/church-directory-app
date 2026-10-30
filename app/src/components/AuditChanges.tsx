@@ -312,6 +312,7 @@ const FIELD_LABELS: Record<string, string> = {
   phoneE164: "Phone number",
   altPhoneE164: "Alternate phone",
   patronSaint: "Patron saint",
+  rule: "Feast rule",
   yearCount: "Years",
   showYearCount: "Show the year count",
   organizationId: "Church",

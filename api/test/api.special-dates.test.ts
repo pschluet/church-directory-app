@@ -151,6 +151,158 @@ describe.skipIf(!hasDb)("special dates", () => {
     });
   });
 
+  describe("a name day set relative to a feast", () => {
+    const thomasSunday = {
+      reference: "PASCHA",
+      direction: "AFTER",
+      unit: "WEEKDAY",
+      count: 1,
+      weekday: 0,
+    };
+
+    it("stores the rule and no month or day", async () => {
+      const { status, body } = await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "FEAST_DAY",
+        rule: thomasSunday,
+      });
+      expect(status).toBe(201);
+      expect(body.month).toBeNull();
+      expect(body.day).toBeNull();
+      expect(body.rule).toEqual(thomasSunday);
+    });
+
+    it("refuses a rule on a birthday", async () => {
+      const { status } = await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "BIRTHDAY",
+        rule: thomasSunday,
+      });
+      expect(status).toBe(400);
+    });
+
+    it("still enforces one name day per person", async () => {
+      await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "FEAST_DAY",
+        rule: thomasSunday,
+      });
+      const { status } = await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "FEAST_DAY",
+        month: 7,
+        day: 25,
+      });
+      expect(status).toBe(409);
+    });
+
+    it("can be changed from a fixed day to a relative one, and back", async () => {
+      const created = await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "FEAST_DAY",
+        month: 7,
+        day: 25,
+      });
+
+      const toRelative = await as(paul).call("PATCH", `/api/special-dates/${created.body.id}`, {
+        type: "FEAST_DAY",
+        rule: thomasSunday,
+      });
+      expect(toRelative.status).toBe(200);
+      expect(toRelative.body.month).toBeNull();
+      expect(toRelative.body.rule).toEqual(thomasSunday);
+
+      const toAbsolute = await as(paul).call("PATCH", `/api/special-dates/${created.body.id}`, {
+        type: "FEAST_DAY",
+        month: 7,
+        day: 25,
+      });
+      expect(toAbsolute.status).toBe(200);
+      expect(toAbsolute.body.rule).toBeNull();
+      expect(toAbsolute.body.month).toBe(7);
+    });
+
+    it("surfaces on the resolved day in the upcoming list, alongside a fixed name day", async () => {
+      // Pascha 2026-04-12, so Thomas Sunday is 2026-04-19.
+      await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "FEAST_DAY",
+        rule: thomasSunday,
+      });
+      await as(paul).call("POST", "/api/special-dates", {
+        personId: paul.personId,
+        type: "FEAST_DAY",
+        month: 4,
+        day: 19,
+      });
+
+      const { body } = await as(paul).call(
+        "GET",
+        "/api/special-dates/upcoming?start=2026-04-06&days=14"
+      );
+      const day = body.days.find((d: { date: string }) => d.date === "2026-04-19");
+      expect(day.dates).toHaveLength(2);
+      expect(day.dates.every((d: { type: string }) => d.type === "FEAST_DAY")).toBe(true);
+    });
+
+    it("places the resolved date in the right month for the calendar view", async () => {
+      await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "FEAST_DAY",
+        rule: thomasSunday,
+      });
+
+      const { body } = await as(paul).call("GET", "/api/special-dates/calendar?year=2026&month=4");
+      const day = body.days.find((d: { date: string }) => d.date === "2026-04-19");
+      expect(day.dates).toHaveLength(1);
+    });
+
+    it("surfaces twice in a 366-day window that spans a short Pascha-to-Pascha gap", async () => {
+      await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "FEAST_DAY",
+        rule: { reference: "PASCHA", direction: "AFTER", unit: "DAYS", count: 0, weekday: null },
+      });
+
+      const { body } = await as(paul).call(
+        "GET",
+        "/api/special-dates/upcoming?start=2025-04-20&days=366"
+      );
+      const matching = body.days.filter((d: { dates: unknown[] }) => d.dates.length > 0);
+      expect(matching.map((d: { date: string }) => d.date)).toEqual(["2025-04-20", "2026-04-12"]);
+    });
+
+    it("the delete audit entry records the rule as readable text, not raw JSON", async () => {
+      const created = await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "FEAST_DAY",
+        rule: thomasSunday,
+      });
+      await as(paul).call("DELETE", `/api/special-dates/${created.body.id}`);
+
+      const { rows } = await db().query<{ changes: Record<string, unknown> }>(
+        "select changes from audit_log where entity_id = $1 and action = 'specialDate.delete'",
+        [created.body.id]
+      );
+      expect(rows[0]!.changes.rule).toBe("1st Sunday after Pascha");
+    });
+
+    it("the create audit entry records the rule as readable text, not raw JSON", async () => {
+      const created = await as(paul).call("POST", "/api/special-dates", {
+        personId: anna,
+        type: "FEAST_DAY",
+        rule: thomasSunday,
+      });
+
+      const { rows } = await db().query<{ changes: Record<string, unknown> }>(
+        "select changes from audit_log where entity_id = $1 and action = 'specialDate.create'",
+        [created.body.id]
+      );
+      expect(rows[0]!.changes.rule).toBe("1st Sunday after Pascha");
+      expect(typeof rows[0]!.changes.rule).toBe("string");
+    });
+  });
+
   describe("upcoming", () => {
     beforeEach(async () => {
       // Paul: birthday 4 May 1985, age shown.
@@ -518,6 +670,7 @@ describe.skipIf(!hasDb)("special dates", () => {
         year: 2015,
         showYearCount: true,
         relatedPersonId: null,
+        rule: null,
       });
     });
 

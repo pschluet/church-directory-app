@@ -7,9 +7,13 @@ import {
   INHERITABLE_ATTRIBUTES,
   fullName,
   type InheritableAttribute,
+  type MoveableFeast,
   type PersonDto,
   type PersonSummaryDto,
+  type RuleDirection,
+  type RuleUnit,
   type SpecialDateDto,
+  type SpecialDateRule,
   type SpecialDateType,
 } from "../types";
 
@@ -199,13 +203,19 @@ export interface SpecialDateRow {
   person_family_id: string | null;
   person_app_user_id: string | null;
   type: SpecialDateType;
-  month: number;
-  day: number;
+  /** Null when `rule_reference` is set instead -- a relative name day has no fixed day. */
+  month: number | null;
+  day: number | null;
   year: number | null;
   show_year_count: boolean;
   related_person_id: string | null;
   related_first_name: string | null;
   related_last_name: string | null;
+  rule_reference: MoveableFeast | null;
+  rule_direction: RuleDirection | null;
+  rule_unit: RuleUnit | null;
+  rule_count: number | null;
+  rule_weekday: number | null;
 }
 
 export const SPECIAL_DATE_SELECT = `
@@ -224,11 +234,28 @@ export const SPECIAL_DATE_SELECT = `
          sd.show_year_count,
          sd.related_person_id,
          rp.first_name as related_first_name,
-         rp.last_name  as related_last_name
+         rp.last_name  as related_last_name,
+         sd.rule_reference,
+         sd.rule_direction,
+         sd.rule_unit,
+         sd.rule_count,
+         sd.rule_weekday
     from special_dates sd
     join persons_resolved p on p.id = sd.person_id
     left join persons_resolved rp on rp.id = sd.related_person_id
 `;
+
+/** Assembles the `rule` a relative name day was stored with, or null for a fixed day. */
+function toSpecialDateRule(row: SpecialDateRow): SpecialDateRule | null {
+  if (row.rule_reference == null) return null;
+  return {
+    reference: row.rule_reference,
+    direction: row.rule_direction as RuleDirection,
+    unit: row.rule_unit as RuleUnit,
+    count: row.rule_count as number,
+    weekday: row.rule_weekday,
+  };
+}
 
 /**
  * Whether the caller may see the year behind a date whose age is hidden.
@@ -274,6 +301,7 @@ export function toSpecialDate(caller: Caller, row: SpecialDateRow): SpecialDateD
     // A feast day is the patron saint's day, so its label comes from the
     // person rather than from a column on the date itself.
     patronSaint: row.type === "FEAST_DAY" ? row.person_patron_saint : null,
+    rule: toSpecialDateRule(row),
   };
 }
 
@@ -299,7 +327,7 @@ export async function loadSpecialDatesFor(
         -- or feast day has no second person and must still come back.
         and p.deleted_at is null
         and (sd.related_person_id is null or rp.deleted_at is null)
-      order by sd.month, sd.day, sd.type`,
+      order by sd.month nulls last, sd.day nulls last, sd.type`,
     [personId]
   );
   return rows.map((row) => toSpecialDate(caller, row));

@@ -13,9 +13,11 @@ import {
   hasMappableAddress,
   initials,
   memberPreview,
+  specialDateDateText,
   specialDateDetail,
   specialDateLabel,
   specialDatePartner,
+  specialDateRuleText,
 } from "../src/lib/format";
 
 describe("displayPhone", () => {
@@ -57,6 +59,69 @@ describe("specialDateDetail", () => {
   it("uses the patron saint for a name day", () => {
     expect(specialDateDetail({ type: "FEAST_DAY", patronSaint: "St. Anna" })).toBe("St. Anna");
     expect(specialDateDetail({ type: "FEAST_DAY", patronSaint: null })).toBeNull();
+  });
+});
+
+describe("specialDateRuleText", () => {
+  it("says nothing for a fixed date", () => {
+    expect(specialDateRuleText({ rule: null })).toBeNull();
+  });
+
+  it("names the rule for a moving name day", () => {
+    expect(
+      specialDateRuleText({
+        rule: { reference: "PASCHA", direction: "AFTER", unit: "WEEKDAY", count: 1, weekday: 0 },
+      })
+    ).toBe("1st Sunday after Pascha");
+  });
+});
+
+describe("specialDateDateText", () => {
+  it("formats a fixed date exactly as formatMonthDay does", () => {
+    expect(specialDateDateText({ month: 5, day: 4, year: null, rule: null })).toBe("May 4");
+    expect(specialDateDateText({ month: 5, day: 4, year: 1985, rule: null })).toBe("May 4, 1985");
+  });
+
+  it("resolves a moving date to its next occurrence, with the year shown", () => {
+    const rule = {
+      reference: "PASCHA" as const,
+      direction: "AFTER" as const,
+      unit: "WEEKDAY" as const,
+      count: 1,
+      weekday: 0,
+    };
+    // Pascha 2026-04-12, so Thomas Sunday is 2026-04-19.
+    expect(specialDateDateText({ month: null, day: null, year: null, rule }, "2026-01-01")).toBe(
+      "April 19, 2026"
+    );
+  });
+
+  it("counts today itself as the next occurrence", () => {
+    const rule = {
+      reference: "PASCHA" as const,
+      direction: "AFTER" as const,
+      unit: "DAYS" as const,
+      count: 0,
+      weekday: null,
+    };
+    expect(specialDateDateText({ month: null, day: null, year: null, rule }, "2026-04-12")).toBe(
+      "April 12, 2026"
+    );
+  });
+
+  it("moves on to next year's occurrence once this year's has passed", () => {
+    const rule = {
+      reference: "PASCHA" as const,
+      direction: "AFTER" as const,
+      unit: "WEEKDAY" as const,
+      count: 1,
+      weekday: 0,
+    };
+    // Thomas Sunday 2026 is 2026-04-19; asking the day after should resolve to
+    // Thomas Sunday 2027, which is Pascha 2027 (2027-05-02) plus 7 days.
+    expect(specialDateDateText({ month: null, day: null, year: null, rule }, "2026-04-20")).toBe(
+      "May 9, 2027"
+    );
   });
 });
 

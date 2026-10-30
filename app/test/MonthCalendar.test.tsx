@@ -16,6 +16,7 @@ const entry: SpecialDateOccurrenceDto = {
   relatedPersonId: null,
   relatedPersonName: null,
   patronSaint: null,
+  rule: null,
   date: "2026-05-04",
   yearCount: 41,
 };
