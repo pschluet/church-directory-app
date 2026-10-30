@@ -157,6 +157,23 @@ describe("AppShell navigation", () => {
     expect(screen.getAllByRole("link", { name: "Settings" })).toHaveLength(2);
   });
 
+  it("swaps the parish name for a home icon beside the bell, on a phone only", () => {
+    renderShell();
+    // Once, in the phone controls: from md up the parish name and the visible
+    // "Directory" link already go home.
+    const home = screen.getAllByRole("link", { name: "Home" });
+    expect(home).toHaveLength(1);
+    expect(home[0]).toHaveAttribute("href", "/");
+    expect(home[0]!.parentElement?.className).toContain("md:hidden");
+    expect(home[0]!.nextElementSibling).toContainElement(
+      screen.getAllByRole("button", { name: "Notifications" })[0]!
+    );
+
+    // The title is hidden under md and shown from md up, unchanged on desktop.
+    const title = screen.getAllByRole("link", { name: "All Saints" })[0]!;
+    expect(title).toHaveClass("hidden", "md:block");
+  });
+
   it("keeps settings out of the main navigation", () => {
     // It is a page somebody visits once, reached from the gear. In the nav it
     // would sit alongside Directory and Families as though it were somewhere
@@ -494,6 +511,20 @@ describe("the back chevron", () => {
     expect(chevron()).toBeInTheDocument();
 
     await userEvent.click(screen.getAllByRole("link", { name: "All Saints" })[0] as HTMLElement);
+
+    expect(await screen.findByText("Directory page")).toBeInTheDocument();
+    expect(chevron()).not.toBeInTheDocument();
+    expect(document.documentElement.dataset.nav).toBe("back");
+  });
+
+  it("starts over when the phone's home icon is tapped", async () => {
+    // The same clean slate as the title, which the phone header hides.
+    renderShell();
+    await userEvent.click(screen.getByRole("link", { name: "Open a person" }));
+    await screen.findByText("Person page");
+    expect(chevron()).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("link", { name: "Home" }));
 
     expect(await screen.findByText("Directory page")).toBeInTheDocument();
     expect(chevron()).not.toBeInTheDocument();
