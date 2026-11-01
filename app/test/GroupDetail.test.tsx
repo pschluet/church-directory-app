@@ -585,6 +585,91 @@ describe("GroupDetail", () => {
       );
     });
 
+    it("lets the Add a link fields take focus rather than handing it back to the message", async () => {
+      // The dialog is portalled out of the bar, but its clicks still bubble to it
+      // through React. The bar refocused the editor on every click that was not on
+      // a button, so a tap in the Text or Link field never kept focus: the keyboard
+      // stayed the message's and what was typed went into the message.
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      await typeInBar(bar, "see ");
+
+      await userEvent.click(screen.getByRole("button", { name: "Show formatting" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Link" }));
+      const dialog = await screen.findByRole("dialog", { name: "Add a link" });
+
+      const text = within(dialog).getByLabelText("Text");
+      await userEvent.click(text);
+      expect(text).toHaveFocus();
+      await userEvent.keyboard("Parish site");
+      expect(text).toHaveValue("Parish site");
+
+      const address = within(dialog).getByLabelText("Link");
+      await userEvent.click(address);
+      expect(address).toHaveFocus();
+      await userEvent.keyboard("https://example.org");
+      expect(address).toHaveValue("https://example.org");
+
+      // Nothing leaked into the message behind it.
+      expect(barText(bar)?.trim()).toBe("see");
+
+      await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+      await waitFor(() =>
+        expect(bar.querySelector("a")).toHaveAttribute("href", "https://example.org")
+      );
+      expect(bar.querySelector("a")).toHaveTextContent("Parish site");
+      expect(screen.queryByRole("dialog", { name: "Add a link" })).not.toBeInTheDocument();
+    });
+
+    it("returns to the message when the Add a link dialog is cancelled or dismissed", async () => {
+      // The dialog's field held the keyboard; without handing focus back it went
+      // down and the message was left unfocused behind it.
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      await userEvent.click(bar);
+      await userEvent.click(screen.getByRole("button", { name: "Show formatting" }));
+
+      await userEvent.click(await screen.findByRole("button", { name: "Link" }));
+      let dialog = await screen.findByRole("dialog", { name: "Add a link" });
+      expect(within(dialog).getByLabelText("Link")).toHaveFocus();
+      await userEvent.click(within(dialog).getByRole("button", { name: "Cancel" }));
+      expect(screen.queryByRole("dialog", { name: "Add a link" })).not.toBeInTheDocument();
+      await waitFor(() => expect(bar).toHaveFocus());
+
+      await userEvent.click(screen.getByRole("button", { name: "Link" }));
+      dialog = await screen.findByRole("dialog", { name: "Add a link" });
+      await userEvent.keyboard("{Escape}");
+      expect(screen.queryByRole("dialog", { name: "Add a link" })).not.toBeInTheDocument();
+      await waitFor(() => expect(bar).toHaveFocus());
+    });
+
+    it("saves a link typed without https://, and an email address as mail", async () => {
+      // `type="url"` makes the browser refuse both before the form submits, so Save
+      // did nothing at all -- though normalizeHref exists to accept them.
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      await userEvent.click(bar);
+      await userEvent.click(screen.getByRole("button", { name: "Show formatting" }));
+
+      const cases: [typed: string, href: string][] = [
+        ["example.org", "https://example.org"],
+        ["ann@example.org", "mailto:ann@example.org"],
+      ];
+      for (const [typed, href] of cases) {
+        await userEvent.click(await screen.findByRole("button", { name: "Link" }));
+        const dialog = await screen.findByRole("dialog", { name: "Add a link" });
+        await userEvent.type(within(dialog).getByLabelText("Link"), typed);
+        await userEvent.click(within(dialog).getByRole("button", { name: "Save" }));
+        await waitFor(() =>
+          expect(screen.queryByRole("dialog", { name: "Add a link" })).not.toBeInTheDocument()
+        );
+        expect(bar.querySelector(`a[href="${href}"]`)).toBeInTheDocument();
+      }
+    });
+
     it("formats typed markers in place, Slack's shortcuts included", async () => {
       stub();
       renderPage();
@@ -1166,6 +1251,53 @@ describe("GroupDetail", () => {
         fireEvent.focusOut(field, { relatedTarget: other });
         expect(window.scrollTo).not.toHaveBeenCalled();
         other.remove();
+      });
+
+      it("leaves the page alone when a field in a dialog lets go, as Save does on iOS", async () => {
+        // A tapped button takes no focus there, so the dialog's field loses it to
+        // nothing -- but the keyboard is not going away, focus is going back to the
+        // message. Snapping to the top left the message bar under the keyboard.
+        await openMessageField();
+        const sheet = document.createElement("div");
+        sheet.setAttribute("role", "dialog");
+        const input = document.createElement("input");
+        sheet.appendChild(input);
+        document.body.appendChild(sheet);
+        vi.stubGlobal("scrollY", 120);
+        fireEvent.focusOut(input);
+        expect(window.scrollTo).not.toHaveBeenCalled();
+        sheet.remove();
+      });
+
+      it("glides home when a dialog closes and focus has not gone back to a field", async () => {
+        // "New event": Post blurs its field to nothing, which is ignored above, and the
+        // keyboard then goes with the page still panned and the header off the top.
+        const field = await openMessageField();
+        field.blur();
+        const sheet = document.createElement("div");
+        sheet.setAttribute("role", "dialog");
+        document.body.appendChild(sheet);
+        vi.useFakeTimers();
+        vi.stubGlobal("scrollY", 120);
+        vi.mocked(window.scrollTo).mockClear();
+        sheet.remove();
+        await vi.advanceTimersByTimeAsync(200);
+        expect(window.scrollTo).toHaveBeenCalledWith({ top: 0, behavior: "smooth" });
+      });
+
+      it("leaves the page alone when a dialog closes and focus is back in a field", async () => {
+        // "Add a link": Save hands the keyboard back to the message.
+        const field = await openMessageField();
+        const sheet = document.createElement("div");
+        sheet.setAttribute("role", "dialog");
+        document.body.appendChild(sheet);
+        vi.useFakeTimers();
+        vi.stubGlobal("scrollY", 120);
+        vi.mocked(window.scrollTo).mockClear();
+        field.focus();
+        sheet.remove();
+        await vi.advanceTimersByTimeAsync(200);
+        expect(window.scrollTo).not.toHaveBeenCalled();
       });
 
       it("snaps to the top once the keyboard has gone if the glide was not enough", async () => {
@@ -2654,6 +2786,34 @@ describe("GroupDetail", () => {
       await userEvent.click(screen.getByRole("button", { name: "Add emoji" }));
       await userEvent.click(await screen.findByRole("button", { name: "pick party" }));
       expect(barText(bar)).toBe("hi 🎉 there");
+    });
+
+    it("keeps the message focused when the emoji button is pressed", async () => {
+      // On iOS a tapped button blurs the field to nothing; the page then reads that
+      // as the keyboard going away and snaps to the top, so the field came back
+      // from the picker half under the keyboard.
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      await userEvent.click(bar);
+      const notPrevented = fireEvent.mouseDown(screen.getByRole("button", { name: "Add emoji" }));
+      expect(notPrevented).toBe(false);
+      expect(bar).toHaveFocus();
+    });
+
+    it("keeps the message focused and the keyboard up when the + button is pressed", async () => {
+      // A press that took focus put the keyboard away on iOS, the page scrolled as it
+      // went, and that scroll closed the menu the moment it opened.
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      await userEvent.click(bar);
+      const trigger = screen.getByRole("button", { name: "Add to this message" });
+      expect(fireEvent.mouseDown(trigger)).toBe(false);
+
+      await userEvent.click(trigger);
+      expect(screen.getByRole("menu", { name: "Add to this message" })).toBeInTheDocument();
+      expect(bar).toHaveFocus();
     });
 
     describe("on a touch screen", () => {

@@ -349,6 +349,7 @@ export function AddReactionButton({
   className = "",
   children,
   onOpenChange,
+  keepFocus = false,
 }: {
   onPick: (emoji: string) => void;
   label?: string;
@@ -356,6 +357,13 @@ export function AddReactionButton({
   children?: ReactNode;
   /** So a row can stay lit while its picker is open. */
   onOpenChange?: (open: boolean) => void;
+  /**
+   * For a button beside a text field: pressing it must not take focus from the
+   * field. On iOS a tapped button blurs the field to nothing, which reads as the
+   * keyboard going away -- the page snaps back to the top, and the field, once
+   * the emoji goes in, is left half under the keyboard.
+   */
+  keepFocus?: boolean;
 }) {
   const [anchor, setAnchor] = useState<HTMLElement | null>(null);
 
@@ -371,6 +379,7 @@ export function AddReactionButton({
         aria-label={label}
         aria-haspopup="dialog"
         aria-expanded={anchor !== null}
+        onMouseDown={keepFocus ? (event) => event.preventDefault() : undefined}
         onClick={(event) => {
           if (anchor) return close();
           setAnchor(event.currentTarget);

@@ -2925,6 +2925,7 @@ export function ChatComposer({
   const plusMenu = (
     <MenuButton
       portal
+      keepFocus
       align="left"
       label="Add to this message"
       trigger={
@@ -3034,6 +3035,13 @@ export function ChatComposer({
           if (to ? isOutside(to) : Date.now() - pressedInside.current > 500) setActive(false);
         }}
         onClick={(event) => {
+          /*
+           * The "Add a link" dialog is portalled out of the bar, but React still
+           * bubbles its clicks here. Tapping its Text or Link field would hand
+           * focus straight back to the editor: the field never took it, the
+           * keyboard stayed the composer's, and typing landed in the message.
+           */
+          if (!event.currentTarget.contains(event.target as Node)) return;
           // A press anywhere on the resting pill, bar its buttons, starts typing.
           if (!(event.target as Element).closest("button")) editor?.commands.focus();
         }}
@@ -3093,6 +3101,7 @@ export function ChatComposer({
                 </button>
                 <AddReactionButton
                   label="Add emoji"
+                  keepFocus
                   onPick={insertEmoji}
                   onOpenChange={setEmojiOpen}
                   className="inline-flex size-9 shrink-0 items-center justify-center rounded-md text-ink-muted transition hover:bg-surface-muted hover:text-ink"
