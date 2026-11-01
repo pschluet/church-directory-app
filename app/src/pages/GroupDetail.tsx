@@ -3444,11 +3444,14 @@ const RSVP_LABELS: Record<GroupRsvpResponse, string> = {
  */
 export function useEventRsvp(groupId: string, postId: string, onChanged: () => Promise<unknown>) {
   return useMutation({
-    mutationFn: ({ response, guests }: { response: GroupRsvpResponse; guests: number }) =>
-      api(`/groups/${groupId}/posts/${postId}/rsvp`, {
-        method: "PUT",
-        body: { response, guestCount: guests },
-      }),
+    // A null response takes the RSVP back.
+    mutationFn: ({ response, guests }: { response: GroupRsvpResponse | null; guests: number }) =>
+      response === null
+        ? api(`/groups/${groupId}/posts/${postId}/rsvp`, { method: "DELETE" })
+        : api(`/groups/${groupId}/posts/${postId}/rsvp`, {
+            method: "PUT",
+            body: { response, guestCount: guests },
+          }),
     onSuccess: () => void onChanged(),
   });
 }
@@ -3490,7 +3493,8 @@ export function RsvpControl({
               type="button"
               aria-pressed={active}
               disabled={rsvp.isPending}
-              onClick={() => rsvp.mutate({ response: option, guests })}
+              title={active ? "Tap again to remove your RSVP" : undefined}
+              onClick={() => rsvp.mutate({ response: active ? null : option, guests })}
               className={`${segment} font-bold transition first:border-l-0 border-l border-line disabled:opacity-60 ${
                 active ? "bg-primary text-white" : "text-ink hover:bg-surface-muted"
               }`}

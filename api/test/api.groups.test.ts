@@ -806,6 +806,66 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(rsvp.body.event.rsvpCounts.yes).toBe(1);
       expect(rsvp.body.event.myRsvp).toEqual({ response: "YES", guestCount: 2 });
     });
+
+    it("takes an RSVP back, and is fine with having none", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await withMember(groupId);
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Potluck", eventDate: "2030-01-01" },
+      });
+      const url = `/api/groups/${groupId}/posts/${event.body.id}/rsvp`;
+      await as(member).call("PUT", url, { response: "YES", guestCount: 2 });
+
+      const removed = await as(member).call("DELETE", url);
+      expect(removed.status).toBe(200);
+      expect(removed.body.event.myRsvp).toBeNull();
+      expect(removed.body.event.rsvpCounts.yes).toBe(0);
+
+      const roster = await as(member).call("GET", `${url}s`);
+      expect(roster.body.rsvps).toHaveLength(0);
+
+      expect((await as(member).call("DELETE", url)).status).toBe(200);
+    });
+
+    it("refuses to take back an RSVP on a cancelled event or a non-event post", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await withMember(groupId);
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Potluck", eventDate: "2030-01-01" },
+      });
+      const text = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hello",
+      });
+      expect(
+        (await as(member).call("DELETE", `/api/groups/${groupId}/posts/${text.body.id}/rsvp`))
+          .status
+      ).toBe(404);
+
+      await as(creator).call("DELETE", `/api/groups/${groupId}/posts/${event.body.id}`);
+      expect(
+        (await as(member).call("DELETE", `/api/groups/${groupId}/posts/${event.body.id}/rsvp`))
+          .status
+      ).toBe(409);
+    });
+
+    it("bumps the group's activity stamp when an RSVP is taken back", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await withMember(groupId);
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Potluck", eventDate: "2030-01-01" },
+      });
+      const url = `/api/groups/${groupId}/posts/${event.body.id}/rsvp`;
+      await as(member).call("PUT", url, { response: "YES", guestCount: 0 });
+      const stamp = async () =>
+        (await db().query("select activity_at from groups where id = $1", [groupId])).rows[0]!
+          .activity_at as Date;
+      const before = await stamp();
+      await as(member).call("DELETE", url);
+      expect((await stamp()).getTime()).toBeGreaterThan(before.getTime());
+    });
   });
 
   describe("rsvp roster", () => {
