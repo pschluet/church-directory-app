@@ -568,15 +568,25 @@ export function MenuButton({
     const panelHeight = panel.getBoundingClientRect().height;
     const GAP = 8;
     /*
-     * The part of the page that can be seen, in the same coordinates as the
-     * button's box. `innerHeight` is not it once a keyboard is up: iOS shrinks it,
-     * while `position: fixed` -- and so `bottom` -- still measures against a
-     * layout viewport that kept its full height. Placing by `bottom` from the
-     * smaller number put the menu in the wrong place, so a flipped panel is
-     * placed by `top` as well.
+     * Where a `position: fixed` box with `top: 0` lands, in the coordinates
+     * `getBoundingClientRect` reports. Zero on a desktop. On an iPhone with the
+     * keyboard up the two disagree by the amount the page has been panned: a
+     * button's box is measured against what is visible while `top` is measured
+     * against a layout viewport that sits higher, so placing a menu at the
+     * button's own coordinates put it `offsetTop` pixels too high. Measured
+     * rather than assumed, so it is right wherever the two do agree.
      */
+    const probe = document.createElement("div");
+    probe.setAttribute("data-origin-probe", "");
+    probe.style.cssText =
+      "position:fixed;top:0;left:0;width:0;height:0;visibility:hidden;pointer-events:none";
+    document.body.appendChild(probe);
+    const originTop = probe.getBoundingClientRect().top;
+    probe.remove();
+
+    // The part that can be seen, in the same coordinates as the button's box.
     const viewport = window.visualViewport;
-    const visibleTop = viewport?.offsetTop ?? 0;
+    const visibleTop = originTop + (viewport?.offsetTop ?? 0);
     const visibleBottom = visibleTop + (viewport?.height ?? window.innerHeight);
     const roomBelow = visibleBottom - buttonBox.bottom;
     const roomAbove = buttonBox.top - visibleTop;
@@ -589,10 +599,12 @@ export function MenuButton({
         align === "right"
           ? { right: Math.max(8, window.innerWidth - buttonBox.right) }
           : { left: Math.max(8, buttonBox.left) };
+      // `top` is a layout coordinate, so take the offset back off.
+      const at = (y: number) => y - originTop;
       setFixedAt(
         flip
-          ? { top: Math.max(visibleTop + 4, buttonBox.top - panelHeight - 4), ...horizontal }
-          : { top: buttonBox.bottom + 4, ...horizontal }
+          ? { top: at(Math.max(visibleTop + 4, buttonBox.top - panelHeight - 4)), ...horizontal }
+          : { top: at(buttonBox.bottom + 4), ...horizontal }
       );
     }
 

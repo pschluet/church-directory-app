@@ -129,13 +129,23 @@ describe("MenuButton", () => {
  * saying where things are. Puts the trigger `roomBelow` pixels above the bottom
  * of a 800px viewport and gives the panel a real height.
  */
-function stubGeometry({ roomBelow, panelHeight }: { roomBelow: number; panelHeight: number }) {
+function stubGeometry({
+  roomBelow,
+  panelHeight,
+  originTop = 0,
+}: {
+  roomBelow: number;
+  panelHeight: number;
+  /** Where a fixed box at top: 0 lands in getBoundingClientRect's coordinates. */
+  originTop?: number;
+}) {
   const VIEWPORT = 800;
   Object.defineProperty(window, "innerHeight", { writable: true, value: VIEWPORT });
   vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (this: Element) {
     const isPanel = this.getAttribute("role") === "menu";
-    const top = isPanel ? 0 : VIEWPORT - roomBelow - 44;
-    const height = isPanel ? panelHeight : 44;
+    const isProbe = this.hasAttribute("data-origin-probe");
+    const top = isProbe ? originTop : isPanel ? 0 : VIEWPORT - roomBelow - 44;
+    const height = isProbe ? 0 : isPanel ? panelHeight : 44;
     return {
       x: 0,
       y: top,
@@ -285,6 +295,42 @@ describe("MenuButton with a keyboard up", () => {
     // Trigger top 456, panel 120 tall: 456 - 120 - 4.
     expect(panel.style.top).toBe("332px");
     expect(panel.style.bottom).toBe("");
+  });
+
+  it("places in layout coordinates when they sit above what is shown (a panned page)", async () => {
+    // As measured on an iPhone 18 Pro: the button's box reads 230-274, the visible
+    // area is 416 tall and starts 396 into the layout viewport, so a fixed box at
+    // top: 0 lands at -396 in the button's coordinates. The menu belongs above the
+    // button (84 in those coordinates), which is a `top` of 84 + 396 = 480. It was
+    // placed at 278 and appeared 396px too high, under the header.
+    vi.spyOn(Element.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: Element
+    ) {
+      const isPanel = this.getAttribute("role") === "menu";
+      const isProbe = this.hasAttribute("data-origin-probe");
+      const top = isProbe ? -396 : isPanel ? 0 : 230;
+      const height = isProbe ? 0 : isPanel ? 142 : 44;
+      return {
+        x: 0,
+        y: top,
+        top,
+        bottom: top + height,
+        left: 0,
+        right: 224,
+        width: 224,
+        height,
+        toJSON: () => ({}),
+      } as DOMRect;
+    });
+    Object.defineProperty(window, "innerHeight", { writable: true, value: 437 });
+    Object.defineProperty(window, "visualViewport", {
+      value: new FakeViewport(416, 396),
+      configurable: true,
+    });
+    const { trigger } = renderComposerMenu();
+    await userEvent.click(trigger);
+
+    expect(screen.getByRole("menu").style.top).toBe("480px");
   });
 
   it("opens below when the visible area leaves room", async () => {
