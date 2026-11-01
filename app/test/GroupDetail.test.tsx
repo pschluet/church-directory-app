@@ -111,6 +111,7 @@ function group(overrides: Partial<GroupDto> = {}): GroupDto {
     unreadCount: 0,
     pendingJoinRequestId: null,
     pinned: false,
+    parishWide: false,
     organizationId: "org-1",
     postingRestricted: false,
     invitesRestricted: false,
@@ -125,6 +126,8 @@ function group(overrides: Partial<GroupDto> = {}): GroupDto {
     canPost: true,
     canInvite: true,
     canReply: true,
+    canLeave: true,
+    canRemoveMembers: true,
     canReact: true,
     canModerate: false,
     canConvertVisibility: [],
@@ -1031,6 +1034,64 @@ describe("GroupDetail", () => {
       renderPage("/groups/g1/threads/root-1");
       await typeInBar(await screen.findByRole("textbox", { name: "Reply" }), "thinking");
       expect(apiMock.mock.calls.some((call) => call[0] === "/groups/g1/typing")).toBe(false);
+    });
+  });
+
+  describe("a parish-wide group", () => {
+    const wide = { parishWide: true, canLeave: false, canRemoveMembers: false, canInvite: false };
+
+    it("offers no way to leave, and no way to remove a member", async () => {
+      stub({ group: group({ ...wide, canModerate: true, myRole: "ADMIN" }) });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: /3 members · Parish wide/ }));
+      await screen.findByText("Ann Lee");
+      expect(screen.queryByRole("button", { name: "Leave group" })).not.toBeInTheDocument();
+      await userEvent.click(screen.getByRole("button", { name: "Actions for Ann Lee" }));
+      expect(await screen.findByRole("menuitem", { name: "Make admin" })).toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: "Remove from group" })).not.toBeInTheDocument();
+    });
+
+    it("lets a parish admin turn it off, after confirming", async () => {
+      adminState.isAdmin = true;
+      stub({ group: group({ ...wide, canModerate: true, myRole: "ADMIN" }) });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: /3 members/ }));
+      await userEvent.click(await screen.findByRole("button", { name: "Stop being parish wide" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Stop it" }));
+      expect(apiMock).toHaveBeenCalledWith("/groups/g1/parish-wide", {
+        method: "POST",
+        body: { parishWide: false },
+      });
+    });
+
+    it("lets a parish admin make an ordinary group parish wide", async () => {
+      adminState.isAdmin = true;
+      stub({ group: group({ canModerate: true, myRole: "ADMIN" }) });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: /3 members/ }));
+      await userEvent.click(await screen.findByRole("button", { name: "Make parish wide" }));
+      await userEvent.click(await screen.findByRole("button", { name: "Make it parish wide" }));
+      expect(apiMock).toHaveBeenCalledWith("/groups/g1/parish-wide", {
+        method: "POST",
+        body: { parishWide: true },
+      });
+    });
+
+    it("does not offer parish wide on a private group", async () => {
+      adminState.isAdmin = true;
+      stub({ group: group({ visibility: "PRIVATE", canModerate: true, myRole: "ADMIN" }) });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: /3 members/ }));
+      await screen.findByText("Group settings");
+      expect(screen.queryByRole("button", { name: "Make parish wide" })).not.toBeInTheDocument();
+    });
+
+    it("hides the setting from a group admin who is not a parish admin", async () => {
+      stub({ group: group({ canModerate: true, myRole: "ADMIN" }) });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: /3 members/ }));
+      await screen.findByText("Group settings");
+      expect(screen.queryByRole("button", { name: "Make parish wide" })).not.toBeInTheDocument();
     });
   });
 

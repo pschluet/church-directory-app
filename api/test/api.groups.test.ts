@@ -1,4 +1,5 @@
 import { afterAll, beforeEach, describe, expect, inject, it } from "vitest";
+import { setAccountOrganization } from "../src/services/membership";
 import { closeDatabase, resetTables, testDb } from "./helpers/testDb";
 import { client } from "./helpers/request";
 import {
@@ -2104,6 +2105,155 @@ describe.skipIf(!hasDb)("groups", () => {
         [postId]
       );
       expect(rows[0]!.post_excerpt).toBe("[Poll] Where shall we eat?");
+    });
+  });
+
+  describe("parish wide", () => {
+    async function memberIds(groupId: string): Promise<string[]> {
+      const { rows } = await db().query<{ app_user_id: string }>(
+        "select app_user_id from group_members where group_id = $1",
+        [groupId]
+      );
+      return rows.map((r) => r.app_user_id);
+    }
+    async function createParishWide(): Promise<string> {
+      const res = await as(parishAdmin).call("POST", "/api/groups", {
+        title: "Everyone",
+        visibility: "PUBLIC",
+        parishWide: true,
+      });
+      expect(res.status).toBe(201);
+      return res.body.id as string;
+    }
+
+    it("adds every account in the parish when an admin creates one", async () => {
+      const otherOrg = await createOrganization(db(), "Other Parish", "other-parish");
+      const elsewhere = await createUser(db(), { organizationId: otherOrg });
+      await createNonUserPerson(db(), { organizationId: orgId, familyId: null });
+
+      const groupId = await createParishWide();
+      const ids = await memberIds(groupId);
+      expect(ids.sort()).toEqual(
+        [creator, member, outsider, parishAdmin].map((u) => u.appUserId).sort()
+      );
+      expect(ids).not.toContain(elsewhere.appUserId);
+      const res = await as(member).call("GET", `/api/groups/${groupId}`);
+      expect(res.body.parishWide).toBe(true);
+      expect(res.body.canLeave).toBe(false);
+    });
+
+    it("refuses a non-admin creating one, even a group admin", async () => {
+      const res = await as(creator).call("POST", "/api/groups", {
+        title: "Everyone",
+        parishWide: true,
+      });
+      expect(res.status).toBe(403);
+
+      const groupId = await createGroup(creator);
+      const toggle = await as(creator).call("POST", `/api/groups/${groupId}/parish-wide`, {
+        parishWide: true,
+      });
+      expect(toggle.status).toBe(403);
+    });
+
+    it("converts an existing group, adding everyone", async () => {
+      const groupId = await createGroup(creator);
+      expect(await memberIds(groupId)).toHaveLength(1);
+
+      const res = await as(parishAdmin).call("POST", `/api/groups/${groupId}/parish-wide`, {
+        parishWide: true,
+      });
+      expect(res.status).toBe(200);
+      expect(await memberIds(groupId)).toHaveLength(4);
+    });
+
+    it("adds accounts that arrive later, but not deleted records", async () => {
+      const groupId = await createParishWide();
+      const newcomer = await createUser(db(), { organizationId: orgId, firstName: "New" });
+      expect(await memberIds(groupId)).toContain(newcomer.appUserId);
+
+      await createNonUserPerson(db(), { organizationId: orgId, familyId: null });
+      expect(await memberIds(groupId)).toHaveLength(5);
+    });
+
+    it("moves an account out of the old parish's group and into the new one's", async () => {
+      const groupId = await createParishWide();
+      const otherOrg = await createOrganization(db(), "Other Parish", "other-parish");
+      const otherAdmin = await createUser(db(), { organizationId: otherOrg, role: "ADMIN" });
+      const otherGroup = (
+        await as(otherAdmin).call("POST", "/api/groups", { title: "Theirs", parishWide: true })
+      ).body.id as string;
+
+      await setAccountOrganization(db(), { appUserId: member.appUserId, organizationId: otherOrg });
+      expect(await memberIds(groupId)).not.toContain(member.appUserId);
+      expect(await memberIds(otherGroup)).toContain(member.appUserId);
+    });
+
+    it("stops anyone leaving, being removed, or being invited", async () => {
+      const groupId = await createParishWide();
+      const leave = await as(member).call("POST", `/api/groups/${groupId}/leave`);
+      expect(leave.status).toBe(409);
+
+      const remove = await as(parishAdmin).call(
+        "DELETE",
+        `/api/groups/${groupId}/members/${member.personId}`
+      );
+      expect(remove.status).toBe(409);
+
+      const invite = await as(parishAdmin).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      expect(invite.status).toBe(403);
+    });
+
+    it("lets people leave again once turned off, and stops adding new accounts", async () => {
+      const groupId = await createParishWide();
+      const off = await as(parishAdmin).call("POST", `/api/groups/${groupId}/parish-wide`, {
+        parishWide: false,
+      });
+      expect(off.status).toBe(200);
+
+      const leave = await as(member).call("POST", `/api/groups/${groupId}/leave`);
+      expect(leave.status).toBe(204);
+      const newcomer = await createUser(db(), { organizationId: orgId });
+      expect(await memberIds(groupId)).not.toContain(newcomer.appUserId);
+    });
+
+    it("only allows a public group to be parish wide", async () => {
+      const create = await as(parishAdmin).call("POST", "/api/groups", {
+        title: "Everyone",
+        visibility: "PRIVATE",
+        parishWide: true,
+      });
+      expect(create.status).toBe(400);
+
+      const groupId = await createGroup(creator, "PRIVATE");
+      const toggle = await as(parishAdmin).call("POST", `/api/groups/${groupId}/parish-wide`, {
+        parishWide: true,
+      });
+      expect(toggle.status).toBe(409);
+    });
+
+    it("keeps a parish-wide group public", async () => {
+      const groupId = await createParishWide();
+      const res = await as(parishAdmin).call("POST", `/api/groups/${groupId}/visibility`, {
+        visibility: "PRIVATE",
+      });
+      expect(res.status).toBe(409);
+      const detail = await as(parishAdmin).call("GET", `/api/groups/${groupId}`);
+      expect(detail.body.canConvertVisibility).toEqual([]);
+      await expect(
+        db().query("update groups set visibility = 'SECRET' where id = $1", [groupId])
+      ).rejects.toThrow();
+    });
+
+    it("refuses to make an archived group parish wide", async () => {
+      const groupId = await createGroup(creator);
+      await as(creator).call("POST", `/api/groups/${groupId}/archive`);
+      const res = await as(parishAdmin).call("POST", `/api/groups/${groupId}/parish-wide`, {
+        parishWide: true,
+      });
+      expect(res.status).toBe(409);
     });
   });
 });

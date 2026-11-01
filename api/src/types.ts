@@ -219,6 +219,7 @@ export const AUDIT_ACTIONS = [
   "group.create",
   "group.update",
   "group.convertVisibility",
+  "group.setParishWide",
   "group.archive",
   "group.delete",
   "group.addMember",
@@ -288,6 +289,7 @@ const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "group.create": "Group created",
   "group.update": "Group edited",
   "group.convertVisibility": "Group visibility changed",
+  "group.setParishWide": "Group parish-wide setting changed",
   "group.archive": "Group archived",
   "group.delete": "Group deleted",
   "group.addMember": "Group member added",
@@ -1069,11 +1071,17 @@ export const GROUP_POLL_MAX_OPTIONS = 10;
 /** Matches PRAYER_REQUEST_MAX_IMAGES's reasoning: a feed stays readable. */
 export const GROUP_POST_MAX_ATTACHMENTS = 10;
 
-export const groupCreateSchema = z.object({
-  title: z.string().trim().min(1, "A group needs a title").max(GROUP_TITLE_MAX),
-  description: trimmedOptional(GROUP_DESCRIPTION_MAX),
-  visibility: groupVisibilitySchema.default("PUBLIC"),
-});
+export const groupCreateSchema = z
+  .object({
+    title: z.string().trim().min(1, "A group needs a title").max(GROUP_TITLE_MAX),
+    description: trimmedOptional(GROUP_DESCRIPTION_MAX),
+    visibility: groupVisibilitySchema.default("PUBLIC"),
+    parishWide: z.boolean().default(false),
+  })
+  .refine((group) => !group.parishWide || group.visibility === "PUBLIC", {
+    message: "A parish-wide group has to be public",
+    path: ["parishWide"],
+  });
 export type GroupCreate = z.infer<typeof groupCreateSchema>;
 
 export const groupUpdateSchema = z.object({
@@ -1081,6 +1089,8 @@ export const groupUpdateSchema = z.object({
   description: trimmedOptional(GROUP_DESCRIPTION_MAX),
 });
 export type GroupUpdate = z.infer<typeof groupUpdateSchema>;
+
+export const groupParishWideSchema = z.object({ parishWide: z.boolean() });
 
 export const groupVisibilityChangeSchema = z.object({ visibility: groupVisibilitySchema });
 export type GroupVisibilityChange = z.infer<typeof groupVisibilityChangeSchema>;
@@ -1307,6 +1317,8 @@ export interface GroupSummaryDto {
   pendingJoinRequestId: string | null;
   /** Whether the caller has pinned this group to the top of their list. */
   pinned: boolean;
+  /** Everyone in the parish with an account is a member, and nobody can leave. */
+  parishWide: boolean;
 }
 
 export interface GroupDto extends GroupSummaryDto {
@@ -1332,6 +1344,10 @@ export interface GroupDto extends GroupSummaryDto {
   canPost: boolean;
   canInvite: boolean;
   canReply: boolean;
+  /** False in a parish-wide group, which nobody leaves. */
+  canLeave: boolean;
+  /** False in a parish-wide group, which nobody is removed from. */
+  canRemoveMembers: boolean;
   /** May add or remove the caller's own emoji reactions. */
   canReact: boolean;
   canModerate: boolean;

@@ -6,6 +6,7 @@ import { Groups } from "../src/pages/Groups";
 import { renderWithProviders } from "./utils";
 
 const apiMock = vi.fn();
+const adminState = { isAdmin: false };
 
 vi.mock("../src/lib/api", async () => {
   const actual = await vi.importActual<typeof import("../src/lib/api")>("../src/lib/api");
@@ -15,6 +16,7 @@ vi.mock("../src/lib/api", async () => {
 vi.mock("../src/context/MeContext", () => ({
   useMe: () => ({
     me: { appUser: { personId: "person-me" } } as unknown as MeDto,
+    isAdmin: adminState.isAdmin,
     organizationId: "org-1",
   }),
 }));
@@ -31,12 +33,14 @@ function group(overrides: Partial<GroupSummaryDto>): GroupSummaryDto {
     unreadCount: 0,
     pendingJoinRequestId: null,
     pinned: false,
+    parishWide: false,
     ...overrides,
   };
 }
 
 describe("Groups", () => {
   beforeEach(() => {
+    adminState.isAdmin = false;
     apiMock.mockReset();
     apiMock.mockImplementation((path: string) => {
       if (path === "/groups")
@@ -126,5 +130,60 @@ describe("Groups", () => {
     );
     await userEvent.click(pinned);
     expect(apiMock).toHaveBeenCalledWith("/groups/g2/pin", { method: "DELETE" });
+  });
+
+  it("marks a parish-wide group with a badge", async () => {
+    apiMock.mockImplementation((path: string) =>
+      path === "/groups"
+        ? Promise.resolve({
+            groups: [
+              group({ id: "g1", title: "Everyone", parishWide: true }),
+              group({ id: "g2", title: "Choir" }),
+            ],
+          })
+        : Promise.resolve({ reports: [] })
+    );
+    renderWithProviders(<Groups />);
+    await screen.findByText("Everyone");
+    expect(screen.getByText("Everyone").closest("a")).toHaveTextContent("Parish wide");
+    expect(screen.getByText("Everyone").closest("a")).not.toHaveTextContent(/member/);
+    expect(screen.getByText("Choir").closest("a")).not.toHaveTextContent("Parish wide");
+    expect(screen.getByText("Choir").closest("a")).toHaveTextContent(/3\s*members$/);
+  });
+
+  describe("starting a group", () => {
+    async function openCreate() {
+      renderWithProviders(<Groups />);
+      await screen.findByText("Youth Group");
+      await userEvent.click(screen.getByRole("button", { name: "Start a group" }));
+    }
+
+    it("offers Parish wide to an admin, and sends it", async () => {
+      adminState.isAdmin = true;
+      await openCreate();
+      await userEvent.type(await screen.findByRole("textbox", { name: "Title" }), "Everyone");
+      await userEvent.click(screen.getByRole("checkbox", { name: /Parish wide/ }));
+      await userEvent.click(screen.getByRole("button", { name: "Create" }));
+      expect(apiMock).toHaveBeenCalledWith(
+        "/groups",
+        expect.objectContaining({
+          method: "POST",
+          body: expect.objectContaining({ parishWide: true }),
+        })
+      );
+    });
+
+    it("only offers Parish wide while the group is public", async () => {
+      adminState.isAdmin = true;
+      await openCreate();
+      await userEvent.click(await screen.findByRole("radio", { name: /Private/ }));
+      expect(screen.queryByRole("checkbox", { name: /Parish wide/ })).not.toBeInTheDocument();
+    });
+
+    it("does not offer Parish wide to anyone else", async () => {
+      await openCreate();
+      await screen.findByRole("textbox", { name: "Title" });
+      expect(screen.queryByRole("checkbox", { name: /Parish wide/ })).not.toBeInTheDocument();
+    });
   });
 });

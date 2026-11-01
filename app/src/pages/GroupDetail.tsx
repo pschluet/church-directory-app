@@ -348,7 +348,7 @@ export function GroupDetail() {
                   className="inline-flex items-center gap-0.5 whitespace-nowrap font-bold text-accent underline-offset-2 hover:underline focus-visible:underline"
                 >
                   {group.memberCount} {group.memberCount === 1 ? "member" : "members"} ·{" "}
-                  {groupVisibilityLabel(group.visibility)}
+                  {group.parishWide ? "Parish wide" : groupVisibilityLabel(group.visibility)}
                   <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
                     <path d="M7.3 4.3a1 1 0 0 1 1.4 0l5 5a1 1 0 0 1 0 1.4l-5 5a1 1 0 0 1-1.4-1.4L11.6 10 7.3 5.7a1 1 0 0 1 0-1.4Z" />
                   </svg>
@@ -4202,6 +4202,7 @@ function MembersModal({
                 member={member}
                 groupId={groupId}
                 canModerate={group.canModerate}
+                canRemove={group.canRemoveMembers}
                 onChanged={onChanged}
               />
             ))}
@@ -4221,7 +4222,7 @@ function MembersModal({
           />
         )}
 
-        {group.myRole && (
+        {group.canLeave && (
           <div className="border-t border-line pt-4">
             <Button variant="danger" onClick={onLeave}>
               Leave group
@@ -4248,11 +4249,14 @@ function MemberRow({
   member,
   groupId,
   canModerate,
+  canRemove,
   onChanged,
 }: {
   member: GroupMemberDto;
   groupId: string;
   canModerate: boolean;
+  /** False in a parish-wide group, which nobody is removed from. */
+  canRemove: boolean;
   onChanged: () => Promise<unknown>;
 }) {
   const { me } = useMe();
@@ -4304,9 +4308,11 @@ function MemberRow({
             ) : (
               <MenuItem onSelect={() => setRole.mutate("MEMBER")}>Remove as admin</MenuItem>
             )}
-            <MenuItem danger onSelect={() => removeMember.mutate()}>
-              Remove from group
-            </MenuItem>
+            {canRemove && (
+              <MenuItem danger onSelect={() => removeMember.mutate()}>
+                Remove from group
+              </MenuItem>
+            )}
           </MenuButton>
         )}
       </div>
@@ -4446,6 +4452,7 @@ function AdminSettingsPanel({
   const [repliesRestricted, setRepliesRestricted] = useState(group.repliesRestricted);
   const [confirmArchive, setConfirmArchive] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [confirmParishWide, setConfirmParishWide] = useState(false);
   const { organizationId } = useMe();
   const queryClient = useQueryClient();
   const [title, setTitle] = useState(group.title);
@@ -4480,6 +4487,16 @@ function AdminSettingsPanel({
     mutationFn: (visibility: GroupVisibility) =>
       api(`/groups/${groupId}/visibility`, { method: "POST", body: { visibility } }),
     onSuccess: () => void onChanged(),
+  });
+
+  const setParishWide = useMutation({
+    mutationFn: (parishWide: boolean) =>
+      api(`/groups/${groupId}/parish-wide`, { method: "POST", body: { parishWide } }),
+    onSuccess: () => {
+      setConfirmParishWide(false);
+      void queryClient.invalidateQueries({ queryKey: qk.groups(organizationId) });
+      void onChanged();
+    },
   });
 
   const archive = useMutation({
@@ -4592,6 +4609,20 @@ function AdminSettingsPanel({
         </div>
       )}
 
+      {isAdmin && (group.parishWide || (!group.archivedAt && group.visibility === "PUBLIC")) && (
+        <div>
+          <p className="mb-1 font-bold text-ink">Parish wide</p>
+          <p className="mb-2 text-sm text-ink-muted">
+            {group.parishWide
+              ? "Everyone in the directory is a member, and nobody can leave."
+              : "Make everyone in the directory a member, with nobody able to leave."}
+          </p>
+          <Button variant="secondary" onClick={() => setConfirmParishWide(true)}>
+            {group.parishWide ? "Stop being parish wide" : "Make parish wide"}
+          </Button>
+        </div>
+      )}
+
       <div className="flex flex-wrap gap-2 border-t border-line pt-4">
         {!group.archivedAt && (
           <Button variant="danger" onClick={() => setConfirmArchive(true)}>
@@ -4614,6 +4645,22 @@ function AdminSettingsPanel({
           onClose={() => setConfirmArchive(false)}
         >
           <p>It becomes read-only and drops out of the groups list for everyone but its members.</p>
+        </ConfirmDialog>
+      )}
+
+      {confirmParishWide && (
+        <ConfirmDialog
+          title={group.parishWide ? "Stop being parish wide?" : "Make this group parish wide?"}
+          confirmLabel={group.parishWide ? "Stop it" : "Make it parish wide"}
+          busy={setParishWide.isPending}
+          onConfirm={() => setParishWide.mutate(!group.parishWide)}
+          onClose={() => setConfirmParishWide(false)}
+        >
+          <p>
+            {group.parishWide
+              ? "Everyone stays in the group, but people can leave, and new people are no longer added."
+              : "Everyone in the directory is added now, and everyone added later joins too. Nobody can leave."}
+          </p>
         </ConfirmDialog>
       )}
 
