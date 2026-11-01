@@ -1633,6 +1633,32 @@ describe("GroupDetail", () => {
       );
     });
 
+    it("takes the RSVP back when you tap the answer you already gave", async () => {
+      stub({
+        pages: [
+          {
+            posts: [event({ myRsvp: { response: "MAYBE", guestCount: 0 } })],
+            nextCursor: null,
+          },
+        ],
+      });
+      renderPage();
+      await screen.findByRole("heading", { name: "Parish Potluck" });
+      const group = screen.getByRole("group", { name: "Your RSVP" });
+      await userEvent.click(within(group).getByRole("button", { name: "Maybe" }));
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts/e1/rsvp", { method: "DELETE" })
+      );
+      // A different answer still replaces it.
+      await userEvent.click(within(group).getByRole("button", { name: "Going" }));
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts/e1/rsvp", {
+          method: "PUT",
+          body: { response: "YES", guestCount: 0 },
+        })
+      );
+    });
+
     it("offers no guest stepper unless you are going, and none below zero", async () => {
       stub({
         pages: [

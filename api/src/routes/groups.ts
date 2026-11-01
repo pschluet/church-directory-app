@@ -1537,6 +1537,31 @@ routes.put("/:id/posts/:postId/rsvp", async (c) => {
   return c.json(toGroupPostDto(updated!, access, caller.personId));
 });
 
+/** Taking back your own RSVP. Having none already is fine -- the end state is the same. */
+routes.delete("/:id/posts/:postId/rsvp", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const postId = uuidSchema.parse(c.req.param("postId"));
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroupContent(access);
+
+  const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  if (row?.kind !== "EVENT") throw new HTTPException(404, { message: "Event not found" });
+  if (row.deleted_at) throw new HTTPException(409, { message: "That event was cancelled" });
+
+  await db.query("delete from group_event_rsvps where post_id = $1 and app_user_id = $2", [
+    postId,
+    caller.appUserId,
+  ]);
+
+  const updated = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  return c.json(toGroupPostDto(updated!, access, caller.personId));
+});
+
 /**
  * Casting, changing or taking back a vote. The body is the caller's whole
  * ballot, which replaces whatever they had in one transaction -- that is what
