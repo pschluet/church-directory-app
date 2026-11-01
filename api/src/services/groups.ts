@@ -37,6 +37,7 @@ export interface GroupRow {
   posting_restricted: boolean;
   invites_restricted: boolean;
   replies_restricted: boolean;
+  parish_wide: boolean;
   archived_at: Date | string | null;
   created_by_person_id: string | null;
   created_at: Date | string;
@@ -45,7 +46,7 @@ export interface GroupRow {
 
 export const GROUP_COLUMNS = `
   g.id, g.organization_id, g.title, g.description, g.visibility, g.posting_restricted, g.invites_restricted,
-  g.replies_restricted, g.archived_at, g.created_by_person_id, g.created_at, g.updated_at
+  g.replies_restricted, g.parish_wide, g.archived_at, g.created_by_person_id, g.created_at, g.updated_at
 `;
 
 export async function loadGroupRow(
@@ -122,6 +123,10 @@ export interface GroupAccess {
   /** Hard delete. Parish-admin only, regardless of group role -- see loadGroupRow. */
   canDelete: boolean;
   canRequestToJoin: boolean;
+  /** Nobody leaves a parish-wide group. */
+  canLeave: boolean;
+  /** Nobody is removed from a parish-wide group. */
+  canRemoveMembers: boolean;
 }
 
 export function groupAccess(
@@ -147,8 +152,10 @@ export function groupAccess(
     !isArchived &&
     canReadContent &&
     (isAdminRole || (effectiveRole === "MEMBER" && !group.replies_restricted));
+  // Everyone in a parish-wide group is already in, so there is no one to add.
   const canInvite =
     !isArchived &&
+    !group.parish_wide &&
     canReadContent &&
     (isAdminRole || (effectiveRole === "MEMBER" && !group.invites_restricted));
 
@@ -164,10 +171,18 @@ export function groupAccess(
     canReact: (canPost || canReply) && !viewingAsAdmin,
     canInvite,
     canModerate: isAdminRole,
-    canConvertTo: isAdminRole ? [...GROUP_VISIBILITY_TARGETS[group.visibility]] : [],
+    // A parish-wide group stays public for as long as it is parish wide.
+    canConvertTo:
+      isAdminRole && !group.parish_wide ? [...GROUP_VISIBILITY_TARGETS[group.visibility]] : [],
     canDelete: caller.isAdmin,
     canRequestToJoin:
-      !isMember && !isArchived && group.visibility === "PRIVATE" && caller.personId !== null,
+      !isMember &&
+      !isArchived &&
+      !group.parish_wide &&
+      group.visibility === "PRIVATE" &&
+      caller.personId !== null,
+    canLeave: isMember && !group.parish_wide,
+    canRemoveMembers: isAdminRole && !group.parish_wide,
   };
 }
 
@@ -228,6 +243,41 @@ export function assertCanConvertVisibility(access: GroupAccess, to: GroupVisibil
   if (!access.canConvertTo.includes(to)) {
     throw new HTTPException(409, { message: "That visibility change is not allowed" });
   }
+}
+
+export function assertCanSetParishWide(caller: Caller): void {
+  if (!caller.isAdmin) {
+    throw new HTTPException(403, {
+      message: "Only a parish administrator can make a group parish wide",
+    });
+  }
+}
+
+export function assertNotParishWide(group: GroupRow): void {
+  if (group.parish_wide) {
+    throw new HTTPException(409, { message: "Everyone in the parish belongs to this group" });
+  }
+}
+
+/**
+ * Adds every account in the parish to a group -- the one-off half of making a
+ * group parish wide; the trigger in V35 covers accounts that arrive later.
+ * There are no join requests to settle: only a Public group can be parish wide,
+ * and nobody asks to join a Public group.
+ */
+export async function addEveryoneToGroup(
+  q: Queryable,
+  groupId: string,
+  organizationId: string
+): Promise<void> {
+  await q.query(
+    `insert into group_members (group_id, app_user_id, person_id)
+     select $1, p.app_user_id, p.id
+       from persons p
+      where p.organization_id = $2 and p.app_user_id is not null and p.deleted_at is null
+     on conflict (group_id, app_user_id) do nothing`,
+    [groupId, organizationId]
+  );
 }
 
 export function assertCanDeleteGroup(access: GroupAccess): void {

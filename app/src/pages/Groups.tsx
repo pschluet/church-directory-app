@@ -208,6 +208,7 @@ export function Groups() {
       {creating && (
         <CreateGroupModal
           existingTitles={groups.map((g) => g.title)}
+          isAdmin={isAdmin}
           onClose={() => setCreating(false)}
           onCreated={async () => {
             setCreating(false);
@@ -300,6 +301,12 @@ function GroupRow({
         {unread && <span className="sr-only">, unread messages</span>}
       </h3>
 
+      {group.parishWide && (
+        <span title="Everyone in the parish is a member" className="shrink-0">
+          <Badge>Parish wide</Badge>
+        </span>
+      )}
+
       {group.pendingJoinRequestId && (
         <span title="Waiting for approval" className="shrink-0">
           <Badge tone="accent">
@@ -309,16 +316,18 @@ function GroupRow({
         </span>
       )}
 
-      <span className="flex shrink-0 items-center gap-1 text-sm tabular-nums text-ink-muted">
-        <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
-          <circle cx="7.5" cy="6.5" r="3" />
-          <path d="M1.5 16.5c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5v.5h-12v-.5Z" />
-          <circle cx="14" cy="7" r="2.4" />
-          <path d="M14.5 17h4v-.6c0-2.7-2-4.6-4.6-4.6-.7 0-1.3.1-1.9.4 1.5 1.1 2.5 2.8 2.5 4.8Z" />
-        </svg>
-        {group.memberCount}
-        <span className="sr-only">{group.memberCount === 1 ? "member" : "members"}</span>
-      </span>
+      {!group.parishWide && (
+        <span className="flex shrink-0 items-center gap-1 text-sm tabular-nums text-ink-muted">
+          <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+            <circle cx="7.5" cy="6.5" r="3" />
+            <path d="M1.5 16.5c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5v.5h-12v-.5Z" />
+            <circle cx="14" cy="7" r="2.4" />
+            <path d="M14.5 17h4v-.6c0-2.7-2-4.6-4.6-4.6-.7 0-1.3.1-1.9.4 1.5 1.1 2.5 2.8 2.5 4.8Z" />
+          </svg>
+          {group.memberCount}
+          <span className="sr-only">{group.memberCount === 1 ? "member" : "members"}</span>
+        </span>
+      )}
 
       <button
         type="button"
@@ -345,23 +354,31 @@ function GroupRow({
 
 function CreateGroupModal({
   existingTitles,
+  isAdmin,
   onClose,
   onCreated,
 }: {
   existingTitles: string[];
+  isAdmin: boolean;
   onClose: () => void;
   onCreated: () => Promise<void>;
 }) {
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [visibility, setVisibility] = useState<GroupVisibility>("PUBLIC");
+  const [parishWide, setParishWide] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const duplicate = existingTitles.some((t) => t.toLowerCase() === title.trim().toLowerCase());
 
   async function submit(): Promise<void> {
-    const parsed = groupCreateSchema.safeParse({ title, description, visibility });
+    const parsed = groupCreateSchema.safeParse({
+      title,
+      description,
+      visibility,
+      parishWide: parishWide && visibility === "PUBLIC",
+    });
     if (!parsed.success) {
       setError(parsed.error.issues[0]?.message ?? "That is not valid");
       return;
@@ -431,6 +448,21 @@ function CreateGroupModal({
           </div>
         </fieldset>
 
+        {isAdmin && visibility === "PUBLIC" && (
+          <label className="flex items-start gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={parishWide}
+              onChange={(event) => setParishWide(event.target.checked)}
+              className="mt-1"
+            />
+            <span>
+              <span className="font-bold text-ink">Parish wide</span>
+              <span className="block text-ink-muted">{PARISH_WIDE_HELP}</span>
+            </span>
+          </label>
+        )}
+
         {error && (
           <p role="alert" className="font-bold text-primary">
             {error}
@@ -449,6 +481,9 @@ function CreateGroupModal({
     </Modal>
   );
 }
+
+const PARISH_WIDE_HELP =
+  "Everyone in the directory is a member, new people are added automatically, and nobody can leave.";
 
 const VISIBILITY_HELP: Record<GroupVisibility, string> = {
   PUBLIC: "Anyone can see it, join it, and read its messages.",

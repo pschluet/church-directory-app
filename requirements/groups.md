@@ -33,6 +33,14 @@ There are 3 types of groups:
 - Parish admins and super admins have the same abilities as a group admin in every group, including Secret groups and their messages — they can see and act in any group regardless of membership. Because this crosses a meaningful privacy boundary, the app discloses it clearly in the product (for example, a notice shown when creating or viewing a secret group that parish administrators are able to view it).
 - There is currently no automatic age restriction on who can join a group — the directory doesn't reliably track ages, so this isn't enforced today. This is a known gap, flagged here as a future consideration rather than a current rule.
 
+**Parish Wide groups:** A parish admin or super admin can mark a group Parish Wide when creating it, or convert an existing group. Group admins cannot.
+- A Parish Wide group is always Public: there is no one to keep out, so Private and Secret make no sense for it. Only a Public group can be made Parish Wide, and it can't be changed to Private or Secret while it is.
+- Every person in the directory who has an account is a member, including people who have been invited but haven't signed in yet. People without an account are not.
+- Anyone who gets an account later is added automatically. Someone who moves to another parish leaves the old parish's Parish Wide groups and joins the new one's.
+- Nobody can leave, and nobody can be removed, not even by a group admin or parish admin. Adding people and requesting to join are unavailable, since everyone is already in. Group admins can still promote and demote admins.
+- A parish admin can turn it off again. Everyone stays a member, but people can then leave, and new accounts are no longer added.
+- Archived groups can't be made Parish Wide, and an archived group no longer gains new members.
+
 # Group Metadata
 Groups have the following associated with them, shown on the groups page:
 - Title

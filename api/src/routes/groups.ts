@@ -13,6 +13,7 @@ import {
 } from "../photos";
 import { parseLimit } from "./paging";
 import {
+  addEveryoneToGroup,
   assertCanConvertVisibility,
   assertCanDeleteGroup,
   assertCanInvite,
@@ -22,7 +23,9 @@ import {
   assertCanReadGroup,
   assertCanReadGroupContent,
   assertCanReply,
+  assertCanSetParishWide,
   assertMentionsAreMembers,
+  assertNotParishWide,
   assertValidReplyParent,
   groupAccess,
   GROUP_COLUMNS,
@@ -57,6 +60,7 @@ import { unreadNotificationCounts } from "../services/notifications";
 import { sendToUsers, type PushPayload } from "../services/push";
 import {
   groupCreateSchema,
+  groupParishWideSchema,
   groupMemberAddSchema,
   groupNotificationPrefUpdateSchema,
   groupPostCreateSchema,
@@ -125,6 +129,7 @@ function toGroupSummary(
     unreadCount: Number(row.unread_count),
     pendingJoinRequestId: row.pending_join_request_id,
     pinned: row.pinned_at !== null,
+    parishWide: row.parish_wide,
   };
 }
 
@@ -202,13 +207,22 @@ routes.post("/", async (c) => {
     throw new HTTPException(400, { message: "Your own directory record is missing" });
   }
 
+  if (payload.parishWide) assertCanSetParishWide(caller);
+
   const groupId = await db.transaction(async (tx) => {
     const created = await one<{ id: string }>(
       tx,
-      `insert into groups (organization_id, title, description, visibility, created_by_person_id)
-       values ($1, $2, $3, $4, $5)
+      `insert into groups (organization_id, title, description, visibility, parish_wide, created_by_person_id)
+       values ($1, $2, $3, $4, $5, $6)
        returning id`,
-      [organizationId, payload.title, payload.description, payload.visibility, caller.personId]
+      [
+        organizationId,
+        payload.title,
+        payload.description,
+        payload.visibility,
+        payload.parishWide,
+        caller.personId,
+      ]
     );
     if (!created) throw new HTTPException(500, { message: "Could not create that group" });
 
@@ -217,6 +231,7 @@ routes.post("/", async (c) => {
        values ($1, $2, $3, 'ADMIN')`,
       [created.id, caller.appUserId, caller.personId]
     );
+    if (payload.parishWide) await addEveryoneToGroup(tx, created.id, organizationId);
     return created.id;
   });
 
@@ -224,7 +239,11 @@ routes.post("/", async (c) => {
     action: "group.create",
     entityType: "group",
     entityId: groupId,
-    changes: { title: payload.title, visibility: payload.visibility },
+    changes: {
+      title: payload.title,
+      visibility: payload.visibility,
+      parishWide: payload.parishWide,
+    },
   });
 
   return c.json({ id: groupId }, 201);
@@ -332,6 +351,7 @@ routes.get("/:id", async (c) => {
     postingRestricted: group.posting_restricted,
     invitesRestricted: group.invites_restricted,
     repliesRestricted: group.replies_restricted,
+    parishWide: group.parish_wide,
     createdByPersonId: group.created_by_person_id,
     createdByName: creator
       ? fullName({ firstName: creator.first_name, lastName: creator.last_name })
@@ -344,6 +364,8 @@ routes.get("/:id", async (c) => {
     canPost: access.canPost,
     canInvite: access.canInvite,
     canReply: access.canReply,
+    canLeave: access.canLeave,
+    canRemoveMembers: access.canRemoveMembers,
     canReact: access.canReact,
     canModerate: access.canModerate,
     canConvertVisibility: access.canConvertTo,
@@ -398,6 +420,36 @@ routes.post("/:id/visibility", async (c) => {
     changes: { from: group.visibility, to: visibility },
   });
   return c.json({ visibility });
+});
+
+/** Parish administrators only: unlike the other settings, a group admin cannot do this. */
+routes.post("/:id/parish-wide", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const { parishWide } = groupParishWideSchema.parse(await c.req.json());
+
+  assertCanSetParishWide(caller);
+  const group = await loadGroupRow(db, id, organizationId);
+  if (parishWide && group.archived_at) {
+    throw new HTTPException(409, { message: "This group is archived" });
+  }
+  if (parishWide && group.visibility !== "PUBLIC") {
+    throw new HTTPException(409, { message: "Only a public group can be parish wide" });
+  }
+
+  await db.transaction(async (tx) => {
+    await tx.query("update groups set parish_wide = $2 where id = $1", [id, parishWide]);
+    if (parishWide) await addEveryoneToGroup(tx, id, organizationId);
+  });
+  await audit(db, caller, {
+    action: "group.setParishWide",
+    entityType: "group",
+    entityId: id,
+    changes: { from: group.parish_wide, to: parishWide },
+  });
+  return c.json({ parishWide });
 });
 
 routes.post("/:id/settings", async (c) => {
@@ -586,9 +638,10 @@ routes.post("/:id/leave", async (c) => {
   const organizationId = requireOrganizationId(c);
   const id = uuidSchema.parse(c.req.param("id"));
 
-  await loadGroupRow(db, id, organizationId);
+  const group = await loadGroupRow(db, id, organizationId);
   const membership = await loadMembership(db, id, caller.appUserId);
   if (!membership) throw new HTTPException(404, { message: "You are not a member of this group" });
+  assertNotParishWide(group);
 
   if (membership.role === "ADMIN") {
     const otherAdmin = await one<{ app_user_id: string }>(
@@ -671,6 +724,7 @@ routes.delete("/:id/members/:personId", async (c) => {
   const group = await loadGroupRow(db, id, organizationId);
   const access = await loadAccess(db, caller, group);
   assertCanModerate(access);
+  assertNotParishWide(group);
 
   const member = await one<{ app_user_id: string }>(
     db,
