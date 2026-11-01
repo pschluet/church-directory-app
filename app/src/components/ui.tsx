@@ -470,6 +470,7 @@ export function MenuButton({
   trigger,
   align = "right",
   buttonClassName = "tap-target inline-flex items-center justify-center rounded-md text-ink-muted transition hover:bg-surface-muted hover:text-primary",
+  keepFocus = false,
 }: {
   /** What the button opens, for screen readers -- e.g. "Actions for Paul". */
   label: string;
@@ -488,8 +489,18 @@ export function MenuButton({
   align?: "left" | "right";
   /** Replaces the button's own look, for a trigger that draws its own shape. */
   buttonClassName?: string;
+  /**
+   * For a button beside a text field: a press must not take focus from the field,
+   * and opening must not move it into the menu. On iOS either one puts the
+   * keyboard away, the page scrolls as it goes, and that scroll closes a
+   * portalled menu the moment it opened. A keyboard user still lands on the first
+   * item, since that is not a press.
+   */
+  keepFocus?: boolean;
 }) {
   const [open, setOpen] = useState(false);
+  /** Whether the last open came from the keyboard, whose click has no pointer. */
+  const openedByKeyboard = useRef(false);
   /**
    * Which side of the button the panel sits on. Always "below" until it has been
    * measured, which is the common case and avoids a frame of it in the wrong
@@ -556,10 +567,22 @@ export function MenuButton({
     const buttonBox = button.getBoundingClientRect();
     const panelHeight = panel.getBoundingClientRect().height;
     const GAP = 8;
-    const roomBelow = window.innerHeight - buttonBox.bottom;
+    /*
+     * The part of the page that can be seen, in the same coordinates as the
+     * button's box. `innerHeight` is not it once a keyboard is up: iOS shrinks it,
+     * while `position: fixed` -- and so `bottom` -- still measures against a
+     * layout viewport that kept its full height. Placing by `bottom` from the
+     * smaller number put the menu in the wrong place, so a flipped panel is
+     * placed by `top` as well.
+     */
+    const viewport = window.visualViewport;
+    const visibleTop = viewport?.offsetTop ?? 0;
+    const visibleBottom = visibleTop + (viewport?.height ?? window.innerHeight);
+    const roomBelow = visibleBottom - buttonBox.bottom;
+    const roomAbove = buttonBox.top - visibleTop;
     // Only flip when there is genuinely more room the other way, so a panel
     // taller than the whole viewport does not end up pinned to the top.
-    const flip = roomBelow < panelHeight + GAP && buttonBox.top > roomBelow;
+    const flip = roomBelow < panelHeight + GAP && roomAbove > roomBelow;
     setPlacement(flip ? "above" : "below");
     if (portal) {
       const horizontal =
@@ -568,13 +591,13 @@ export function MenuButton({
           : { left: Math.max(8, buttonBox.left) };
       setFixedAt(
         flip
-          ? { bottom: window.innerHeight - buttonBox.top + 4, ...horizontal }
+          ? { top: Math.max(visibleTop + 4, buttonBox.top - panelHeight - 4), ...horizontal }
           : { top: buttonBox.bottom + 4, ...horizontal }
       );
     }
 
-    items(panel)[0]?.focus({ preventScroll: true });
-  }, [open, portal, align]);
+    if (!keepFocus || openedByKeyboard.current) items(panel)[0]?.focus({ preventScroll: true });
+  }, [open, portal, align, keepFocus]);
 
   const wrapPanel = (panel: ReactNode) => (portal ? createPortal(panel, document.body) : panel);
 
@@ -607,12 +630,14 @@ export function MenuButton({
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={panelId}
-        onClick={() =>
+        onMouseDown={keepFocus ? (event) => event.preventDefault() : undefined}
+        onClick={(event) => {
+          openedByKeyboard.current = event.detail === 0;
           setOpen((wasOpen) => {
             if (wasOpen) setPlacement("below");
             return !wasOpen;
-          })
-        }
+          });
+        }}
         className={buttonClassName}
       >
         {trigger ?? (

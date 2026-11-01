@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MenuButton, MenuItem } from "../src/components/ui";
 
@@ -231,5 +231,94 @@ describe("MenuButton in a scrolling pane (portal)", () => {
     await userEvent.keyboard("{Escape}");
     expect(screen.queryByRole("menu")).not.toBeInTheDocument();
     expect(trigger).toHaveFocus();
+  });
+});
+
+/**
+ * With a software keyboard up, iOS shrinks the visual viewport but not the layout
+ * viewport that `position: fixed` measures against. Placing a flipped menu by
+ * `bottom` from a smaller `innerHeight` put it in the wrong place, and the menu
+ * was also closed by the scroll that came from the keyboard going away.
+ */
+describe("MenuButton with a keyboard up", () => {
+  class FakeViewport extends EventTarget {
+    constructor(
+      public height: number,
+      public offsetTop = 0
+    ) {
+      super();
+    }
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+    Reflect.deleteProperty(window, "visualViewport");
+  });
+
+  function renderComposerMenu() {
+    render(
+      <>
+        <input aria-label="Message" />
+        <MenuButton portal keepFocus align="left" label="Add" trigger={<span>+</span>}>
+          <MenuItem onSelect={vi.fn()}>Photo or file</MenuItem>
+        </MenuButton>
+      </>
+    );
+    return {
+      field: screen.getByRole("textbox", { name: "Message" }),
+      trigger: screen.getByRole("button", { name: "Add" }),
+    };
+  }
+
+  it("places by the visible area, flipped above and by top rather than bottom", async () => {
+    // The trigger bottoms out at 500; the window is 800 but the keyboard leaves 400
+    // of it visible. Going by innerHeight saw 300px of room below and opened there.
+    stubGeometry({ roomBelow: 300, panelHeight: 120 });
+    Object.defineProperty(window, "visualViewport", {
+      value: new FakeViewport(400, 0),
+      configurable: true,
+    });
+    const { trigger } = renderComposerMenu();
+    await userEvent.click(trigger);
+
+    const panel = screen.getByRole("menu");
+    // Trigger top 456, panel 120 tall: 456 - 120 - 4.
+    expect(panel.style.top).toBe("332px");
+    expect(panel.style.bottom).toBe("");
+  });
+
+  it("opens below when the visible area leaves room", async () => {
+    stubGeometry({ roomBelow: 300, panelHeight: 120 });
+    Object.defineProperty(window, "visualViewport", {
+      value: new FakeViewport(800, 0),
+      configurable: true,
+    });
+    const { trigger } = renderComposerMenu();
+    await userEvent.click(trigger);
+
+    // Trigger bottom 500, plus 4.
+    expect(screen.getByRole("menu").style.top).toBe("504px");
+  });
+
+  it("leaves focus in the field when the button is pressed and the menu opens", async () => {
+    const { field, trigger } = renderComposerMenu();
+    await userEvent.click(field);
+    expect(fireEvent.mouseDown(trigger)).toBe(false);
+
+    await userEvent.click(trigger);
+    expect(screen.getByRole("menu")).toBeInTheDocument();
+    expect(field).toHaveFocus();
+  });
+
+  it("still moves focus to the first item when opened from the keyboard", async () => {
+    const { trigger } = renderComposerMenu();
+    trigger.focus();
+    await userEvent.keyboard("{Enter}");
+    expect(screen.getByRole("menuitem", { name: "Photo or file" })).toHaveFocus();
+  });
+
+  it("lets a press take focus, as any button does, unless asked not to", () => {
+    const { trigger } = renderMenu();
+    expect(fireEvent.mouseDown(trigger)).toBe(true);
   });
 });

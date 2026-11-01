@@ -2925,6 +2925,7 @@ export function ChatComposer({
   const plusMenu = (
     <MenuButton
       portal
+      keepFocus
       align="left"
       label="Add to this message"
       trigger={

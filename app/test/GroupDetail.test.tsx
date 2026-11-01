@@ -2801,6 +2801,21 @@ describe("GroupDetail", () => {
       expect(bar).toHaveFocus();
     });
 
+    it("keeps the message focused and the keyboard up when the + button is pressed", async () => {
+      // A press that took focus put the keyboard away on iOS, the page scrolled as it
+      // went, and that scroll closed the menu the moment it opened.
+      stub();
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+      await userEvent.click(bar);
+      const trigger = screen.getByRole("button", { name: "Add to this message" });
+      expect(fireEvent.mouseDown(trigger)).toBe(false);
+
+      await userEvent.click(trigger);
+      expect(screen.getByRole("menu", { name: "Add to this message" })).toBeInTheDocument();
+      expect(bar).toHaveFocus();
+    });
+
     describe("on a touch screen", () => {
       const press = (el: Element) =>
         fireEvent.pointerDown(el, { pointerType: "touch", clientX: 5, clientY: 5 });
