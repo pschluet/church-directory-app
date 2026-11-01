@@ -139,6 +139,25 @@
   [data-app-utility-bar] {
     view-transition-name: app-utility-bar;
   }
+
+  /*
+   * iOS draws a date or time field itself and does not honour `w-full`'s
+   * border-box, so the padding and border came on top of the width: "New event"'s
+   * Date, Start and End boxes ran 26px past their column and the whole dialog
+   * scrolled sideways. Dropping the native look makes them ordinary boxes; the
+   * picker still opens on a tap. The min-height is the one `inputClass` gives a
+   * text box, which an empty date field would otherwise collapse below.
+   */
+  input[type="date"],
+  input[type="time"] {
+    -webkit-appearance: none;
+    appearance: none;
+    min-height: 2.625rem;
+  }
+  input[type="date"]::-webkit-date-and-time-value,
+  input[type="time"]::-webkit-date-and-time-value {
+    text-align: left;
+  }
 }
 
 /*

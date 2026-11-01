@@ -1,5 +1,5 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
+import type { ReactNode, RefObject } from "react";
 import { createPortal } from "react-dom";
 
 /**
@@ -286,11 +286,9 @@ export function usePageScrollLock(enabled = true): void {
      * enough.
      */
     let settle: ReturnType<typeof setTimeout> | undefined;
+    let afterDialog: ReturnType<typeof setTimeout> | undefined;
     const offTop = () => window.scrollY > 1 || (window.visualViewport?.offsetTop ?? 0) > 1;
-    function backToTop(event: FocusEvent): void {
-      // Focus moving to another field keeps the keyboard up.
-      const next = event.relatedTarget;
-      if (next instanceof HTMLTextAreaElement || next instanceof HTMLInputElement) return;
+    function glideToTop(): void {
       clearTimeout(settle);
       if (!offTop()) return;
       const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches;
@@ -299,10 +297,54 @@ export function usePageScrollLock(enabled = true): void {
         if (offTop()) window.scrollTo(0, 0);
       }, 600);
     }
+    function backToTop(event: FocusEvent): void {
+      /*
+       * A field in a dialog letting go is not the keyboard going away: the
+       * "Add a link" sheet's field loses focus to nothing when Save is tapped
+       * (a button takes none on iOS), and focus is about to return to the
+       * message. Snapping to the top then left the message bar under the keyboard.
+       * `afterDialogCloses` covers the dialogs where it does not come back.
+       */
+      if (event.target instanceof Element && event.target.closest('[role="dialog"]')) return;
+      // Focus moving to another field keeps the keyboard up.
+      const next = event.relatedTarget;
+      if (next instanceof HTMLTextAreaElement || next instanceof HTMLInputElement) return;
+      glideToTop();
+    }
     document.addEventListener("focusout", backToTop);
+
+    /*
+     * A dialog closing takes its focused field with it, and nothing reports that
+     * as the keyboard going away: the "New event" sheet's Post button blurs its
+     * field to nothing, which `backToTop` ignores, and the keyboard then leaves
+     * with the page still panned. So once a dialog is gone, and focus has not
+     * gone back to a field (the link sheet hands it to the message), glide home.
+     */
+    const afterDialogCloses = new MutationObserver((records) => {
+      const closed = records.some((record) =>
+        Array.from(record.removedNodes).some(
+          (node) =>
+            node instanceof Element &&
+            (node.matches('[role="dialog"]') || node.querySelector('[role="dialog"]') !== null)
+        )
+      );
+      if (!closed) return;
+      clearTimeout(afterDialog);
+      afterDialog = setTimeout(() => {
+        const active = document.activeElement;
+        const typing =
+          active instanceof HTMLInputElement ||
+          active instanceof HTMLTextAreaElement ||
+          active?.closest('[contenteditable]:not([contenteditable="false"])') != null;
+        if (!typing) glideToTop();
+      }, 150);
+    });
+    afterDialogCloses.observe(document.body, { childList: true });
 
     return () => {
       document.removeEventListener("focusout", backToTop);
+      afterDialogCloses.disconnect();
+      clearTimeout(afterDialog);
       clearTimeout(settle);
       release();
       root.style.overscrollBehavior = overscroll;
@@ -1203,6 +1245,53 @@ export function MultiSelect<T extends string>({
   );
 }
 
+/**
+ * The part of the screen that can actually be seen: the window minus a software
+ * keyboard. Null where the browser cannot say, so callers keep their CSS.
+ *
+ * On iOS the keyboard shrinks only the *visual* viewport. A `position: fixed`
+ * box follows the layout viewport, which keeps its full height, so a sheet
+ * pinned to the bottom of one ends up behind the keyboard.
+ *
+ * `fixed` is the element a `position: fixed` box fills, measured rather than
+ * taken from `window.innerHeight`. When iOS scrolls the page to reveal a field
+ * `innerHeight` shrinks -- 812 became 756 in the "New poll" sheet -- while the
+ * fixed box stays 812 tall, and a covered area worked out from the smaller
+ * number left the sheet's buttons under the keyboard's accessory bar.
+ */
+function useVisibleBox(
+  fixed: RefObject<HTMLElement | null>
+): { height: number; covered: number } | null {
+  const [box, setBox] = useState<{ height: number; covered: number } | null>(null);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+    const measure = () => {
+      const layoutHeight = fixed.current?.offsetHeight || window.innerHeight;
+      // Pinched in, the visible part is smaller too, and that is not a keyboard.
+      const zoomed = (viewport.scale ?? 1) > 1.01;
+      const height = zoomed ? layoutHeight : Math.round(viewport.height);
+      // What is under the keyboard: the layout viewport below the visible part.
+      const covered = zoomed
+        ? 0
+        : Math.max(0, Math.round(layoutHeight - viewport.offsetTop - height));
+      setBox((prev) =>
+        prev?.height === height && prev.covered === covered ? prev : { height, covered }
+      );
+    };
+    measure();
+    viewport.addEventListener("resize", measure);
+    viewport.addEventListener("scroll", measure);
+    return () => {
+      viewport.removeEventListener("resize", measure);
+      viewport.removeEventListener("scroll", measure);
+    };
+  }, [fixed]);
+
+  return box;
+}
+
 export function Modal({
   title,
   onClose,
@@ -1230,6 +1319,8 @@ export function Modal({
   noSelect?: boolean;
 }) {
   useDismissable(dismissable ? onClose : () => {});
+  const overlayRef = useRef<HTMLDivElement>(null);
+  const visible = useVisibleBox(overlayRef);
 
   /*
    * Portalled to the body, like PhotoLightbox, rather than rendered where it
@@ -1245,12 +1336,15 @@ export function Modal({
    */
   return createPortal(
     <div
+      ref={overlayRef}
       className={`fixed inset-0 z-50 flex items-end justify-center bg-ink/40 p-0 md:items-center md:p-6 ${
         noSelect ? "select-none [-webkit-touch-callout:none]" : ""
       }`}
       role="dialog"
       aria-modal="true"
       aria-label={title}
+      // The backdrop still fills the screen; padding lifts the sheet above a keyboard.
+      style={visible?.covered ? { paddingBottom: visible.covered } : undefined}
       onClick={(event) => {
         if (dismissable && event.target === event.currentTarget) onClose();
       }}
@@ -1260,6 +1354,12 @@ export function Modal({
         className={`max-h-[92vh] w-full overflow-y-auto rounded-t-xl bg-surface p-5 shadow-xl md:rounded-xl md:p-6 ${
           wide ? "md:max-w-4xl" : "md:max-w-2xl"
         }`}
+        style={visible ? { maxHeight: Math.round(visible.height * 0.92) } : undefined}
+        onFocus={(event) => {
+          // A tall dialog scrolls inside the room left; keep the field in it.
+          const field = event.target;
+          setTimeout(() => field.scrollIntoView?.({ block: "nearest" }), 300);
+        }}
       >
         <div className="mb-4 flex items-start justify-between gap-4">
           <h2 className="text-xl font-bold text-ink">{title}</h2>

@@ -567,6 +567,12 @@ export function FormatButtons({ editor }: { editor: Editor | null }) {
     setLinking({ text: editor.state.doc.textBetween(from, to, " "), href: "" });
   }
 
+  /** Back to writing: the dialog's field held the keyboard, so hand it back. */
+  function closeLink(): void {
+    setLinking(null);
+    editor?.commands.focus();
+  }
+
   function saveLink(): void {
     if (!editor || !linking || linking.href.trim() === "") return;
     const href = normalizeHref(linking.href);
@@ -603,9 +609,13 @@ export function FormatButtons({ editor }: { editor: Editor | null }) {
         </button>
       ))}
       {linking && (
-        <Modal title="Add a link" onClose={() => setLinking(null)}>
+        <Modal title="Add a link" onClose={closeLink}>
           <form
             className="space-y-3"
+            // `type="url"` is for the phone's keyboard. Its own validation would
+            // refuse "example.org" and an email address, which normalizeHref
+            // turns into links, with no message a tap on Save would explain.
+            noValidate
             onSubmit={(event) => {
               event.preventDefault();
               saveLink();
@@ -633,7 +643,7 @@ export function FormatButtons({ editor }: { editor: Editor | null }) {
               <Button type="submit" disabled={linking.href.trim() === ""}>
                 Save
               </Button>
-              <Button variant="ghost" onClick={() => setLinking(null)}>
+              <Button variant="ghost" onClick={closeLink}>
                 Cancel
               </Button>
             </div>
