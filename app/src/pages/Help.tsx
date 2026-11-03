@@ -1,7 +1,6 @@
 import { useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import { LandingFrame } from "../components/LandingFrame";
-import { Badge } from "../components/ui";
 import { detectPlatform, type Platform } from "../lib/platform";
 
 /*
@@ -72,10 +71,9 @@ const prefersReducedMotion = () =>
 /**
  * /help -- how to put the directory on a phone and turn notifications on.
  *
- * The browser's user agent only picks which button wears the "Looks like your
- * phone" badge. Nothing plays until the visitor chooses, so a wrong guess (or a
- * desktop, which gets no badge at all) costs one tap rather than the wrong
- * walkthrough.
+ * The browser's user agent only picks which button is marked "Auto-detected".
+ * Nothing plays until the visitor chooses, so a wrong guess (or a desktop,
+ * which marks neither) costs one tap rather than the wrong walkthrough.
  *
  * Public, like /e/:token: it sits outside RootGate because it is read before
  * there is an app to sign in to. The recordings are served from S3 through
@@ -152,26 +150,37 @@ function PhoneChoice({
   suggested: boolean;
   onSelect: () => void;
 }) {
+  /*
+   * The suggestion is part of the card rather than a label stuck on its edge:
+   * a gold border, wash and halo, and a caption set inside the bottom of the
+   * card. The caption's space is reserved
+   * on both cards (`pb-8`), so the two icons and names line up whichever one is
+   * suggested -- and so a desktop, which suggests nothing, looks the same.
+   */
+  const tone = selected
+    ? "border-primary bg-primary text-white shadow-md"
+    : suggested
+      ? "border-accent bg-accent/5 text-ink shadow-sm ring-4 ring-accent/15 hover:shadow-md"
+      : "border-line bg-surface text-ink hover:border-accent hover:shadow-sm";
+
   return (
     <button
       type="button"
       aria-pressed={selected}
       onClick={onSelect}
-      className={`relative flex flex-col items-center gap-2 rounded-xl border px-3 pb-4 pt-6 font-bold transition ${
-        selected
-          ? "border-primary bg-primary text-white shadow-md"
-          : "border-line bg-surface text-ink hover:border-accent hover:shadow-sm"
-      }`}
+      className={`relative flex flex-col items-center gap-2 rounded-xl border px-3 pb-8 pt-5 font-bold transition ${tone}`}
     >
-      {suggested && (
-        // Opaque behind the badge: its own tint is translucent, and the button's
-        // border would show through it.
-        <span className="absolute -top-2.5 left-1/2 -translate-x-1/2 rounded-full bg-surface">
-          <Badge tone="accent">Looks like your phone</Badge>
-        </span>
-      )}
       <span className={selected ? "text-white" : "text-primary"}>{info.glyph}</span>
       {info.label}
+      {suggested && (
+        <span
+          className={`absolute inset-x-0 bottom-2.5 text-xs font-bold ${
+            selected ? "text-white/90" : "text-accent"
+          }`}
+        >
+          Auto-detected
+        </span>
+      )}
     </button>
   );
 }

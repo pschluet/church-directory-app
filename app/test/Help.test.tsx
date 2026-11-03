@@ -39,29 +39,21 @@ describe("Help", () => {
   it("marks the iPhone as the likely one from an iPhone's user agent", () => {
     renderHelp(IPHONE);
 
-    expect(screen.getByRole("button", { name: /iPhone/ })).toHaveTextContent(
-      "Looks like your phone"
-    );
-    expect(screen.getByRole("button", { name: /Android/ })).not.toHaveTextContent(
-      "Looks like your phone"
-    );
+    expect(screen.getByRole("button", { name: /iPhone/ })).toHaveTextContent("Auto-detected");
+    expect(screen.getByRole("button", { name: /Android/ })).not.toHaveTextContent("Auto-detected");
   });
 
   it("marks Android as the likely one from an Android user agent", () => {
     renderHelp(ANDROID);
 
-    expect(screen.getByRole("button", { name: /Android/ })).toHaveTextContent(
-      "Looks like your phone"
-    );
-    expect(screen.getByRole("button", { name: /iPhone/ })).not.toHaveTextContent(
-      "Looks like your phone"
-    );
+    expect(screen.getByRole("button", { name: /Android/ })).toHaveTextContent("Auto-detected");
+    expect(screen.getByRole("button", { name: /iPhone/ })).not.toHaveTextContent("Auto-detected");
   });
 
   it("suggests nothing on a desktop", () => {
     renderHelp(DESKTOP);
 
-    expect(screen.queryByText("Looks like your phone")).not.toBeInTheDocument();
+    expect(screen.queryByText("Auto-detected")).not.toBeInTheDocument();
   });
 
   it("does not choose for the visitor, even when it has a guess", () => {
