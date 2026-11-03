@@ -22,8 +22,8 @@ interface PlatformInfo {
 const PLATFORMS: Record<Platform, PlatformInfo> = {
   ios: {
     label: "iPhone",
-    width: 640,
-    height: 1391,
+    width: 540,
+    height: 1174,
     steps: [
       <>
         Open this site in <strong>Safari</strong>, tap the <strong>Share</strong> button, then{" "}
@@ -43,8 +43,8 @@ const PLATFORMS: Record<Platform, PlatformInfo> = {
   },
   android: {
     label: "Android",
-    width: 640,
-    height: 1436,
+    width: 540,
+    height: 1212,
     steps: [
       <>
         Open this site in <strong>Chrome</strong>, tap the <strong>⋮ menu</strong>, then{" "}
