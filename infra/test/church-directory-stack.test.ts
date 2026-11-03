@@ -656,6 +656,29 @@ describe("ChurchDirectoryStack", () => {
       template.resourceCountIs("AWS::CloudFront::PublicKey", 1);
     });
 
+    it("serves the help recordings publicly, from their own private bucket", () => {
+      // The /help page is read before anyone has signed in, so unlike photos
+      // there is deliberately no key group -- and no SPA fallback, which would
+      // answer a video request with index.html.
+      const distributions = template.findResources("AWS::CloudFront::Distribution");
+      const config = Object.values(distributions)[0]!.Properties as {
+        DistributionConfig: {
+          CacheBehaviors: {
+            PathPattern: string;
+            TrustedKeyGroups?: unknown[];
+            FunctionAssociations?: unknown[];
+          }[];
+        };
+      };
+      const help = config.DistributionConfig.CacheBehaviors.find(
+        (b) => b.PathPattern === "/help-media/*"
+      );
+      expect(help).toBeDefined();
+      expect(help?.TrustedKeyGroups).toBeUndefined();
+      expect(help?.FunctionAssociations).toBeUndefined();
+      template.hasOutput("HelpMediaBucketName", {});
+    });
+
     it("never caches the API", () => {
       const distributions = template.findResources("AWS::CloudFront::Distribution");
       const config = Object.values(distributions)[0]!.Properties as {

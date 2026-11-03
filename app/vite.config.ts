@@ -69,6 +69,15 @@ export default defineConfig(({ mode }) => {
   const proxy = {
     "/api": { target, changeOrigin: true },
     "/photos": { target, changeOrigin: true },
+    /*
+     * The /help page's recordings live in S3 and are not in the repo or on the
+     * local API, so dev and preview borrow the deployed copies. Point
+     * VITE_DEV_HELP_MEDIA_TARGET at a local folder server to try new ones first.
+     */
+    "/help-media": {
+      target: env.VITE_DEV_HELP_MEDIA_TARGET ?? "https://directory.pauldev.io",
+      changeOrigin: true,
+    },
   };
 
   return {

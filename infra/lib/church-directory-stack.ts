@@ -359,6 +359,17 @@ export class ChurchDirectoryStack extends Stack {
       enforceSSL: true,
     });
 
+    // The /help page's screen recordings. Its own bucket: the site bucket is
+    // emptied by deploy.yml's `sync --delete`, and /photos/* is behind signed
+    // cookies where this has to be readable before anyone has signed in.
+    // Large binaries kept out of the repo; scripts/upload-help-media.sh fills it.
+    const helpMediaBucket = new s3.Bucket(this, "HelpMediaBucket", {
+      removalPolicy: RemovalPolicy.RETAIN,
+      blockPublicAccess: s3.BlockPublicAccess.BLOCK_ALL,
+      encryption: s3.BucketEncryption.S3_MANAGED,
+      enforceSSL: true,
+    });
+
     // -------------------------------------------------------------------
     // Photo delivery
     //
@@ -1036,6 +1047,14 @@ function handler(event) {
           // Deliberately no function here either: the SPA fallback would
           // rewrite an extensionless rendition path to /index.html.
         },
+        "/help-media/*": {
+          origin: origins.S3BucketOrigin.withOriginAccessControl(helpMediaBucket),
+          viewerProtocolPolicy: cloudfront.ViewerProtocolPolicy.REDIRECT_TO_HTTPS,
+          // Public on purpose (no key group): the /help page is for people who
+          // have not signed in yet. Files are uploaded under versioned names,
+          // so they cache hard and never need invalidating.
+          cachePolicy: cloudfront.CachePolicy.CACHING_OPTIMIZED,
+        },
       },
     });
 
@@ -1086,6 +1105,7 @@ function handler(event) {
     new CfnOutput(this, "HttpApiUrl", { value: httpApi.apiEndpoint });
     new CfnOutput(this, "SiteBucketName", { value: siteBucket.bucketName });
     new CfnOutput(this, "PhotosBucketName", { value: photosBucket.bucketName });
+    new CfnOutput(this, "HelpMediaBucketName", { value: helpMediaBucket.bucketName });
     new CfnOutput(this, "DistributionId", { value: distribution.distributionId });
     new CfnOutput(this, "GitHubDeployRoleArn", { value: deployRole.roleArn });
     new CfnOutput(this, "DatabaseEndpoint", { value: database.dbInstanceEndpointAddress });

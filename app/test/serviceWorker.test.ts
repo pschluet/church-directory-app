@@ -69,7 +69,7 @@ describe.skipIf(!built)("the built service worker", () => {
      * cached /api/me would keep serving a CloudFront photo cookie long after
      * the real one expired.
      */
-    const denylist = String.raw`denylist:[/^\/api\//,/^\/photos\//]`;
+    const denylist = String.raw`denylist:[/^\/api\//,/^\/photos\//,/^\/help-media\//]`;
     expect(sw).toContain(denylist);
     const rest = sw.replace(denylist, "");
     expect(rest).not.toMatch(/api/);
