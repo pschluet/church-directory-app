@@ -1313,6 +1313,11 @@ export interface GroupSummaryDto {
   myRole: GroupMemberRole | null;
   /** Posts since the caller's `last_read_at` for this group. */
   unreadCount: number;
+  /**
+   * Anything by someone else since the caller's `last_read_at` -- posts,
+   * replies, edits, deletes, reactions, RSVPs, poll votes. What bolds the name.
+   */
+  hasUpdates: boolean;
   /** The caller's own undecided request to join this group, if any. */
   pendingJoinRequestId: string | null;
   /** Whether the caller has pinned this group to the top of their list. */

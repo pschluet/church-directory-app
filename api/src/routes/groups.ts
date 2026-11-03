@@ -29,6 +29,7 @@ import {
   assertValidReplyParent,
   groupAccess,
   GROUP_COLUMNS,
+  unseenGroupActivitySql,
   loadGroupEventRsvps,
   loadGroupMembers,
   loadGroupRow,
@@ -113,6 +114,7 @@ function toGroupSummary(
   row: GroupRow & {
     member_count: string;
     unread_count: string;
+    has_updates: boolean;
     pending_join_request_id: string | null;
     pinned_at: Date | string | null;
   },
@@ -127,6 +129,7 @@ function toGroupSummary(
     archivedAt: row.archived_at ? new Date(row.archived_at).toISOString() : null,
     myRole: access.effectiveRole && access.isMember ? access.membership!.role : null,
     unreadCount: Number(row.unread_count),
+    hasUpdates: row.has_updates,
     pendingJoinRequestId: row.pending_join_request_id,
     pinned: row.pinned_at !== null,
     parishWide: row.parish_wide,
@@ -152,6 +155,7 @@ routes.get("/", async (c) => {
     GroupRow & {
       member_count: string;
       unread_count: string;
+      has_updates: boolean;
       pending_join_request_id: string | null;
       my_role: GroupMemberRole | null;
       pinned_at: Date | string | null;
@@ -170,6 +174,10 @@ routes.get("/", async (c) => {
                   and (my.last_read_at is null or gp.created_at > my.last_read_at)
                   and gp.author_person_id is distinct from $3::uuid
             ) end) as unread_count,
+            -- What bolds the name: any activity by anyone else, not just new
+            -- posts. Members only, for the same reason as unread_count.
+            (my.app_user_id is not null
+              and ${unseenGroupActivitySql("g.id", "my.last_read_at", "$2", "$3")}) as has_updates,
             (select jr.id from group_join_requests jr
               where jr.group_id = g.id and jr.person_id = $3 and jr.status = 'PENDING') as pending_join_request_id,
             pin.pinned_at
@@ -324,15 +332,16 @@ routes.get("/:id", async (c) => {
   // Only a member has a reading position to be behind on -- see the matching
   // comment on GET / for why a non-member's count is not computed at all.
   const unread = access.isMember
-    ? await one<{ count: string }>(
+    ? await one<{ count: string; has_updates: boolean }>(
         db,
-        `select count(*) as count
+        `select count(*) as count,
+                ${unseenGroupActivitySql("$1::uuid", "$2::timestamptz", "$4", "$3")} as has_updates
            from group_posts gp
           where gp.group_id = $1
             and gp.parent_post_id is null
             and ($2::timestamptz is null or gp.created_at > $2::timestamptz)
             and gp.author_person_id is distinct from $3::uuid`,
-        [id, access.membership?.last_read_at ?? null, caller.personId]
+        [id, access.membership?.last_read_at ?? null, caller.personId, caller.appUserId]
       )
     : null;
 
@@ -345,6 +354,7 @@ routes.get("/:id", async (c) => {
     archivedAt: group.archived_at ? new Date(group.archived_at).toISOString() : null,
     myRole: access.membership?.role ?? null,
     unreadCount: Number(unread?.count ?? 0),
+    hasUpdates: unread?.has_updates ?? false,
     pendingJoinRequestId: pendingJoinRequestId?.id ?? null,
     pinned: pin !== null,
     organizationId: group.organization_id,

@@ -31,6 +31,7 @@ function group(overrides: Partial<GroupSummaryDto>): GroupSummaryDto {
     archivedAt: null,
     myRole: "MEMBER",
     unreadCount: 0,
+    hasUpdates: false,
     pendingJoinRequestId: null,
     pinned: false,
     parishWide: false,
@@ -98,13 +99,15 @@ describe("Groups", () => {
     expect(screen.queryByText("Not shown here")).not.toBeInTheDocument();
   });
 
-  it("bolds a group with unread messages instead of showing unread or admin badges", async () => {
+  it("bolds a group with new activity instead of showing unread or admin badges", async () => {
     apiMock.mockImplementation((path: string) =>
       path === "/groups"
         ? Promise.resolve({
             groups: [
-              group({ id: "g1", title: "Busy", unreadCount: 2, myRole: "ADMIN" }),
+              group({ id: "g1", title: "Busy", unreadCount: 2, hasUpdates: true, myRole: "ADMIN" }),
               group({ id: "g2", title: "Quiet", unreadCount: 0 }),
+              // A reaction, RSVP, vote or edit: no new post, but still bold.
+              group({ id: "g3", title: "Reacted", unreadCount: 0, hasUpdates: true }),
             ],
           })
         : Promise.resolve({ reports: [] })
@@ -113,7 +116,8 @@ describe("Groups", () => {
     const busy = (await screen.findByText("Busy")).closest("h3")!;
     const quiet = screen.getByText("Quiet").closest("h3")!;
     expect(busy).toHaveClass("font-bold");
-    expect(busy).toHaveTextContent("unread messages");
+    expect(busy).toHaveTextContent("new activity");
+    expect(screen.getByText("Reacted").closest("h3")!).toHaveClass("font-bold");
     expect(quiet).toHaveClass("font-normal");
     expect(quiet).not.toHaveClass("font-bold");
     expect(screen.queryByText("2 new")).not.toBeInTheDocument();
