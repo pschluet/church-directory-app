@@ -1,4 +1,4 @@
-import { useState, type FormEvent, type ReactNode } from "react";
+import { useState, type FormEvent } from "react";
 import { Navigate, useParams } from "react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
@@ -12,6 +12,7 @@ import { api, ApiError } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { formatDayLabel, formatEventTimes, formatRelativeDay, todayIso } from "../lib/format";
 import { Badge, Button, ErrorNotice, Field, Spinner, inputClass } from "../components/ui";
+import { LandingFrame } from "../components/LandingFrame";
 import { SignInForm } from "./Login";
 
 /**
@@ -112,22 +113,6 @@ function AnonymousEvent({ token }: { token: string }) {
     );
   }
   return <PublicEventPage token={token} event={eventQuery.data} />;
-}
-
-/** The band and the background, with nothing about any one event in them. */
-function LandingFrame({
-  band = "Parish Directory",
-  children,
-}: {
-  band?: string;
-  children: ReactNode;
-}) {
-  return (
-    <div className="flex min-h-screen flex-col bg-surface-muted">
-      <div className="bg-primary px-4 py-2 text-center text-sm text-white">{band}</div>
-      <main className="flex-1 px-4 py-8 md:py-12">{children}</main>
-    </div>
-  );
 }
 
 /**

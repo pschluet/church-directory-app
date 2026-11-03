@@ -69,6 +69,11 @@ export default defineConfig(({ mode }) => {
   const proxy = {
     "/api": { target, changeOrigin: true },
     "/photos": { target, changeOrigin: true },
+    /*
+     * The /help page's recordings live in S3 and are not in the repo or on the
+     * local API, so dev and preview borrow the deployed copies.
+     */
+    "/help-media": { target: "https://directory.pauldev.io", changeOrigin: true },
   };
 
   return {

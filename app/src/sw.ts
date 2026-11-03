@@ -62,7 +62,7 @@ cleanupOutdatedCaches();
  */
 registerRoute(
   new NavigationRoute(createHandlerBoundToURL("/index.html"), {
-    denylist: [/^\/api\//, /^\/photos\//],
+    denylist: [/^\/api\//, /^\/photos\//, /^\/help-media\//],
   })
 );
 
