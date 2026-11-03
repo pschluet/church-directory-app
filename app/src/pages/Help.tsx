@@ -36,7 +36,7 @@ const PLATFORMS: Record<Platform, PlatformInfo> = {
       </>,
     ],
     glyph: (
-      <svg viewBox="0 0 24 24" aria-hidden className="size-7 fill-current">
+      <svg aria-hidden="true" viewBox="0 0 24 24" className="size-7 fill-current">
         <path d="M16.37 12.62c-.02-2.2 1.8-3.26 1.88-3.31-1.03-1.5-2.62-1.71-3.19-1.73-1.36-.14-2.65.8-3.34.8-.69 0-1.75-.78-2.88-.76-1.48.02-2.85.86-3.61 2.19-1.54 2.67-.39 6.63 1.1 8.8.73 1.06 1.6 2.25 2.74 2.21 1.1-.04 1.52-.71 2.85-.71 1.33 0 1.71.71 2.88.69 1.19-.02 1.94-1.08 2.66-2.15.84-1.23 1.19-2.43 1.21-2.49-.03-.01-2.3-.88-2.32-3.54ZM14.2 6.1c.6-.73 1.01-1.75.9-2.76-.87.04-1.92.58-2.54 1.31-.56.65-1.05 1.68-.92 2.67.97.07 1.96-.49 2.56-1.22Z" />
       </svg>
     ),
@@ -57,7 +57,7 @@ const PLATFORMS: Record<Platform, PlatformInfo> = {
       </>,
     ],
     glyph: (
-      <svg viewBox="0 0 24 24" aria-hidden className="size-7 fill-current">
+      <svg aria-hidden="true" viewBox="0 0 24 24" className="size-7 fill-current">
         <path d="M17.6 9.48l1.84-3.18a.38.38 0 0 0-.66-.38l-1.86 3.22a11.5 11.5 0 0 0-9.84 0L5.22 5.92a.38.38 0 0 0-.66.38l1.84 3.18A10.9 10.9 0 0 0 1 18h22a10.9 10.9 0 0 0-5.4-8.52ZM7 15.25a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Zm10 0a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5Z" />
       </svg>
     ),
@@ -182,7 +182,10 @@ function Walkthrough({ platform }: { platform: Platform }) {
   const reduced = prefersReducedMotion();
 
   return (
-    <section aria-label={`${info.label} walkthrough`} className="space-y-5 border-t border-line pt-6">
+    <section
+      aria-label={`${info.label} walkthrough`}
+      className="space-y-5 border-t border-line pt-6"
+    >
       {/*
         Keyed on the platform so switching remounts the element: React would
         otherwise reuse the same <video> and only swap the attributes, leaving
