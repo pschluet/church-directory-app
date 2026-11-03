@@ -63,6 +63,62 @@ export async function loadGroupRow(
   return row;
 }
 
+/**
+ * A SQL boolean: has anyone *other than the caller* done anything in this group
+ * since `lastRead` (null = the member has never opened it)? "Anything" is every
+ * write a reader would want to come back for -- a post or reply, an edit, a
+ * delete, an emoji reaction, a member or public RSVP, a poll vote. This is what
+ * bolds a group's name in the list; `unreadCount` stays the narrower "new
+ * posts" figure.
+ *
+ * Taking something back (un-reacting, withdrawing a vote or RSVP) is a hard
+ * delete with no row left to date, so it does not count. Edits are attributed
+ * to the post's author, deletes to `deleted_by_person_id`.
+ *
+ * The arguments are SQL expressions (column references or `$n` placeholders),
+ * interpolated as-is -- never pass user input.
+ */
+export function unseenGroupActivitySql(
+  groupId: string,
+  lastRead: string,
+  appUserId: string,
+  personId: string
+): string {
+  const after = (col: string) => `(${lastRead} is null or ${col} > ${lastRead})`;
+  return `(
+    exists (
+      select 1 from group_posts gp
+       where gp.group_id = ${groupId}
+         and (
+           (${after("gp.created_at")} and gp.author_person_id is distinct from ${personId}::uuid)
+           or (gp.edited_at is not null and ${after("gp.edited_at")}
+               and gp.author_person_id is distinct from ${personId}::uuid)
+           or (gp.deleted_at is not null and ${after("gp.deleted_at")}
+               and gp.deleted_by_person_id is distinct from ${personId}::uuid)
+         )
+    )
+    or exists (
+      select 1 from group_post_reactions r join group_posts gp on gp.id = r.post_id
+       where gp.group_id = ${groupId} and ${after("r.created_at")}
+         and r.app_user_id is distinct from ${appUserId}::uuid
+    )
+    or exists (
+      select 1 from group_event_rsvps r join group_posts gp on gp.id = r.post_id
+       where gp.group_id = ${groupId} and ${after("r.updated_at")}
+         and r.app_user_id is distinct from ${appUserId}::uuid
+    )
+    or exists (
+      select 1 from group_event_public_rsvps r join group_posts gp on gp.id = r.post_id
+       where gp.group_id = ${groupId} and ${after("r.updated_at")}
+    )
+    or exists (
+      select 1 from group_poll_votes v join group_posts gp on gp.id = v.post_id
+       where gp.group_id = ${groupId} and ${after("v.created_at")}
+         and v.app_user_id is distinct from ${appUserId}::uuid
+    )
+  )`;
+}
+
 export interface MembershipRow {
   role: GroupMemberRole;
   /** Null when the member follows their account-wide default. */

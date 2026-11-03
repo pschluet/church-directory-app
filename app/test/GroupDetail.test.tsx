@@ -109,6 +109,7 @@ function group(overrides: Partial<GroupDto> = {}): GroupDto {
     archivedAt: null,
     myRole: "MEMBER",
     unreadCount: 0,
+    hasUpdates: false,
     pendingJoinRequestId: null,
     pinned: false,
     parishWide: false,
@@ -280,6 +281,27 @@ describe("GroupDetail", () => {
     pickerOverride.value = null;
     seq = 0;
     resetRecentReactions();
+  });
+
+  describe("marking the group read on open", () => {
+    const readCalls = () =>
+      apiMock.mock.calls.filter(
+        ([path, options]) =>
+          path === "/groups/g1/read" && (options as { method?: string })?.method === "POST"
+      );
+
+    it("marks read when there is new activity but no new posts", async () => {
+      stub({ group: group({ unreadCount: 0, hasUpdates: true }) });
+      renderPage();
+      await waitFor(() => expect(readCalls().length).toBeGreaterThan(0));
+    });
+
+    it("leaves it alone when there is nothing new", async () => {
+      stub({ group: group({ unreadCount: 0, hasUpdates: false }) });
+      renderPage();
+      await screen.findAllByText("Youth Group");
+      expect(readCalls()).toHaveLength(0);
+    });
   });
 
   it("links the author's name to their page", async () => {

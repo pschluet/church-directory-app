@@ -264,8 +264,8 @@ export function GroupDetail() {
    * fires once per group per unread batch rather than on every render.
    */
   useEffect(() => {
-    if (group?.myRole && group.unreadCount > 0) markReadMutation.mutate();
-  }, [groupId, group?.myRole, group?.unreadCount]);
+    if (group?.myRole && (group.unreadCount > 0 || group.hasUpdates)) markReadMutation.mutate();
+  }, [groupId, group?.myRole, group?.unreadCount, group?.hasUpdates]);
 
   /*
    * Live while the page is open: other people's posts arrive on their own and

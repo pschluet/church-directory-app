@@ -108,6 +108,97 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(afterRead.body.unreadCount).toBe(0);
     });
 
+    it("flags any activity by someone else, not just new posts, until the member reads it", async () => {
+      const groupId = await createGroup(creator, "PUBLIC");
+      await as(creator).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      const hasUpdates = async (u: CreatedUser) =>
+        (await as(u).call("GET", "/api/groups")).body.groups.find(
+          (g: { id: string }) => g.id === groupId
+        ).hasUpdates as boolean;
+      const detailHasUpdates = async (u: CreatedUser) =>
+        (await as(u).call("GET", `/api/groups/${groupId}`)).body.hasUpdates as boolean;
+      const read = (u: CreatedUser) => as(u).call("POST", `/api/groups/${groupId}/read`);
+
+      // Seed one of each kind of post, then have the member catch up.
+      const message = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hello",
+      });
+      const event = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Potluck", eventDate: "2030-01-01" },
+      });
+      const poll = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "POLL",
+        poll: { question: "Where?", options: ["Here", "There"] },
+      });
+      expect(await hasUpdates(member)).toBe(true);
+      expect(await detailHasUpdates(member)).toBe(true);
+      // Never for one's own activity.
+      await read(creator);
+      expect(await hasUpdates(creator)).toBe(false);
+
+      const cases: [string, () => Promise<unknown>][] = [
+        [
+          "reply",
+          () =>
+            as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+              body: "A reply",
+              parentPostId: message.body.id,
+            }),
+        ],
+        [
+          "edit",
+          () =>
+            as(creator).call("PATCH", `/api/groups/${groupId}/posts/${message.body.id}`, {
+              body: "Hello, edited",
+            }),
+        ],
+        [
+          "reaction",
+          () =>
+            as(creator).call(
+              "PUT",
+              `/api/groups/${groupId}/posts/${message.body.id}/reactions/${encodeURIComponent("🔥")}`
+            ),
+        ],
+        [
+          "rsvp",
+          () =>
+            as(creator).call("PUT", `/api/groups/${groupId}/posts/${event.body.id}/rsvp`, {
+              response: "YES",
+              guestCount: 0,
+            }),
+        ],
+        [
+          "vote",
+          () =>
+            as(creator).call("PUT", `/api/groups/${groupId}/posts/${poll.body.id}/vote`, {
+              optionIds: [poll.body.poll.options[0].id],
+            }),
+        ],
+        [
+          "delete",
+          () => as(creator).call("DELETE", `/api/groups/${groupId}/posts/${message.body.id}`),
+        ],
+      ];
+      for (const [label, act] of cases) {
+        await read(member);
+        expect(await hasUpdates(member), `${label}: cleared`).toBe(false);
+        await act();
+        expect(await hasUpdates(member), `${label}: flagged`).toBe(true);
+        expect(await hasUpdates(creator), `${label}: not for the actor`).toBe(false);
+      }
+
+      await read(member);
+      expect(await hasUpdates(member)).toBe(false);
+      expect(await detailHasUpdates(member)).toBe(false);
+      // Non-members never have a reading position to be behind on.
+      expect(await hasUpdates(outsider)).toBe(false);
+      expect(await detailHasUpdates(outsider)).toBe(false);
+    });
+
     it("hides a secret group entirely from a non-member", async () => {
       const groupId = await createGroup(creator, "SECRET");
       const list = await as(outsider).call("GET", "/api/groups");

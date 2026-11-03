@@ -282,7 +282,7 @@ function GroupRow({
   terms: readonly string[];
   onTogglePin: (args: { groupId: string; pinned: boolean }) => void;
 }) {
-  const unread = group.unreadCount > 0;
+  const unread = group.hasUpdates;
   return (
     <Link
       to={`/groups/${group.id}`}
@@ -291,14 +291,14 @@ function GroupRow({
       <VisibilityIcon visibility={group.visibility} />
 
       {/* Truncated rather than wrapped, so a long name never takes a second line.
-          Bold is the only unread marker, like an inbox; the sr-only text says it aloud. */}
+          Bold is the only "something new" marker, like an inbox; the sr-only text says it aloud. */}
       <h3
         className={`min-w-0 flex-1 truncate text-ink transition group-hover:text-accent ${
           unread ? "font-bold" : "font-normal"
         }`}
       >
         <Highlight text={group.title} ranges={highlightRanges(group.title, terms)} />
-        {unread && <span className="sr-only">, unread messages</span>}
+        {unread && <span className="sr-only">, new activity</span>}
       </h3>
 
       {group.parishWide && (
