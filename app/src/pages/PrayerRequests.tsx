@@ -16,6 +16,7 @@ import { useMe } from "../context/MeContext";
 import { Link } from "../components/nav";
 import { useAttachmentPicker } from "../components/useAttachmentPicker";
 import { Avatar } from "../components/Avatar";
+import { LinkifiedText } from "../components/LinkifiedText";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import {
   ReactionBar,
@@ -383,8 +384,11 @@ function RequestBody({ request }: { request: PrayerRequestDto }) {
         <p className="text-sm text-ink-muted">
           <AuthorLink request={request} />
         </p>
-        {/* whitespace-pre-line so the paragraph breaks someone typed survive. */}
-        <p className="mt-2 whitespace-pre-line text-ink">{request.body}</p>
+        {/* whitespace-pre-line so the paragraph breaks someone typed survive;
+            overflow-wrap:anywhere so a long address wraps inside the card. */}
+        <p className="mt-2 whitespace-pre-line break-words text-ink [overflow-wrap:anywhere]">
+          <LinkifiedText text={request.body} />
+        </p>
         <ImageStrip images={request.images} title={request.title} />
       </div>
     </div>
@@ -431,7 +435,9 @@ function RequestCard({
           )}
         </div>
 
-        <p className="mt-2 whitespace-pre-line text-ink">{request.body}</p>
+        <p className="mt-2 whitespace-pre-line break-words text-ink [overflow-wrap:anywhere]">
+          <LinkifiedText text={request.body} />
+        </p>
 
         {/*
           Who declined it, and why. Both are optional and independent: a reviewer

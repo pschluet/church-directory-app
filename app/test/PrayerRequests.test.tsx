@@ -94,6 +94,15 @@ describe("PrayerRequests", () => {
     expect(screen.getByText(/1 request from the last month/)).toBeInTheDocument();
   });
 
+  it("makes an address in a request's message a link", async () => {
+    stubFeed([request({ body: "Meal sign-up: https://example.org/meals/ivanov." })]);
+    renderWithProviders(<PrayerRequests />);
+
+    const link = await screen.findByRole("link", { name: "https://example.org/meals/ivanov" });
+    expect(link).toHaveAttribute("href", "https://example.org/meals/ivanov");
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+
   /*
    * The author's photo and name both open their record. The photo is
    * `aria-hidden` and out of the tab order on purpose: it is the same link to
