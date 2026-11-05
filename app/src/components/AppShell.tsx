@@ -9,7 +9,7 @@ import { NotificationBell } from "./NotificationBell";
 import { SettingsLink } from "./SettingsLink";
 import { usePushRegistration } from "./usePushRegistration";
 import { useRealtimeRefresh } from "./useRealtimeRefresh";
-import { Select } from "./ui";
+import { Select, Toaster } from "./ui";
 
 /**
  * The frame every page sits in, following allsaintsorthodox.org's structure:
@@ -335,6 +335,7 @@ export function AppShell() {
       <main className="mx-auto w-full max-w-6xl flex-1 px-4 py-6 md:px-6 md:py-10">
         <Outlet />
       </main>
+      <Toaster />
 
       <footer className="mt-8 bg-primary px-4 py-6 text-center text-sm text-white/90">
         <p>{organizationName}</p>

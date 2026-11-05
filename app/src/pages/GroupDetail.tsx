@@ -34,6 +34,7 @@ import {
   type GroupMemberRole,
   type GroupNotificationPref,
   type GroupPostDto,
+  type GroupPostKind,
   type GroupPostReportDto,
   type GroupRsvpResponse,
   type GroupVisibility,
@@ -91,9 +92,17 @@ import {
   Select,
   Spinner,
   inputClass,
+  showToast,
   useNow,
   usePageScrollLock,
 } from "../components/ui";
+import {
+  eventDetailPath,
+  flashMessage,
+  messagePath,
+  threadPath,
+  useMessageTarget,
+} from "../lib/messageLinks";
 
 // The message bar's editor and its Aa row: one lazily loaded chunk, so Tiptap
 // stays out of the main bundle (see RichComposerEditor.tsx).
@@ -887,6 +896,51 @@ function MessagesTab({
   const items = useMemo(() => buildChatItems(posts ?? [], now), [posts, now]);
 
   /*
+   * Arrived by a link to one message, or from the bell: find it and show it
+   * instead of the newest. "Handled" is per navigation (see useMessageTarget),
+   * so the same link followed twice lights the message twice, and a refetch in
+   * between does not scroll anybody back to it.
+   *
+   * It may be further back than the first page, so older pages are fetched
+   * until it turns up. It may also not be in the feed at all: a reply lives on
+   * its thread, which one look at the post itself sends the reader on to; a
+   * post that is gone simply leaves the feed where it would have been.
+   */
+  const { targetId, targetKey } = useMessageTarget();
+  const [handledTarget, setHandledTarget] = useState<string | null>(null);
+  const seeking = targetId !== null && handledTarget !== targetKey;
+  const targetLoaded = seeking && Boolean(posts?.some((post) => post.id === targetId));
+  const targetQuery = useQuery({
+    queryKey: qk.groupPost(organizationId, groupId, targetId ?? ""),
+    queryFn: ({ signal }) => api<GroupPostDto>(`/groups/${groupId}/posts/${targetId}`, { signal }),
+    enabled: seeking && Boolean(posts) && !targetLoaded,
+    retry: false,
+  });
+  const target = targetQuery.data;
+  const targetIsReply = seeking && !targetLoaded && Boolean(target?.parentPostId);
+  useEffect(() => {
+    if (!seeking || !posts || targetLoaded || targetIsReply || targetQuery.isPending) return;
+    if (targetQuery.isError || (!postsQuery.hasNextPage && !postsQuery.isFetching)) {
+      // Not here and nowhere to look: carry on as if no message had been named.
+      anchor.current = null;
+      setHandledTarget(targetKey);
+      return;
+    }
+    if (postsQuery.hasNextPage && !postsQuery.isFetchingNextPage) void postsQuery.fetchNextPage();
+  }, [
+    seeking,
+    posts,
+    targetLoaded,
+    targetIsReply,
+    targetQuery.isPending,
+    targetQuery.isError,
+    targetKey,
+    postsQuery.hasNextPage,
+    postsQuery.isFetching,
+    postsQuery.isFetchingNextPage,
+  ]);
+
+  /*
    * The pane: the messages scroll inside it and the composer sits under it, so
    * the page itself never scrolls and the message bar is always on screen.
    * Measured rather than a fixed vh for the reason `useFillViewport` gives; the
@@ -935,6 +989,17 @@ function MessagesTab({
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el || !posts || posts.length === 0) return;
+    if (seeking && targetId) {
+      // Still looking: leave the view alone until it is found or given up on.
+      if (!targetLoaded) return;
+      anchor.current = null;
+      restoredScroll.current = true;
+      forceBottom.current = false;
+      flashMessage(targetId, el);
+      trackBottom();
+      setHandledTarget(targetKey);
+      return;
+    }
     if (anchor.current !== null) {
       // Older posts were prepended above the view: move down by what was added,
       // so what the member was reading does not jump.
@@ -956,7 +1021,7 @@ function MessagesTab({
       el.scrollTop = el.scrollHeight;
       forceBottom.current = false;
     }
-  }, [posts, scrollEl, groupId]);
+  }, [posts, scrollEl, groupId, seeking, targetLoaded]);
 
   /** An image finishing loading makes its row taller; stay pinned if that is where we were. */
   const onMediaLoad = useCallback(() => {
@@ -972,12 +1037,19 @@ function MessagesTab({
   }, [paneHeight]);
 
   const sentinelRef = useInfiniteScroll(loadOlder, {
-    enabled: Boolean(postsQuery.hasNextPage) && !postsQuery.isFetchingNextPage,
+    // Not while a linked message is being looked for: that does its own paging,
+    // and the view is not where the member left it yet.
+    enabled: Boolean(postsQuery.hasNextPage) && !postsQuery.isFetchingNextPage && !seeking,
     root: scrollEl,
     rootMargin: "200px",
   });
 
   if (!canSeeContent) return <MembersOnly group={group} joinActions={joinActions} />;
+
+  // A reply's link leads to its thread, still naming the reply.
+  if (targetIsReply && target) {
+    return <Navigate to={messagePath(groupId, target)} replace />;
+  }
 
   async function posted(): Promise<void> {
     forceBottom.current = true;
@@ -1162,16 +1234,29 @@ function ThreadView({
     if (el) atBottom.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
   }
 
+  // Arrived by a link to one message (a reply, or the thread's own root): show
+  // that one rather than the newest. Once per navigation -- see useMessageTarget.
+  const { targetId, targetKey } = useMessageTarget();
+  const handledTarget = useRef<string | null>(null);
+
   // Same rule as the feed: first load, the member's own reply, or already near
   // the bottom pins to the newest; anything else leaves the view alone.
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el || !replies) return;
+    if (targetId && handledTarget.current !== targetKey) {
+      handledTarget.current = targetKey;
+      if (flashMessage(targetId, el)) {
+        forceBottom.current = false;
+        trackBottom();
+        return;
+      }
+    }
     if (forceBottom.current || atBottom.current) {
       el.scrollTop = el.scrollHeight;
       forceBottom.current = false;
     }
-  }, [replies]);
+  }, [replies, targetId, targetKey]);
 
   const onMediaLoad = useCallback(() => {
     const el = scrollRef.current;
@@ -1201,13 +1286,29 @@ function ThreadView({
     );
   }
   // A link to a reply leads to the thread it belongs to.
+  // It keeps naming the reply, so the thread opens on it and lights it.
   if (root.parentPostId) {
-    return <Navigate to={threadPath(groupId, root.parentPostId)} replace state={location.state} />;
+    return (
+      <Navigate
+        to={{
+          pathname: threadPath(groupId, root.parentPostId),
+          search: location.search || `?message=${root.id}`,
+        }}
+        replace
+        state={location.state}
+      />
+    );
   }
   // An event has its own page now. A notification or bookmark from before
   // that still says /threads/; send it on rather than show a thread page.
   if (root.kind === "EVENT") {
-    return <Navigate to={eventDetailPath(groupId, root.id)} replace state={location.state} />;
+    return (
+      <Navigate
+        to={{ pathname: eventDetailPath(groupId, root.id), search: location.search }}
+        replace
+        state={location.state}
+      />
+    );
   }
 
   const count = replies?.length ?? root.replyCount;
@@ -1272,6 +1373,7 @@ function ThreadView({
               onMediaLoad={onMediaLoad}
               onEdit={setEditing}
               editingId={editing?.id ?? null}
+              parentKind="MESSAGE"
             />
           </>
         )}
@@ -1334,8 +1436,11 @@ export function ReplyList({
   onMediaLoad,
   onEdit,
   editingId,
+  parentKind,
 }: {
   items: ChatItem[];
+  /** What the replies hang off: a message's thread or an event's page. */
+  parentKind: GroupPostKind;
   group: GroupDto;
   groupId: string;
   now: Date;
@@ -1372,6 +1477,7 @@ export function ReplyList({
             canReact={group.canReact}
             onEdit={onEdit}
             editingId={editingId}
+            parentKind={parentKind}
             isReply
           />
         )
@@ -1407,19 +1513,6 @@ function AuthorName({ post }: { post: GroupPostDto }) {
       {post.authorName}
     </Link>
   );
-}
-
-/** Where a message's thread lives. */
-function threadPath(groupId: string, postId: string): string {
-  return `/groups/${groupId}/threads/${postId}`;
-}
-
-/**
- * Where an event lives: its own page (EventDetail.tsx), not a chat thread. An
- * event's discussion is there too, so this is where "Reply" on one goes.
- */
-export function eventDetailPath(groupId: string, postId: string): string {
-  return `/groups/${groupId}/events/${postId}`;
 }
 
 /**
@@ -1500,9 +1593,12 @@ export function ChatRow({
   variant = "row",
   onEdit,
   editingId = null,
+  parentKind = null,
 }: {
   post: GroupPostDto;
   showHeader: boolean;
+  /** For a reply: what it hangs off, which decides where a link to it leads. */
+  parentKind?: GroupPostKind | null;
   /** Whether the caller may reply here; offers "Reply" in the actions menu. */
   canReply?: boolean;
   /** Whether the caller may add reactions here; offers the emoji toolbar, quick reactions and picker. */
@@ -1578,6 +1674,13 @@ export function ChatRow({
           viewTransition: true,
           state: feedState(pathname, { focusComposer: true }),
         }),
+    });
+  // A link to this message, to paste anywhere. Not for an event card: its own
+  // "Copy link" below is the event's page, which is the link worth sharing.
+  if (!isDeleted && post.kind !== "EVENT")
+    actions.push({
+      label: "Copy link",
+      onSelect: () => copyToClipboard(messageUrl(groupId, post, parentKind), "Link copied"),
     });
   // Saving and advertising the event. Not for a cancelled one: there is nothing to invite
   // anybody to, and its public page already says it was cancelled.
@@ -1659,6 +1762,7 @@ export function ChatRow({
 
   return (
     <li
+      data-post-id={post.id}
       onPointerDown={startPress}
       onPointerMove={movePress}
       onPointerUp={cancelPress}
@@ -1926,7 +2030,7 @@ export function ChatRow({
                   type="button"
                   className="tap-target block w-full px-2 py-3 text-left font-bold text-ink"
                   onClick={() => {
-                    void navigator.clipboard?.writeText(toPlainText(post.body ?? ""));
+                    copyToClipboard(toPlainText(post.body ?? ""), "Text copied");
                     setSheetOpen(false);
                   }}
                 >
@@ -1972,6 +2076,26 @@ export function ChatRow({
         </ConfirmDialog>
       )}
     </li>
+  );
+}
+
+/** The full address of a link to one message, for the clipboard. */
+function messageUrl(groupId: string, post: GroupPostDto, parentKind: GroupPostKind | null): string {
+  return new URL(messagePath(groupId, post, parentKind), window.location.origin).href;
+}
+
+/**
+ * Copies, and says so: the menu the action was in has already closed, so
+ * without the toast nothing on screen would show that anything happened.
+ */
+function copyToClipboard(text: string, done: string): void {
+  if (!navigator.clipboard) {
+    showToast("Copying is not available here");
+    return;
+  }
+  navigator.clipboard.writeText(text).then(
+    () => showToast(done),
+    () => showToast("Could not copy")
   );
 }
 

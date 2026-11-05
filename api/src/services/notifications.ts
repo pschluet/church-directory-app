@@ -79,6 +79,8 @@ const NOTIFICATION_SELECT = `
          n.prayer_request_id,
          n.group_id,
          n.group_post_id,
+         gp.parent_post_id as group_post_parent_id,
+         parent.kind as group_post_parent_kind,
          n.directory_request_id,
          coalesce(pr.title, g.title, dr.first_name || ' ' || dr.last_name) as title,
          n.created_at,
@@ -87,6 +89,7 @@ const NOTIFICATION_SELECT = `
     left join prayer_requests pr on pr.id = n.prayer_request_id
     left join groups g on g.id = n.group_id
     left join group_posts gp on gp.id = n.group_post_id
+    left join group_posts parent on parent.id = gp.parent_post_id
     left join directory_requests dr on dr.id = n.directory_request_id
    where n.app_user_id = $1
      and ${NOTIFICATION_VISIBLE}
@@ -98,6 +101,8 @@ interface NotificationRow {
   prayer_request_id: string | null;
   group_id: string | null;
   group_post_id: string | null;
+  group_post_parent_id: string | null;
+  group_post_parent_kind: NotificationDto["groupPostParentKind"];
   directory_request_id: string | null;
   title: string | null;
   created_at: Date | string;
@@ -134,6 +139,8 @@ export async function loadInbox(q: Queryable, appUserId: string): Promise<Inbox>
       prayerRequestId: row.prayer_request_id,
       groupId: row.group_id,
       groupPostId: row.group_post_id,
+      groupPostParentId: row.group_post_parent_id,
+      groupPostParentKind: row.group_post_parent_kind,
       directoryRequestId: row.directory_request_id,
       createdAt: new Date(row.created_at).toISOString(),
       read: row.read_at !== null,

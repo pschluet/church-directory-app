@@ -56,6 +56,8 @@ const notification = (
   prayerRequestId: `pr-${id}`,
   groupId: null,
   groupPostId: null,
+  groupPostParentId: null,
+  groupPostParentKind: null,
   directoryRequestId: null,
   createdAt: new Date().toISOString(),
   read,
@@ -102,6 +104,39 @@ describe("NotificationBell", () => {
     expect(screen.getByText("For Fr. John")).toBeInTheDocument();
     expect(screen.getAllByRole("link")).toHaveLength(2);
     expect(screen.getAllByRole("link")[0]).toHaveAttribute("href", "/prayer-requests");
+  });
+
+  it("links a group notification to the message it is about, or its thread for a reply", async () => {
+    const group = (id: string, overrides: object) => ({
+      ...notification(id, `Group ${id}`, false, "GROUP_POST"),
+      prayerRequestId: null,
+      groupId: "g1",
+      ...overrides,
+    });
+    stub(
+      inbox({
+        unreadCount: 4,
+        notifications: [
+          group("1", { groupPostId: "p1" }),
+          group("2", {
+            groupPostId: "r1",
+            groupPostParentId: "p1",
+            groupPostParentKind: "MESSAGE",
+          }),
+          group("3", { groupPostId: "r2", groupPostParentId: "e1", groupPostParentKind: "EVENT" }),
+          group("4", { type: "GROUP_JOIN_REQUEST" }),
+        ],
+      })
+    );
+    renderWithProviders(<NotificationBell />);
+    await userEvent.click(await screen.findByRole("button", { name: /4 unread/ }));
+
+    expect(screen.getAllByRole("link").map((link) => link.getAttribute("href"))).toEqual([
+      "/groups/g1?message=p1",
+      "/groups/g1/threads/p1?message=r1",
+      "/groups/g1/events/e1?message=r2",
+      "/groups/g1",
+    ]);
   });
 
   it("clears the badge as the panel opens", async () => {

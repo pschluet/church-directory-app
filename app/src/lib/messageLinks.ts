@@ -1,0 +1,106 @@
+import { useLocation, useSearchParams } from "react-router";
+import type { GroupPostKind } from "@shared";
+
+/**
+ * Links to one message in a group, and what a page does on arriving by one.
+ *
+ * A link is the page the message is shown on, with `?message=<id>` naming it:
+ * the feed for a message (or event card) of its own, the thread for a reply to
+ * a message, the event's page for a reply to an event. The page scrolls the
+ * message into view and lights it for a moment (`flashMessage`), so whoever
+ * followed the link -- or tapped a bell notification, which uses the same
+ * links -- can tell which one it was about.
+ *
+ * Kept out of pages/GroupDetail.tsx so the notification bell, which is on every
+ * page, can build one without importing the whole group page.
+ */
+
+/** The query parameter that names the message a link is about. */
+export const MESSAGE_PARAM = "message";
+
+/** Where a message's thread lives. */
+export function threadPath(groupId: string, postId: string): string {
+  return `/groups/${groupId}/threads/${postId}`;
+}
+
+/**
+ * Where an event lives: its own page (EventDetail.tsx), not a chat thread. An
+ * event's discussion is there too, so this is where "Reply" on one goes.
+ */
+export function eventDetailPath(groupId: string, postId: string): string {
+  return `/groups/${groupId}/events/${postId}`;
+}
+
+/**
+ * The link to one message. `parentKind` says what a reply hangs off -- a
+ * message's thread or an event's page -- and is ignored for a post of its own.
+ */
+export function messagePath(
+  groupId: string,
+  post: { id: string; parentPostId: string | null },
+  parentKind?: GroupPostKind | null
+): string {
+  const query = `?${MESSAGE_PARAM}=${encodeURIComponent(post.id)}`;
+  if (!post.parentPostId) return `/groups/${groupId}${query}`;
+  return `${
+    parentKind === "EVENT"
+      ? eventDetailPath(groupId, post.parentPostId)
+      : threadPath(groupId, post.parentPostId)
+  }${query}`;
+}
+
+/**
+ * The message this navigation was asked to show, and the navigation's own key.
+ *
+ * The key is what makes it once per arrival rather than once per URL: tapping
+ * the same bell entry twice is the same URL but a new navigation, and should
+ * light the message again.
+ */
+export function useMessageTarget(): { targetId: string | null; targetKey: string } {
+  const [params] = useSearchParams();
+  const { key } = useLocation();
+  return { targetId: params.get(MESSAGE_PARAM), targetKey: key };
+}
+
+/**
+ * Scrolls the message with this id to the middle of `scroller` (or of the
+ * window, for a page that scrolls itself) and lights it. Returns false when the
+ * message is not on the page.
+ *
+ * Not `scrollIntoView`: inside a scrolling pane that also scrolls every
+ * ancestor, the page included, which the group page holds still on purpose.
+ *
+ * The flash is a data attribute the stylesheet animates (see `[data-flash]` in
+ * theme.css). Taken off and put back, with a reflow between, so a second
+ * arrival restarts it rather than being swallowed by the one still running.
+ */
+export function flashMessage(postId: string, scroller?: HTMLElement | null): boolean {
+  const root: ParentNode = scroller ?? document;
+  const row = root.querySelector<HTMLElement>(
+    `[data-post-id="${postId.replace(/["\\]/g, "\\$&")}"]`
+  );
+  if (!row) return false;
+
+  const box = row.getBoundingClientRect();
+  if (scroller) {
+    const pane = scroller.getBoundingClientRect();
+    // A row taller than the pane is shown from its top, not from its middle.
+    const offset = Math.max(0, (pane.height - box.height) / 2);
+    scroller.scrollTop += box.top - pane.top - offset;
+  } else {
+    const offset = Math.max(0, (window.innerHeight - box.height) / 2);
+    window.scrollTo({ top: window.scrollY + box.top - offset });
+  }
+
+  delete row.dataset.flash;
+  void row.offsetWidth;
+  row.dataset.flash = "";
+  // A row's own children animate too (a reaction pill, say); only this one ends it.
+  const done = (event: AnimationEvent) => {
+    if (event.target !== row) return;
+    delete row.dataset.flash;
+    row.removeEventListener("animationend", done);
+  };
+  row.addEventListener("animationend", done);
+  return true;
+}

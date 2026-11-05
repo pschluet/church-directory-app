@@ -1,9 +1,10 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Navigate, useLocation, useParams } from "react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import type { GroupDto, GroupEventRsvpDto, GroupPostDto, PublicEventRsvpDto } from "@shared";
 import { api, ApiError } from "../lib/api";
 import { qk } from "../lib/queryKeys";
+import { flashMessage, useMessageTarget } from "../lib/messageLinks";
 import { formatDayLabel, formatEventTimes, formatPostedAt, todayIso } from "../lib/format";
 import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
@@ -237,6 +238,16 @@ function EventPage({
   const { repliesQuery, replies, items } = useThreadReplies(groupId, post.id, now, true);
   const replyCount = replies?.length ?? post.replyCount;
 
+  // Arrived by a link to one of the replies: scroll the page to it and light it,
+  // once per navigation (see useMessageTarget).
+  const { targetId, targetKey } = useMessageTarget();
+  const handledTarget = useRef<string | null>(null);
+  useEffect(() => {
+    if (!targetId || !replies || handledTarget.current === targetKey) return;
+    handledTarget.current = targetKey;
+    flashMessage(targetId);
+  }, [replies, targetId, targetKey]);
+
   return (
     <div className="space-y-6 pb-8">
       {cancelled && (
@@ -415,6 +426,7 @@ function EventPage({
               onChanged={onChanged}
               onEdit={setEditingReply}
               editingId={editingReply?.id ?? null}
+              parentKind="EVENT"
             />
           </>
         )}
