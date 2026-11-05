@@ -1175,9 +1175,23 @@ describe("GroupDetail", () => {
       press(row);
       expect(await screen.findByRole("dialog", { name: "Message" })).toBeInTheDocument();
       const drawer = within(screen.getByRole("dialog", { name: "Message" }));
-      for (const name of ["Copy text", "Reply", "Edit", "Delete"]) {
-        expect(drawer.getByRole("button", { name })).toBeInTheDocument();
-      }
+      // In this order: Reply, the two copies, then the rest.
+      const listed = drawer
+        .getAllByRole("listitem")
+        .map((item) => item.textContent?.trim())
+        .filter((name) => name && name !== "View reactions");
+      expect(listed.slice(0, 3)).toEqual(["Reply", "Copy text", "Copy link"]);
+      expect(listed).toContain("Edit");
+      expect(listed.indexOf("Delete")).toBeGreaterThan(listed.indexOf("Copy link"));
+    });
+
+    it("keeps Copy text out of the desktop hover menu, where the text can be selected", async () => {
+      stub(messages());
+      renderPage();
+      await screen.findByText("Hello there");
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      expect(screen.getByRole("menuitem", { name: "Copy link" })).toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: "Copy text" })).not.toBeInTheDocument();
     });
 
     it("marks the pressed message while the finger is down, and while its drawer is open", async () => {

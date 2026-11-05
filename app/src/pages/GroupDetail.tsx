@@ -1665,7 +1665,13 @@ export function ChatRow({
    * phone text selection is switched off on a row (it fights the long press),
    * so this is how you get the text out.
    */
-  const actions: { label: string; danger?: boolean; onSelect: () => void }[] = [];
+  const actions: {
+    label: string;
+    danger?: boolean;
+    /** Only in the phone drawer -- see "Copy text" above. */
+    drawerOnly?: boolean;
+    onSelect: () => void;
+  }[] = [];
   if (showReplyAction)
     actions.push({
       label: "Reply",
@@ -1674,6 +1680,12 @@ export function ChatRow({
           viewTransition: true,
           state: feedState(pathname, { focusComposer: true }),
         }),
+    });
+  if (post.body && !isDeleted)
+    actions.push({
+      label: "Copy text",
+      drawerOnly: true,
+      onSelect: () => copyToClipboard(toPlainText(post.body ?? ""), "Text copied"),
     });
   // A link to this message, to paste anywhere. Not for an event card: its own
   // "Copy link" below is the event's page, which is the link worth sharing.
@@ -1702,6 +1714,8 @@ export function ChatRow({
   // A cancelled event can be put back by the person who cancelled it.
   if (post.canRestore)
     actions.push({ label: "Re-activate event", onSelect: () => restore.mutate() });
+  /** The hover menu: a mouse can select the text, so it needs no "Copy text". */
+  const menuActions = actions.filter((action) => !action.drawerOnly);
 
   /*
    * Long press, for a touch screen: it opens a drawer with the actions, because
@@ -1943,7 +1957,7 @@ export function ChatRow({
         sit on top of the messages, so it is gone and a long press opens the
         drawer below instead.
       */}
-      {(actions.length > 0 || canReactHere) && (
+      {(menuActions.length > 0 || canReactHere) && (
         <div
           className={`absolute -top-3 right-2 flex items-center rounded-md border border-line bg-surface shadow-sm transition focus-within:opacity-100 group-hover/row:opacity-100 [@media(hover:none)]:hidden ${
             pickerOpen ? "opacity-100" : "opacity-0"
@@ -1964,9 +1978,9 @@ export function ChatRow({
               />
             </>
           )}
-          {actions.length > 0 && (
+          {menuActions.length > 0 && (
             <MenuButton portal label={`Actions for this post`}>
-              {actions.map((action) => (
+              {menuActions.map((action) => (
                 <MenuItem key={action.label} danger={action.danger} onSelect={action.onSelect}>
                   {action.label}
                 </MenuItem>
@@ -2021,20 +2035,6 @@ export function ChatRow({
                   }}
                 >
                   View reactions
-                </button>
-              </li>
-            )}
-            {post.body && (
-              <li>
-                <button
-                  type="button"
-                  className="tap-target block w-full px-2 py-3 text-left font-bold text-ink"
-                  onClick={() => {
-                    copyToClipboard(toPlainText(post.body ?? ""), "Text copied");
-                    setSheetOpen(false);
-                  }}
-                >
-                  Copy text
                 </button>
               </li>
             )}
