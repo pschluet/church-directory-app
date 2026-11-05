@@ -29,6 +29,56 @@ export function ErrorNotice({ message, onRetry }: { message: string; onRetry?: (
   );
 }
 
+/*
+ * A brief confirmation for something that happens out of sight -- "Link
+ * copied" after a menu has already closed, where there is nothing left on
+ * screen to say it worked. One at a time, app-wide: `showToast` from anywhere,
+ * and the single `Toaster` in AppShell shows it for a couple of seconds.
+ * Announced politely, and never in the way of a tap (`pointer-events-none`).
+ */
+const toastListeners = new Set<(message: string) => void>();
+
+export function showToast(message: string): void {
+  for (const listener of toastListeners) listener(message);
+}
+
+const TOAST_MS = 2000;
+
+export function Toaster() {
+  const [toast, setToast] = useState<{ message: string; id: number } | null>(null);
+  useEffect(() => {
+    const listener = (message: string) =>
+      setToast((previous) => ({ message, id: (previous?.id ?? 0) + 1 }));
+    toastListeners.add(listener);
+    return () => {
+      toastListeners.delete(listener);
+    };
+  }, []);
+  useEffect(() => {
+    if (!toast) return;
+    const timer = window.setTimeout(() => setToast(null), TOAST_MS);
+    return () => window.clearTimeout(timer);
+  }, [toast]);
+  return createPortal(
+    <div
+      role="status"
+      aria-live="polite"
+      className="pointer-events-none fixed inset-x-0 z-50 flex justify-center px-4"
+      style={{ bottom: "calc(env(safe-area-inset-bottom) + 6rem)" }}
+    >
+      {toast && (
+        <p
+          key={toast.id}
+          className="toast-in rounded-full bg-ink px-4 py-2 text-sm font-bold text-white shadow-lg"
+        >
+          {toast.message}
+        </p>
+      )}
+    </div>,
+    document.body
+  );
+}
+
 export function EmptyState({ title, children }: { title: string; children?: ReactNode }) {
   return (
     <div className="rounded-md border border-dashed border-line bg-surface-muted px-6 py-12 text-center">

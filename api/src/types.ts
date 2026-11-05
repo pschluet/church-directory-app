@@ -871,6 +871,12 @@ export interface NotificationDto {
   prayerRequestId: string | null;
   groupId: string | null;
   groupPostId: string | null;
+  /**
+   * When the post is a reply, the message or event it replies to -- so the bell
+   * can link straight to the thread (or event page) the reply lives on.
+   */
+  groupPostParentId: string | null;
+  groupPostParentKind: GroupPostKind | null;
   /** Set only for `DIRECTORY_REQUEST`, whose title is the requester's name. */
   directoryRequestId: string | null;
   createdAt: string;

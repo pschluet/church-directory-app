@@ -21,6 +21,7 @@ import { GroupDetail, groupTabPath, tabFromPathname } from "../src/pages/GroupDe
 import { EventDetail } from "../src/pages/EventDetail";
 import type { GroupAttachmentPicker } from "../src/components/useGroupAttachmentPicker";
 import { renderWithProviders, chooseOption, stubDownload } from "./utils";
+import { Toaster } from "../src/components/ui";
 import { Route, Routes, useLocation, useNavigationType } from "react-router";
 
 /*
@@ -1174,9 +1175,23 @@ describe("GroupDetail", () => {
       press(row);
       expect(await screen.findByRole("dialog", { name: "Message" })).toBeInTheDocument();
       const drawer = within(screen.getByRole("dialog", { name: "Message" }));
-      for (const name of ["Copy text", "Reply", "Edit", "Delete"]) {
-        expect(drawer.getByRole("button", { name })).toBeInTheDocument();
-      }
+      // In this order: Reply, the two copies, then the rest.
+      const listed = drawer
+        .getAllByRole("listitem")
+        .map((item) => item.textContent?.trim())
+        .filter((name) => name && name !== "View reactions");
+      expect(listed.slice(0, 3)).toEqual(["Reply", "Copy text", "Copy link"]);
+      expect(listed).toContain("Edit");
+      expect(listed.indexOf("Delete")).toBeGreaterThan(listed.indexOf("Copy link"));
+    });
+
+    it("keeps Copy text out of the desktop hover menu, where the text can be selected", async () => {
+      stub(messages());
+      renderPage();
+      await screen.findByText("Hello there");
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      expect(screen.getByRole("menuitem", { name: "Copy link" })).toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: "Copy text" })).not.toBeInTheDocument();
     });
 
     it("marks the pressed message while the finger is down, and while its drawer is open", async () => {
@@ -2135,9 +2150,99 @@ describe("GroupDetail", () => {
       });
       renderPage();
       await screen.findByText("Hello");
-      expect(
-        screen.queryByRole("button", { name: "Actions for this post" })
-      ).not.toBeInTheDocument();
+      // The menu is still there -- every message can be linked to -- just without Reply.
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      expect(screen.getByRole("menuitem", { name: "Copy link" })).toBeInTheDocument();
+      expect(screen.queryByRole("menuitem", { name: "Reply" })).not.toBeInTheDocument();
+    });
+  });
+
+  describe("links to a message", () => {
+    const flashed = (text: string) => screen.getByText(text).closest("li[data-post-id]");
+
+    it("copies a link to the message from its menu, and says so", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+      stub({ pages: [{ posts: [post({ id: "p1", body: "Hello" })], nextCursor: null }] });
+      renderWithProviders(
+        <NavStackProvider>
+          <Routes>
+            <Route path="/groups/:id" element={<GroupDetail />} />
+          </Routes>
+          <Toaster />
+        </NavStackProvider>,
+        { initialEntries: ["/groups/g1"] }
+      );
+      await screen.findByText("Hello");
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Copy link" }));
+      expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/groups/g1?message=p1`);
+      expect(await screen.findByText("Link copied")).toBeInTheDocument();
+    });
+
+    it("offers no message link on an event card, which has the event's own", async () => {
+      const card = post({
+        id: "e1",
+        kind: "EVENT",
+        body: null,
+        event: {
+          title: "Parish Potluck",
+          description: null,
+          eventDate: "2099-01-01",
+          startTime: null,
+          endTime: null,
+          location: null,
+          rsvpCounts: { yes: 0, no: 0, maybe: 0, publicAttending: 0 },
+          myRsvp: null,
+          shareToken: "01JSHARETOKEN0000000000000",
+          publicRsvpEnabled: false,
+        },
+      });
+      stub({ pages: [{ posts: [card], nextCursor: null }] });
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Actions for this post" }));
+      expect(screen.getAllByRole("menuitem", { name: "Copy link" })).toHaveLength(1);
+    });
+
+    it("opens the feed on a linked message further back, fetching older pages to find it", async () => {
+      stub({
+        pages: [
+          {
+            posts: [post({ id: "new", body: "Newest", createdAt: "2026-10-10T10:00:00.000Z" })],
+            nextCursor: { createdAt: "2026-10-10T10:00:00.000Z", id: "new" },
+          },
+          {
+            posts: [post({ id: "old", body: "Way back", createdAt: "2026-10-01T10:00:00.000Z" })],
+            nextCursor: null,
+          },
+        ],
+      });
+      renderPage("/groups/g1?message=old");
+      await screen.findByText("Way back");
+      await waitFor(() => expect(flashed("Way back")).toHaveAttribute("data-flash"));
+      expect(flashed("Newest")).not.toHaveAttribute("data-flash");
+    });
+
+    it("lights a linked reply on its thread", async () => {
+      const reply = post({ id: "r1", body: "the reply", parentPostId: "root-1" });
+      stub({
+        thread: { root: post({ id: "root-1", body: "Root", replyCount: 1 }), replies: [reply] },
+      });
+      renderPage("/groups/g1/threads/root-1?message=r1");
+      await screen.findByText("the reply");
+      await waitFor(() => expect(flashed("the reply")).toHaveAttribute("data-flash"));
+      expect(flashed("Root")).not.toHaveAttribute("data-flash");
+    });
+
+    it("sends a feed link that names a reply on to the reply's thread", async () => {
+      const reply = post({ id: "r1", body: "the reply", parentPostId: "root-1" });
+      stub({
+        pages: [{ posts: [post({ id: "root-1", body: "Root", replyCount: 1 })], nextCursor: null }],
+        thread: { root: post({ id: "root-1", body: "Root", replyCount: 1 }), replies: [reply] },
+      });
+      renderPage("/groups/g1?message=r1");
+      await waitFor(() => expect(where()).toBe("/groups/g1/threads/root-1"));
+      await waitFor(() => expect(flashed("the reply")).toHaveAttribute("data-flash"));
     });
   });
 
@@ -2559,7 +2664,10 @@ describe("GroupDetail", () => {
       stub({ thread: { root: rootPost, replies: [reply] } });
       renderPage("/groups/g1/threads/root-1");
       await screen.findByText("my reply");
-      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      // The root has a menu too now (Copy link); the reply's is the last.
+      await userEvent.click(
+        screen.getAllByRole("button", { name: "Actions for this post" }).at(-1)!
+      );
       await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
       const bar = await screen.findByRole("textbox", { name: "Edit message" });
       // As in startEdit: the reply's text arrives a render after the label.

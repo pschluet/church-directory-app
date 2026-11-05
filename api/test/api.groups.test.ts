@@ -1134,6 +1134,27 @@ describe.skipIf(!hasDb)("groups", () => {
       expect(await notificationsFor(member, "GROUP_POST")).toBe(1);
     });
 
+    it("names the post a notification is about, and for a reply the message it replies to", async () => {
+      const groupId = await joined();
+      const root = await as(creator).call("POST", `/api/groups/${groupId}/posts`, { body: "Hi" });
+      const reply = await as(creator).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Hi @Mo Member",
+        parentPostId: root.body.id,
+        mentionedAppUserIds: [member.appUserId],
+      });
+      const inbox = (await as(member).call("GET", "/api/notifications")).body.notifications;
+      expect(inbox.find((n: { type: string }) => n.type === "GROUP_POST")).toMatchObject({
+        groupPostId: root.body.id,
+        groupPostParentId: null,
+        groupPostParentKind: null,
+      });
+      expect(inbox.find((n: { type: string }) => n.type === "GROUP_MENTION")).toMatchObject({
+        groupPostId: reply.body.id,
+        groupPostParentId: root.body.id,
+        groupPostParentKind: "MESSAGE",
+      });
+    });
+
     it("follows an account default of MENTIONS: no post notification, but a mention gets through", async () => {
       const groupId = await joined();
       await as(member).call("PUT", "/api/notifications/preferences", {
