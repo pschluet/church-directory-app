@@ -4,6 +4,7 @@ import { useAuth } from "../context/AuthContext";
 import { useMe } from "../context/MeContext";
 import { BackButton } from "./BackButton";
 import { HomeLink, useGoHomeClick } from "./HomeLink";
+import { GroupsLink } from "./GroupsLink";
 import { NavLink } from "./nav";
 import { NotificationBell } from "./NotificationBell";
 import { SettingsLink } from "./SettingsLink";
@@ -197,11 +198,12 @@ export function AppShell() {
             `ml-auto` because the chevron is often absent, leaving this the only
             child -- and `justify-between` puts a lone child on the left.
 
-            The house is phone-only: on desktop the parish name and the visible
-            "Directory" link already go home.
+            The house and the people are phone-only: on desktop the parish name
+            and the visible "Directory" and "Groups" links already do their jobs.
           */}
           <div className="ml-auto flex shrink-0 items-center gap-0.5 md:hidden">
             <HomeLink />
+            <GroupsLink />
             <NotificationBell />
             <SettingsLink />
 
