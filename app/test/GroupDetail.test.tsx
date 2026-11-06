@@ -441,6 +441,55 @@ describe("GroupDetail", () => {
     });
   });
 
+  it("links a web address typed into a message", async () => {
+    stub({
+      pages: [
+        { posts: [post({ body: "Sign up at https://example.org/form." })], nextCursor: null },
+      ],
+    });
+    renderPage();
+    const link = await screen.findByRole("link", { name: "https://example.org/form" });
+    expect(link).toHaveAttribute("href", "https://example.org/form");
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+
+  it("does not nest a second link inside a link whose text is an address", async () => {
+    stub({
+      pages: [
+        {
+          posts: [post({ body: "[https://example.org](https://example.org/page)" })],
+          nextCursor: null,
+        },
+      ],
+    });
+    renderPage();
+    const link = await screen.findByRole("link", { name: "https://example.org" });
+    expect(link).toHaveAttribute("href", "https://example.org/page");
+    expect(link.querySelector("a")).toBeNull();
+  });
+
+  it("links a web address next to an @ mention", async () => {
+    stub({
+      pages: [
+        {
+          posts: [
+            post({
+              body: "@Bo Park see https://example.org",
+              mentions: [{ appUserId: "user-bo", personId: "person-bo", name: "Bo Park" }],
+            }),
+          ],
+          nextCursor: null,
+        },
+      ],
+    });
+    renderPage();
+    expect(await screen.findByRole("link", { name: "@Bo Park" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "https://example.org" })).toHaveAttribute(
+      "href",
+      "https://example.org"
+    );
+  });
+
   it("picks out @everyone in a post that mentions the whole group", async () => {
     stub({
       pages: [
@@ -1600,6 +1649,21 @@ describe("GroupDetail", () => {
       expect(
         screen.getByRole("button", { name: /3 going · 2 maybe · 1 not going/ })
       ).toBeInTheDocument();
+    });
+
+    it("links a web address in an event's description", async () => {
+      stub({
+        pages: [
+          {
+            posts: [event({ description: "Sign up: https://example.org/potluck" })],
+            nextCursor: null,
+          },
+        ],
+      });
+      renderPage();
+      const link = await screen.findByRole("link", { name: "https://example.org/potluck" });
+      expect(link).toHaveAttribute("href", "https://example.org/potluck");
+      expect(link).toHaveAttribute("target", "_blank");
     });
 
     it("keeps a cancelled event's details but drops the RSVP controls and info", async () => {
