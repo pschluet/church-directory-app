@@ -66,10 +66,10 @@ export function AppShell() {
    * headings, which would otherwise slide under this and be unreadable.
    *
    * Measured rather than written down because it is not one number. The header
-   * is 70px on a phone and well over twice that from `md` up, taller again for
-   * a super admin, whose organization switcher is a row inside it, and taller
-   * again if a long parish name wraps. Every one of those is a real case, and a
-   * hardcoded offset would be wrong in at least one of them.
+   * is 70px on a phone and well over twice that from `md` up, a little taller
+   * for a super admin, whose organization switcher sits in the account row, and
+   * taller again if a long parish name wraps. Every one of those is a real case,
+   * and a hardcoded offset would be wrong in at least one of them.
    */
   useEffect(() => {
     const header = headerRef.current;
@@ -134,6 +134,28 @@ export function AppShell() {
   );
 
   const organizationName = me?.organization?.name ?? "Parish Directory";
+
+  /*
+   * Rendered twice, like the bell: in the drawer on a phone, and at the left of
+   * the account row from `md` up, so on desktop it costs no row of its own.
+   */
+  const organizationSwitcher =
+    isSuperAdmin && me && me.availableOrganizations.length > 0 ? (
+      // biome-ignore lint/a11y/noLabelWithoutControl: the control is Select's button
+      <label className="flex items-center gap-2 text-sm text-ink-muted">
+        <span className="font-bold">Viewing</span>
+        <Select
+          compact
+          className="flex-1 md:flex-none"
+          value={me.organization?.id ?? ""}
+          onChange={(value) => void switchOrganization(value)}
+          options={me.availableOrganizations.map((org) => ({
+            value: org.id,
+            label: org.name,
+          }))}
+        />
+      </label>
+    ) : null;
 
   /*
    * `bg-surface` on the root rather than inheriting the body's: a view
@@ -285,23 +307,8 @@ export function AppShell() {
               ))}
             </ul>
 
-            {isSuperAdmin && me && me.availableOrganizations.length > 0 && (
-              <div className="mt-3 border-t border-line pt-3 md:mt-2">
-                {/* biome-ignore lint/a11y/noLabelWithoutControl: the control is Select's button */}
-                <label className="flex items-center gap-2 text-sm text-ink-muted">
-                  <span className="font-bold">Viewing</span>
-                  <Select
-                    compact
-                    className="flex-1 md:flex-none"
-                    value={me.organization?.id ?? ""}
-                    onChange={(value) => void switchOrganization(value)}
-                    options={me.availableOrganizations.map((org) => ({
-                      value: org.id,
-                      label: org.name,
-                    }))}
-                  />
-                </label>
-              </div>
+            {organizationSwitcher && (
+              <div className="mt-3 border-t border-line pt-3 md:hidden">{organizationSwitcher}</div>
             )}
 
             <div className="mt-3 border-t border-line pt-3 text-sm text-ink-muted md:hidden">
@@ -317,18 +324,26 @@ export function AppShell() {
           </nav>
         </div>
 
-        {/* The desktop account row; on a phone this lives inside the drawer. */}
-        <div className="mx-auto hidden max-w-6xl items-center justify-end gap-4 px-4 pb-2 text-sm text-ink-muted md:flex">
-          <NotificationBell />
-          <SettingsLink />
-          <span>{email ?? me?.appUser.email}</span>
-          <button
-            type="button"
-            onClick={() => void signOut()}
-            className="font-bold text-primary transition hover:text-accent"
-          >
-            Sign out
-          </button>
+        {/* The desktop account row; on a phone this lives inside the drawer.
+            A super admin's organization switcher shares it, on the left, rather
+            than taking a row of its own under the nav. */}
+        <div
+          data-testid="account-row"
+          className="mx-auto hidden max-w-6xl items-center gap-4 px-4 pb-2 text-sm text-ink-muted md:flex"
+        >
+          {organizationSwitcher}
+          <div className="ml-auto flex items-center gap-4">
+            <NotificationBell />
+            <SettingsLink />
+            <span>{email ?? me?.appUser.email}</span>
+            <button
+              type="button"
+              onClick={() => void signOut()}
+              className="font-bold text-primary transition hover:text-accent"
+            >
+              Sign out
+            </button>
+          </div>
         </div>
       </header>
 

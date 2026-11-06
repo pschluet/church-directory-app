@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Link, MemoryRouter, Route, Routes, useNavigate } from "react-router";
 import { NavStackProvider } from "../src/components/NavStack";
@@ -208,8 +208,18 @@ describe("AppShell navigation", () => {
     ]);
     expect(screen.getByRole("link", { name: "Churches" })).toBeInTheDocument();
 
-    const select = screen.getByLabelText(/viewing/i);
-    await chooseOption(select, "org-2");
+    // Twice, like the bell: in the drawer on a phone (hidden from md up), and
+    // sharing the desktop account row with the bell rather than a row of its own.
+    const selects = screen.getAllByLabelText(/viewing/i);
+    expect(selects).toHaveLength(2);
+    const accountRow = screen.getByTestId("account-row");
+    const desktop = selects.find((s) => accountRow.contains(s))!;
+    const phone = selects.find((s) => !accountRow.contains(s))!;
+    expect(desktop).toBeDefined();
+    expect(within(accountRow).getByRole("button", { name: "Notifications" })).toBeInTheDocument();
+    expect(phone.closest(".md\\:hidden")).not.toBeNull();
+
+    await chooseOption(desktop, "org-2");
     expect(switchOrganization).toHaveBeenCalledWith("org-2");
   });
 
@@ -321,7 +331,7 @@ describe("AppShell responsive behaviour", () => {
 
     // The organization switcher lives inside the drawer; using it must not
     // dismiss the thing it is inside.
-    await userEvent.click(screen.getByLabelText(/viewing/i));
+    await userEvent.click(within(screen.getByTestId("main-nav")).getByLabelText(/viewing/i));
     expect(screen.getByTestId("main-nav")).toHaveAttribute("data-variant", "drawer-open");
   });
 
