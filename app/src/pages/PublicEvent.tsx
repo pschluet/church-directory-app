@@ -13,6 +13,7 @@ import { qk } from "../lib/queryKeys";
 import { formatDayLabel, formatEventTimes, formatRelativeDay, todayIso } from "../lib/format";
 import { Badge, Button, ErrorNotice, Field, Spinner, inputClass } from "../components/ui";
 import { LandingFrame } from "../components/LandingFrame";
+import { LinkifiedText } from "../components/LinkifiedText";
 import { SignInForm } from "./Login";
 
 /**
@@ -230,11 +231,11 @@ function EventDetails({ event, past }: { event: PublicEventDto; past: boolean })
           // Muted rather than struck through when cancelled: a paragraph of
           // struck-out text is hard to read, and the banner already says it.
           <p
-            className={`whitespace-pre-line break-words leading-relaxed ${
+            className={`whitespace-pre-line break-words leading-relaxed [overflow-wrap:anywhere] ${
               event.cancelled ? "text-ink-muted" : "text-ink"
             }`}
           >
-            {event.description}
+            <LinkifiedText text={event.description} />
           </p>
         )}
         {!event.cancelled && event.rsvpCounts.attending > 0 && (

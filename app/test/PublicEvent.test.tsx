@@ -188,6 +188,17 @@ describe("PublicEvent: signed out", () => {
     expect(screen.getByRole("button", { name: "Request to join" })).toBeInTheDocument();
   });
 
+  it("links a web address in the description", async () => {
+    stubApi({
+      "/public/events/tok123": () =>
+        Promise.resolve(eventDto({ description: "Menu at https://example.org/menu." })),
+    });
+    renderPage();
+    const link = await screen.findByRole("link", { name: "https://example.org/menu" });
+    expect(link).toHaveAttribute("href", "https://example.org/menu");
+    expect(link).toHaveAttribute("target", "_blank");
+  });
+
   it("does not say who hosts it when there is no group name", async () => {
     stubApi({ "/public/events/tok123": () => Promise.resolve(eventDto({ groupName: null })) });
     renderPage();

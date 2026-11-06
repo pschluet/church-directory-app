@@ -55,6 +55,7 @@ import {
 } from "../lib/format";
 import { useMe } from "../context/MeContext";
 import { Avatar } from "../components/Avatar";
+import { LinkifiedText } from "../components/LinkifiedText";
 import { LocationAutocomplete } from "../components/AddressAutocomplete";
 import { Link } from "../components/nav";
 import { useNavStack } from "../components/NavStack";
@@ -1907,7 +1908,7 @@ export function ChatRow({
             )}
             {post.body && (
               <div
-                className={`whitespace-pre-line break-words text-ink ${
+                className={`whitespace-pre-line break-words text-ink [overflow-wrap:anywhere] ${
                   // A message of nothing but emoji is shown large, as in Slack.
                   isEmojiOnly(toPlainText(post.body)) ? "text-3xl leading-tight" : "leading-snug"
                 }`}
@@ -2187,18 +2188,23 @@ function hasEveryoneMention(text: string): boolean {
 /**
  * Renders `text` with every @ mention in `mentions` picked out in color, each a
  * link to that person's page -- and "@everyone", when the post has it, in the
- * same color with nowhere to link to.
+ * same color with nowhere to link to. Any web address in the rest of the text
+ * becomes a link too, unless `linkify` is off (text already inside a link).
  */
 export function MentionText({
   text,
   mentions,
   mentionsEveryone = false,
+  linkify = true,
 }: {
   text: string;
   mentions: { appUserId: string; personId: string; name: string }[];
   mentionsEveryone?: boolean;
+  linkify?: boolean;
 }) {
-  if (mentions.length === 0 && !mentionsEveryone) return <>{text}</>;
+  const plain = (s: string, key: number | string): ReactNode =>
+    linkify ? <LinkifiedText key={key} text={s} /> : s;
+  if (mentions.length === 0 && !mentionsEveryone) return <>{plain(text, "t")}</>;
 
   // Longest name first, so one mentioned name that happens to be a prefix of
   // another (e.g. two people sharing a first name) doesn't steal the match.
@@ -2214,7 +2220,7 @@ export function MentionText({
     const leading = match[1]!;
     const mention = match[2]!;
     const start = match.index + leading.length;
-    if (start > lastIndex) parts.push(text.slice(lastIndex, start));
+    if (start > lastIndex) parts.push(plain(text.slice(lastIndex, start), key++));
     const person = names.find((m) => mention === `@${m.name}`);
     parts.push(
       person ? (
@@ -2233,7 +2239,7 @@ export function MentionText({
     );
     lastIndex = start + mention.length;
   }
-  if (lastIndex < text.length) parts.push(text.slice(lastIndex));
+  if (lastIndex < text.length) parts.push(plain(text.slice(lastIndex), key++));
   return <>{parts}</>;
 }
 
@@ -2251,7 +2257,9 @@ function RichText({
   mentions: { appUserId: string; personId: string; name: string }[];
   mentionsEveryone?: boolean;
 }) {
-  const inline = (nodes: Inline[]): ReactNode[] =>
+  // `inLink`: inside a link's text, so a bare address there must not become a
+  // second, nested link.
+  const inline = (nodes: Inline[], inLink = false): ReactNode[] =>
     nodes.map((node, k) => {
       if (node.kind === "text") {
         return (
@@ -2260,10 +2268,11 @@ function RichText({
             text={node.text}
             mentions={mentions}
             mentionsEveryone={mentionsEveryone}
+            linkify={!inLink}
           />
         );
       }
-      const children = inline(node.children);
+      const children = inline(node.children, inLink || node.kind === "link");
       switch (node.kind) {
         case "bold":
           return <strong key={k}>{children}</strong>;
@@ -3864,7 +3873,7 @@ function EventBlock({
             </EventMeta>
           )}
           {event.description && (
-            <p className="whitespace-pre-line break-words pt-1 text-sm leading-snug text-ink-muted">
+            <p className="whitespace-pre-line break-words pt-1 text-sm leading-snug text-ink-muted [overflow-wrap:anywhere]">
               <MentionText
                 text={event.description}
                 mentions={mentions}

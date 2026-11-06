@@ -302,7 +302,7 @@ function EventPage({
               )}
             </div>
             {event.description && (
-              <p className="max-w-prose whitespace-pre-line break-words border-l-4 border-accent-light pl-4 text-base leading-relaxed text-ink">
+              <p className="max-w-prose whitespace-pre-line break-words [overflow-wrap:anywhere] border-l-4 border-accent-light pl-4 text-base leading-relaxed text-ink">
                 <MentionText
                   text={event.description}
                   mentions={post.mentions}
