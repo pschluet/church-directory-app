@@ -165,13 +165,25 @@ describe("AppShell navigation", () => {
     expect(home).toHaveLength(1);
     expect(home[0]).toHaveAttribute("href", "/");
     expect(home[0]!.parentElement?.className).toContain("md:hidden");
-    expect(home[0]!.nextElementSibling).toContainElement(
+    expect(home[0]!.parentElement).toContainElement(
       screen.getAllByRole("button", { name: "Notifications" })[0]!
     );
 
     // The title is hidden under md and shown from md up, unchanged on desktop.
     const title = screen.getAllByRole("link", { name: "All Saints" })[0]!;
     expect(title).toHaveClass("hidden", "md:block");
+  });
+
+  it("puts a groups icon beside the home icon, on a phone only", () => {
+    renderShell();
+    // Twice: the "Groups" item in the nav (the drawer on a phone, the bar from
+    // md up) and the icon in the phone controls.
+    const groups = screen.getAllByRole("link", { name: "Groups" });
+    expect(groups).toHaveLength(2);
+    const icon = groups.find((link) => link.hasAttribute("aria-label"))!;
+    expect(icon).toHaveAttribute("href", "/groups");
+    expect(icon.parentElement?.className).toContain("md:hidden");
+    expect(icon.previousElementSibling).toBe(screen.getByRole("link", { name: "Home" }));
   });
 
   it("keeps settings out of the main navigation", () => {
