@@ -19,6 +19,18 @@ import { QR_QUIET_ZONE, qrModules, qrRuns } from "./qr";
  * a new fixed-name asset threaded through the cache lists in deploy.yml. Later,
  * not now.
  *
+ * Helvetica only knows WinAnsi (Latin-1 plus a few typographic extras). Hand
+ * jsPDF anything else -- an emoji, Greek -- and it re-encodes the whole string
+ * as 16-bit, so every letter prints spaced out and the stray character comes
+ * out as Latin-1 junk ("bowling 🎳" -> "b o w l i n g Ø<ß³"). So text is split
+ * into runs (`textRuns`): WinAnsi text is set in Helvetica, and everything else
+ * is drawn by the browser onto a canvas and placed as an image in the line --
+ * each emoji as a square "glyph", other scripts (Greek, say) as a "script" run
+ * at their natural width.
+ *
+ * Kept light on ink, for church printers: no solid fills, just the parish
+ * name in the brand red over a thin rule.
+ *
  * Coordinates are PDF points (1/72 in) with the origin at the page's top-left
  * and y growing downwards, as jsPDF uses. Text `y` is the baseline.
  */
@@ -76,8 +88,8 @@ export interface FlyerRow {
 export interface FlyerLayout {
   page: { width: number; height: number };
   margin: number;
-  /** The coloured band across the top, full bleed. */
-  band: FlyerBox;
+  /** The thin rule under the parish name. */
+  headerRule: FlyerBox;
   organization: FlyerText[];
   /** The "CANCELLED" stamp, when the event is cancelled. */
   cancelled: { box: FlyerBox; text: FlyerText } | null;
@@ -108,7 +120,6 @@ const COLOR = {
   accent: "#b88c51",
   /** `--color-ink` */
   ink: "#333333",
-  white: "#ffffff",
 } as const;
 
 const TITLE_SIZE = 34;
@@ -126,6 +137,96 @@ const CAPTION_SIZE = 14;
 const URL_SIZE = 9;
 const URL_LEADING = 11;
 const ELLIPSIS = "…";
+const HEADER_RULE = 1;
+/** A glyph (emoji and the like) is drawn as a square this many ems wide. */
+const GLYPH_EM = 1.15;
+/** How far above the baseline a glyph's square starts, in ems. */
+const GLYPH_RISE = 0.92;
+
+/** The characters CP1252 has above 0x7F outside Latin-1, all of which Helvetica can set. */
+const CP1252_EXTRAS = new Set("€‚ƒ„…†‡ˆ‰Š‹ŒŽ‘’“”•–—˜™š›œžŸ");
+
+function isWinAnsi(cluster: string): boolean {
+  for (const ch of cluster) {
+    const code = ch.codePointAt(0)!;
+    if (code === 0x09 || (code >= 0x20 && code <= 0x7e) || (code >= 0xa0 && code <= 0xff)) continue;
+    if (CP1252_EXTRAS.has(ch)) continue;
+    return false;
+  }
+  return true;
+}
+
+const segmenter = new Intl.Segmenter("en", { granularity: "grapheme" });
+
+/** User-perceived characters, so a 👨‍👩‍👧‍👦 or 🇺🇸 is one item, never half a surrogate pair. */
+export function graphemes(text: string): string[] {
+  return Array.from(segmenter.segment(text), (s) => s.segment);
+}
+
+export interface TextRun {
+  /**
+   * "text" is set in Helvetica; "glyph" is one emoji, drawn as a square image;
+   * "script" is other text Helvetica lacks, drawn as an image of its own width.
+   */
+  kind: "text" | "glyph" | "script";
+  text: string;
+}
+
+const EMOJI = /\p{Extended_Pictographic}|\p{Regional_Indicator}|\u20E3/u;
+
+/** Splits a line into Helvetica-settable text, emoji glyphs and other-script runs. */
+export function textRuns(text: string): TextRun[] {
+  const runs: TextRun[] = [];
+  for (const cluster of graphemes(text)) {
+    const kind = isWinAnsi(cluster) ? "text" : EMOJI.test(cluster) ? "glyph" : "script";
+    const last = runs.at(-1);
+    if (kind !== "glyph" && last?.kind === kind) last.text += cluster;
+    else runs.push({ kind, text: cluster });
+  }
+  return runs;
+}
+
+/** The width an emoji glyph takes in a line. */
+export function glyphWidth(size: number): number {
+  return size * GLYPH_EM;
+}
+
+/**
+ * Greedy word wrap on top of a width function, so glyphs are measured as the
+ * squares they are drawn as. (jsPDF's own `splitTextToSize` measures them as
+ * Helvetica, which they are not.) A word too long for a line on its own is
+ * broken between graphemes.
+ */
+export function wrapLine(
+  text: string,
+  maxWidth: number,
+  width: (text: string) => number
+): string[] {
+  const lines: string[] = [];
+  let current = "";
+  for (const word of text.split(/ +/).filter(Boolean)) {
+    const next = current ? `${current} ${word}` : word;
+    if (width(next) <= maxWidth) {
+      current = next;
+      continue;
+    }
+    if (current) lines.push(current);
+    current = "";
+    if (width(word) <= maxWidth) {
+      current = word;
+      continue;
+    }
+    for (const g of graphemes(word)) {
+      if (current && width(current + g) > maxWidth) {
+        lines.push(current);
+        current = "";
+      }
+      current += g;
+    }
+  }
+  if (current) lines.push(current);
+  return lines;
+}
 
 /** "Sunday, November 2, 2026". The year is always there: a flyer outlives the week it is made in. */
 export function formatFlyerDate(iso: string): string {
@@ -173,7 +274,7 @@ function clampLines(
   const kept = lines.slice(0, maxLines);
   let last = (kept[maxLines - 1] ?? "").trimEnd().replace(/[.,;:!?\-–—]+$/, "");
   while (last.length > 0 && measure.width(last + ELLIPSIS, size, bold) > maxWidth) {
-    last = last.slice(0, -1).trimEnd();
+    last = graphemes(last).slice(0, -1).join("").trimEnd();
   }
   kept[maxLines - 1] = last + ELLIPSIS;
   return { lines: kept, clipped: true };
@@ -201,7 +302,7 @@ function textLines(
 /**
  * Where everything on the page goes.
  *
- * Laid out top-down (band, title, rule, details, description) with the QR block
+ * Laid out top-down (header, title, rule, details, description) with the QR block
  * pinned to the foot, and the description given whatever is left between them.
  * That ordering is the point: a long description is the one thing whose length
  * is unbounded, so it alone is clamped and ellipsised, rather than pushing the
@@ -220,7 +321,7 @@ export function flyerLayout(
   const contentWidth = PAGE.width - 2 * MARGIN;
   const centerX = PAGE.width / 2;
 
-  // The band: the parish name reversed out in white.
+  // The header: the parish name in the brand red, over a thin rule.
   const orgWrapped = clampLines(
     wrapParagraphs(event.organizationName, contentWidth, ORG_SIZE, measure, true),
     2,
@@ -229,13 +330,23 @@ export function flyerLayout(
     measure,
     true
   ).lines;
-  const bandHeight = 36 + orgWrapped.length * ORG_LEADING;
-  const band = { x: 0, y: 0, w: PAGE.width, h: bandHeight };
-  // Baselines centred in the band: the cap height sits about 0.7 of the size above.
-  const orgFirst = (bandHeight - (orgWrapped.length - 1) * ORG_LEADING) / 2 + ORG_SIZE * 0.35;
-  const organization = textLines(orgWrapped, MARGIN, orgFirst, ORG_LEADING, ORG_SIZE, true);
+  const headerTop = MARGIN - 12;
+  const organization = textLines(
+    orgWrapped,
+    MARGIN,
+    headerTop + ORG_SIZE * 0.8,
+    ORG_LEADING,
+    ORG_SIZE,
+    true
+  );
+  const headerRule = {
+    x: MARGIN,
+    y: headerTop + orgWrapped.length * ORG_LEADING + 6,
+    w: contentWidth,
+    h: HEADER_RULE,
+  };
 
-  let cursor = bandHeight + 32;
+  let cursor = headerRule.y + headerRule.h + 30;
 
   let cancelled: FlyerLayout["cancelled"] = null;
   if (event.cancelled) {
@@ -344,7 +455,7 @@ export function flyerLayout(
   return {
     page: { ...PAGE },
     margin: MARGIN,
-    band,
+    headerRule,
     organization,
     cancelled,
     title,
@@ -363,6 +474,67 @@ export function flyerLayout(
     },
     url: textLines(urlWrapped, centerX, firstUrlBaseline, URL_LEADING, URL_SIZE, false, "center"),
   };
+}
+
+/** Canvas pixels per em when drawing runs: 4x the largest size they are used at, to print crisply. */
+const RUN_PX = 140;
+
+function runFont(kind: TextRun["kind"], bold: boolean): string {
+  const faces =
+    kind === "glyph"
+      ? '"Apple Color Emoji", "Segoe UI Emoji", "Noto Color Emoji", sans-serif'
+      : 'Helvetica, Arial, "Noto Sans", sans-serif';
+  return `${bold ? "bold " : ""}${RUN_PX}px ${faces}`;
+}
+
+let measureContext: CanvasRenderingContext2D | null | undefined;
+
+/** The width of a "script" run, in ems. Falls back to an estimate where there is no canvas. */
+function scriptEms(text: string, bold: boolean): number {
+  if (measureContext === undefined) {
+    try {
+      measureContext = document.createElement("canvas").getContext("2d");
+    } catch {
+      measureContext = null;
+    }
+  }
+  if (!measureContext) return graphemes(text).length * 0.6;
+  measureContext.font = runFont("script", bold);
+  return measureContext.measureText(text).width / RUN_PX;
+}
+
+const runCache = new Map<string, string | null>();
+
+/**
+ * A non-Helvetica run drawn by the browser, as a PNG data URL: an emoji in the
+ * platform's colour emoji font, other scripts in the system sans in `color`.
+ * The image is `widthEms` wide and GLYPH_EM tall, with its baseline GLYPH_RISE
+ * down. Null where there is no canvas (jsdom); the run is then skipped and the
+ * rest of the flyer is unaffected.
+ */
+function runImage(run: TextRun, widthEms: number, color: string, bold: boolean): string | null {
+  const key = `${run.kind}|${color}|${bold}|${run.text}`;
+  if (runCache.has(key)) return runCache.get(key)!;
+  let url: string | null = null;
+  try {
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.ceil(widthEms * RUN_PX));
+    canvas.height = Math.ceil(GLYPH_EM * RUN_PX);
+    const ctx = canvas.getContext("2d");
+    if (ctx) {
+      ctx.font = runFont(run.kind, bold);
+      ctx.fillStyle = color;
+      ctx.textBaseline = "alphabetic";
+      ctx.textAlign = run.kind === "glyph" ? "center" : "left";
+      const x = run.kind === "glyph" ? canvas.width / 2 : 0;
+      ctx.fillText(run.text, x, GLYPH_RISE * RUN_PX);
+      url = canvas.toDataURL("image/png");
+    }
+  } catch {
+    url = null;
+  }
+  runCache.set(key, url);
+  return url;
 }
 
 /** `#rrggbb` as the three channels jsPDF's colour setters take. */
@@ -386,27 +558,48 @@ export async function downloadEventFlyer(event: FlyerEvent, url: string): Promis
     doc.setFont("helvetica", bold ? "bold" : "normal");
     doc.setFontSize(size);
   };
+  const runWidth = (run: TextRun, size: number, bold: boolean) => {
+    if (run.kind === "glyph") return glyphWidth(size);
+    if (run.kind === "script") return scriptEms(run.text, bold) * size;
+    font(size, bold);
+    return doc.getTextWidth(run.text);
+  };
+  const width = (text: string, size: number, bold = false) =>
+    textRuns(text).reduce((sum, run) => sum + runWidth(run, size, bold), 0);
   const measure: TextMeasure = {
-    split(text, maxWidth, size, bold = false) {
-      font(size, bold);
-      return doc.splitTextToSize(text, maxWidth) as string[];
-    },
-    width(text, size, bold = false) {
-      font(size, bold);
-      return doc.getTextWidth(text);
-    },
+    split: (text, maxWidth, size, bold = false) =>
+      wrapLine(text, maxWidth, (t) => width(t, size, bold)),
+    width,
   };
 
   const layout = flyerLayout(event, url, measure, modules.length);
   const draw = (line: FlyerText, color: string) => {
+    const runs = textRuns(line.text);
     font(line.size, line.bold);
     doc.setTextColor(...rgb(color));
-    doc.text(line.text, line.x, line.y, { align: line.align });
+    if (runs.every((run) => run.kind === "text")) {
+      doc.text(line.text, line.x, line.y, { align: line.align });
+      return;
+    }
+    let x = line.align === "center" ? line.x - width(line.text, line.size, line.bold) / 2 : line.x;
+    for (const run of runs) {
+      const w = runWidth(run, line.size, line.bold);
+      if (run.kind === "text") {
+        font(line.size, line.bold);
+        doc.text(run.text, x, line.y);
+      } else {
+        const image = runImage(run, w / line.size, color, line.bold);
+        const top = line.y - line.size * GLYPH_RISE;
+        if (image) doc.addImage(image, "PNG", x, top, w, line.size * GLYPH_EM);
+      }
+      x += w;
+    }
   };
 
+  for (const line of layout.organization) draw(line, COLOR.primary);
   doc.setFillColor(...rgb(COLOR.primary));
-  doc.rect(layout.band.x, layout.band.y, layout.band.w, layout.band.h, "F");
-  for (const line of layout.organization) draw(line, COLOR.white);
+  const { headerRule } = layout;
+  doc.rect(headerRule.x, headerRule.y, headerRule.w, headerRule.h, "F");
 
   if (layout.cancelled) {
     const { box, text } = layout.cancelled;

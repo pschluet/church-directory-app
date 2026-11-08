@@ -6,6 +6,10 @@ import {
   downloadEventFlyer,
   flyerLayout,
   formatFlyerDate,
+  glyphWidth,
+  graphemes,
+  textRuns,
+  wrapLine,
 } from "../src/lib/eventFlyer";
 import { stubDownload } from "./utils";
 
@@ -64,6 +68,40 @@ describe("formatFlyerDate", () => {
   });
 });
 
+describe("textRuns", () => {
+  it("splits emoji out of Helvetica text, one grapheme per glyph", () => {
+    expect(textRuns("bowling 🎳")).toEqual([
+      { kind: "text", text: "bowling " },
+      { kind: "glyph", text: "🎳" },
+    ]);
+    expect(textRuns("👨‍👩‍👧‍👦🇺🇸❤️").map((r) => r.text)).toEqual(["👨‍👩‍👧‍👦", "🇺🇸", "❤️"]);
+  });
+
+  it("keeps WinAnsi punctuation and accents as text", () => {
+    expect(textRuns("Café – “hi”… €5 ™")).toEqual([{ kind: "text", text: "Café – “hi”… €5 ™" }]);
+  });
+
+  it("keeps other scripts Helvetica lacks together as one run", () => {
+    expect(textRuns("Καλή αντάμωση! 🎳")).toEqual([
+      { kind: "script", text: "Καλή" },
+      { kind: "text", text: " " },
+      { kind: "script", text: "αντάμωση" },
+      { kind: "text", text: "! " },
+      { kind: "glyph", text: "🎳" },
+    ]);
+  });
+});
+
+describe("wrapLine", () => {
+  const width = (t: string) => graphemes(t).length;
+  it("wraps on words", () => {
+    expect(wrapLine("aa bb cc", 5, width)).toEqual(["aa bb", "cc"]);
+  });
+  it("breaks an over-long word between graphemes", () => {
+    expect(wrapLine("🎳🎳🎳", 2, width)).toEqual(["🎳🎳", "🎳"]);
+  });
+});
+
 describe("flyerLayout", () => {
   it("lays out the labelled rows", () => {
     const layout = flyerLayout(event(), URL, fake);
@@ -100,9 +138,42 @@ describe("flyerLayout", () => {
     expect(layout.title.length).toBeGreaterThan(1);
   });
 
-  it("puts the band across the full width at the top", () => {
-    const { band, page } = flyerLayout(event(), URL, fake);
-    expect(band).toMatchObject({ x: 0, y: 0, w: page.width });
+  it("heads the page with the parish name over a thin rule, no solid band", () => {
+    const layout = flyerLayout(event(), URL, fake);
+    const { headerRule, margin, page } = layout;
+    expect(headerRule.x).toBe(margin);
+    expect(headerRule.w).toBe(page.width - 2 * margin);
+    expect(headerRule.h).toBeLessThanOrEqual(1.5);
+    expect(layout.organization.at(-1)!.y).toBeLessThan(headerRule.y);
+    expect(layout.title[0]!.y - layout.title[0]!.size).toBeGreaterThan(headerRule.y);
+  });
+
+  it("wraps and clips a description with emoji without breaking them", () => {
+    // A measure that, like the real one, gives each glyph a square.
+    const width = (text: string, size: number) =>
+      textRuns(text).reduce(
+        (sum, run) =>
+          sum + (run.kind === "glyph" ? glyphWidth(size) : graphemes(run.text).length * size * 0.5),
+        0
+      );
+    const measure: TextMeasure = {
+      width,
+      split: (text, maxWidth, size) => wrapLine(text, maxWidth, (t) => width(t, size)),
+    };
+    const layout = flyerLayout(
+      event({ description: "Bowling 🎳 then cake 🍰 for 👨‍👩‍👧‍👦 ".repeat(200) }),
+      URL,
+      measure
+    );
+    expect(layout.descriptionClipped).toBe(true);
+    for (const line of layout.description) {
+      expect(width(line.text, line.size)).toBeLessThanOrEqual(
+        layout.page.width - 2 * layout.margin + 0.01
+      );
+      // No lone surrogate halves left behind by wrapping or ellipsising.
+      expect(line.text).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])/);
+      expect(line.text).not.toMatch(/(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/);
+    }
   });
 
   it("draws a QR about two inches square, centred, inside the margins", () => {
