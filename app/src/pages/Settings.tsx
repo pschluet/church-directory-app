@@ -244,7 +244,8 @@ export function Settings() {
         <h2 className="font-bold text-ink">Notifications</h2>
         <p className="mt-1 text-sm text-ink-muted">
           The directory can tell you about prayer requests and group messages three ways: a badge on
-          the bell in the top corner, a notification on your phone or computer, and email.
+          the bell in the top corner (and on the app's icon, once it is on your home screen), a
+          notification on your phone or computer, and email.
         </p>
 
         <div className="mt-5">

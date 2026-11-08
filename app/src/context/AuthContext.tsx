@@ -11,6 +11,7 @@ import { Hub } from "aws-amplify/utils";
 import { useQueryClient } from "@tanstack/react-query";
 import { api, DEV_AUTH } from "../lib/api";
 import { registeredSubscription } from "../lib/push";
+import { syncAppBadge } from "../lib/appBadge";
 
 /**
  * Passwordless sign-in.
@@ -182,6 +183,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     await amplifySignOut();
     setStatus("signedOut");
     setEmail(null);
+    // The icon's count was the last member's; on a shared phone the next one
+    // should not see it.
+    syncAppBadge(0);
     // Otherwise the next person to sign in on this tab reads the last one's
     // directory straight out of memory before their own /me lands.
     queryClient.clear();

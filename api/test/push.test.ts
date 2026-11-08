@@ -46,12 +46,26 @@ async function loadPush(env: Record<string, string | undefined>) {
   return import("../src/services/push");
 }
 
-/** A query layer that records what it was asked and answers with fixed rows. */
-function fakeDb(rows: Record<string, unknown>[]) {
+/**
+ * A query layer that records what it was asked and answers with fixed rows.
+ *
+ * `unread` answers the badge-count query (the only one with a `count(*)`); the
+ * subscription lookup gets `rows`.
+ */
+function fakeDb(rows: Record<string, unknown>[], unread: Record<string, number> | Error = {}) {
   const queries: { sql: string; params: unknown[] }[] = [];
   const db: Queryable = {
     query: async (sql: string, params?: unknown[]) => {
       queries.push({ sql, params: params ?? [] });
+      if (sql.includes("count(*)")) {
+        if (unread instanceof Error) throw unread;
+        return {
+          rows: Object.entries(unread).map(([app_user_id, count]) => ({
+            app_user_id,
+            count: String(count),
+          })) as never[],
+        };
+      }
       return { rows: (sql.trimStart().startsWith("select") ? rows : []) as never[] };
     },
     transaction: async (fn) => fn(db),
@@ -165,8 +179,56 @@ describe("sendToUsers", () => {
         endpoint: "https://push.example.test/s1",
         keys: { p256dh: "p256dh", auth: "auth" },
       },
-      JSON.stringify(payload("1 new prayer request"))
+      JSON.stringify({ ...payload("1 new prayer request"), badgeCount: 0 })
     );
+  });
+
+  it("carries each person's total unread count for the home-screen icon", async () => {
+    /*
+     * The icon number is the bell's number -- every type together -- and not
+     * the per-type count in the body. user-2 has nothing unread, which is 0,
+     * not a missing field, so the worker clears a stale badge.
+     */
+    const push = await loadPush(KEYS);
+    const { db, queries } = fakeDb([subscription("s1", "user-1"), subscription("s2", "user-2")], {
+      "user-1": 5,
+    });
+
+    await push.sendToUsers(
+      db,
+      new Map([
+        ["user-1", payload("1 new prayer request")],
+        ["user-2", payload("1 new prayer request")],
+      ])
+    );
+
+    const badges = Object.fromEntries(
+      sendNotification.mock.calls.map(([sub, json]) => [
+        (sub as { endpoint: string }).endpoint,
+        JSON.parse(json as string).badgeCount,
+      ])
+    );
+    expect(badges).toEqual({
+      "https://push.example.test/s1": 5,
+      "https://push.example.test/s2": 0,
+    });
+    const countQuery = queries.find((q) => q.sql.includes("count(*)"))!;
+    expect(countQuery.sql).not.toContain("n.type = $2");
+    expect(countQuery.params).toEqual([["user-1", "user-2"]]);
+  });
+
+  it("still sends the notification when the badge count cannot be read", async () => {
+    const push = await loadPush(KEYS);
+    const { db } = fakeDb([subscription("s1", "user-1")], new Error("db down"));
+    const error = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    const result = await push.sendToUsers(db, new Map([["user-1", payload("1 new")]]));
+
+    expect(result.sent).toBe(1);
+    expect(JSON.parse(sendNotification.mock.calls[0]![1] as string)).not.toHaveProperty(
+      "badgeCount"
+    );
+    error.mockRestore();
   });
 
   it("carries the page to open, which is what the click handler reads", async () => {

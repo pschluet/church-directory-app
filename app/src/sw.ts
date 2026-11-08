@@ -72,6 +72,8 @@ interface PushPayload {
   url?: string;
   /** Which notification this replaces. See the `tag` note below. */
   tag?: string;
+  /** The member's total unread count, for the home-screen icon. See `setIconBadge`. */
+  badgeCount?: number;
 }
 
 /**
@@ -104,6 +106,30 @@ async function notifyOpenTabs(): Promise<void> {
   for (const client of windows) {
     client.postMessage({ type: CHANGED_MESSAGE });
   }
+}
+
+/**
+ * Puts the unread count on the app's home-screen icon.
+ *
+ * This is the only thing that ever does on iOS: a notification arriving does
+ * not touch the icon by itself, and the `badge` image passed to
+ * `showNotification` is Android's status-bar glyph, not a count. iOS 16.4+
+ * exposes the Badging API to an installed web app that has notification
+ * permission, and the worker is the only code running when the app is closed --
+ * which is exactly when the icon is what the member is looking at.
+ *
+ * The count comes from the server rather than being incremented here, so it
+ * always agrees with the bell, and a 0 clears a badge left over from before the
+ * member caught up elsewhere. Missing or non-numeric means "leave it alone".
+ */
+async function setIconBadge(count: unknown): Promise<void> {
+  if (typeof count !== "number" || !Number.isFinite(count)) return;
+  const nav = self.navigator as WorkerNavigator & {
+    setAppBadge?: (contents?: number) => Promise<void>;
+    clearAppBadge?: () => Promise<void>;
+  };
+  if (count > 0) await nav.setAppBadge?.(count);
+  else await nav.clearAppBadge?.();
 }
 
 /**
@@ -162,6 +188,9 @@ self.addEventListener("push", (event) => {
        * resolves, and a rejected one counts as having shown nothing against
        * `userVisibleOnly` -- which is what gets a subscription revoked.
        */
+      // Same rule as the line below: its own failure must not reject the chain.
+      await setIconBadge(payload.badgeCount).catch(() => undefined);
+
       await notifyOpenTabs().catch(() => undefined);
     })()
   );

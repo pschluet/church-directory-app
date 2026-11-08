@@ -222,6 +222,39 @@ export async function unreadNotificationCounts(
 }
 
 /**
+ * How many unread notifications of *any* type each of these people has.
+ *
+ * The number for the home-screen icon badge, which has to agree with the bell:
+ * the same visibility rule as `loadInbox`'s count, with no type filter. Unlike
+ * `unreadNotificationCounts` this one is meant to add the types together -- the
+ * icon is a single "things waiting for you" figure, exactly like the bell.
+ *
+ * Nobody with zero is in the map; callers read a missing entry as 0.
+ */
+export async function totalUnreadCounts(
+  q: Queryable,
+  appUserIds: string[]
+): Promise<Map<string, number>> {
+  if (appUserIds.length === 0) return new Map();
+
+  const { rows } = await q.query<{ app_user_id: string; count: string }>(
+    `select n.app_user_id, count(*)::text as count
+       from notifications n
+       left join prayer_requests pr on pr.id = n.prayer_request_id
+       left join groups g on g.id = n.group_id
+       left join group_posts gp on gp.id = n.group_post_id
+       left join directory_requests dr on dr.id = n.directory_request_id
+      where n.app_user_id = any($1::uuid[])
+        and n.read_at is null
+        and ${NOTIFICATION_VISIBLE}
+      group by n.app_user_id`,
+    [appUserIds]
+  );
+
+  return new Map(rows.map((row) => [row.app_user_id, Number(row.count)]));
+}
+
+/**
  * Who is told that a request is waiting to be reviewed.
  *
  * Every reviewer in the parish, which is where the role floor gets asked in
