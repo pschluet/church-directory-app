@@ -1,5 +1,6 @@
 import webpush, { WebPushError } from "web-push";
 import type { Queryable } from "../db";
+import { totalUnreadCounts } from "./notifications";
 
 /**
  * Web Push.
@@ -102,6 +103,16 @@ export interface PushPayload {
    * review must not displace a posted one, hence a tag rather than a constant.
    */
   tag: string;
+  /**
+   * The member's total unread count, for the number on the home-screen icon.
+   *
+   * Filled in by `sendToUsers`, not by callers: it is the same figure whatever
+   * the push is about, and it has to match the bell. The service worker hands
+   * it to `setAppBadge`, which is the only way iOS ever puts a number on an
+   * installed web app's icon -- the notification alone never does. Optional
+   * because a failed count must not cost the notification itself.
+   */
+  badgeCount?: number;
 }
 
 interface SubscriptionRow {
@@ -144,6 +155,17 @@ export async function sendToUsers(
 
   configure();
 
+  /*
+   * Best-effort, like everything here: without the count the notification still
+   * goes out and the icon simply keeps whatever number it had.
+   */
+  let badgeCounts: Map<string, number> | null = null;
+  try {
+    badgeCounts = await totalUnreadCounts(q, [...payloads.keys()]);
+  } catch (err) {
+    console.error("Could not count unread notifications for the app badge", err);
+  }
+
   const dead: string[] = [];
   for (let i = 0; i < rows.length; i += SEND_CONCURRENCY) {
     const batch = rows.slice(i, i + SEND_CONCURRENCY);
@@ -154,7 +176,11 @@ export async function sendToUsers(
         try {
           await webpush.sendNotification(
             { endpoint: row.endpoint, keys: { p256dh: row.p256dh, auth: row.auth } },
-            JSON.stringify(payload)
+            JSON.stringify(
+              badgeCounts
+                ? { ...payload, badgeCount: badgeCounts.get(row.app_user_id) ?? 0 }
+                : payload
+            )
           );
           result.sent += 1;
         } catch (err) {

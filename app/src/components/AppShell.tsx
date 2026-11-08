@@ -10,6 +10,7 @@ import { NotificationBell } from "./NotificationBell";
 import { SettingsLink } from "./SettingsLink";
 import { usePushRegistration } from "./usePushRegistration";
 import { useRealtimeRefresh } from "./useRealtimeRefresh";
+import { useAppBadge } from "./useAppBadge";
 import { Select, Toaster } from "./ui";
 
 /**
@@ -49,6 +50,8 @@ export function AppShell() {
   // Also once, and for the same reason: this device's push subscription has to
   // follow whoever is signed in. See usePushRegistration.
   usePushRegistration();
+  // The home-screen icon's number, which follows the bell's.
+  useAppBadge();
   const { signOut, email } = useAuth();
   const goHome = useGoHomeClick();
   const [drawerOpen, setDrawerOpen] = useState(false);

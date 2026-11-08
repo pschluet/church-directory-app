@@ -117,6 +117,18 @@ describe.skipIf(!built)("the built service worker", () => {
     expect(sw).toContain("postMessage");
   });
 
+  it("puts the unread count on the home-screen icon", () => {
+    /*
+     * iOS shows a number on an installed web app's icon only through the
+     * Badging API; a notification arriving never does it on its own. The count
+     * comes in the payload, and a 0 has to clear the badge rather than leave a
+     * stale one.
+     */
+    expect(sw).toContain("badgeCount");
+    expect(sw).toContain("setAppBadge");
+    expect(sw).toContain("clearAppBadge");
+  });
+
   it("never falls back to naming the app in the title", () => {
     /*
      * iOS renders the bold line as "{title} from {app name}", so a fallback of

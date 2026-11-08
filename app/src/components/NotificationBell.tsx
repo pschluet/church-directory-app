@@ -1,11 +1,38 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "./nav";
 import { NOTIFICATION_LABELS, notificationPath as notificationHref, type InboxDto } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { formatPostedAt } from "../lib/format";
 import { useNow } from "./ui";
+
+/**
+ * The inbox query, shared with `useAppBadge` so the icon reads the same cache.
+ */
+export function inboxQueryOptions() {
+  return queryOptions({
+    queryKey: qk.notifications(),
+    queryFn: ({ signal }) => api<InboxDto>("/notifications", { signal, withOrg: false }),
+    /*
+     * Deliberately not polled. This used to refetch every 60s, because a prayer
+     * request is posted by somebody else and there was nothing to invalidate
+     * the cache from. There is now: the service worker forwards the push to
+     * every open tab and `useRealtimeRefresh` invalidates this key.
+     *
+     * Polling was dropped rather than tightened because its cost scales with
+     * concurrent tabs -- tens of dollars a month at ten thousand members -- to
+     * catch something that happens a few times a week.
+     *
+     * The window-focus refetch stays on for this one query; the app-wide
+     * default is off (see lib/queryClient.ts). Coming back to the app is
+     * exactly the moment somebody looks at the bell, and it is what covers
+     * members who have not enabled notifications and so never get a push. Note
+     * it only fires when the data is already stale (30s) or was invalidated.
+     */
+    refetchOnWindowFocus: true,
+  });
+}
 
 /**
  * The bell, and the panel behind it.
@@ -49,27 +76,7 @@ export function NotificationBell({ className = "" }: { className?: string }) {
    */
   const [shift, setShift] = useState(0);
 
-  const inboxQuery = useQuery({
-    queryKey: qk.notifications(),
-    queryFn: ({ signal }) => api<InboxDto>("/notifications", { signal, withOrg: false }),
-    /*
-     * Deliberately not polled. This used to refetch every 60s, because a prayer
-     * request is posted by somebody else and there was nothing to invalidate
-     * the cache from. There is now: the service worker forwards the push to
-     * every open tab and `useRealtimeRefresh` invalidates this key.
-     *
-     * Polling was dropped rather than tightened because its cost scales with
-     * concurrent tabs -- tens of dollars a month at ten thousand members -- to
-     * catch something that happens a few times a week.
-     *
-     * The window-focus refetch stays on for this one query; the app-wide
-     * default is off (see lib/queryClient.ts). Coming back to the app is
-     * exactly the moment somebody looks at the bell, and it is what covers
-     * members who have not enabled notifications and so never get a push. Note
-     * it only fires when the data is already stale (30s) or was invalidated.
-     */
-    refetchOnWindowFocus: true,
-  });
+  const inboxQuery = useQuery(inboxQueryOptions());
 
   const markRead = useMutation({
     mutationFn: () => api("/notifications/read", { method: "POST", withOrg: false }),
