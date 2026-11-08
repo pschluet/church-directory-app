@@ -6,8 +6,8 @@ import {
   BATCH_WINDOW_MS,
   collectPendingEmails,
   sendPendingEmails,
-  shorten,
-  SNIPPET_LENGTH,
+  BODY_LIMIT,
+  capBody,
 } from "../src/services/notification-email";
 import { renderNotificationEmail, type NotificationEmailItem } from "../src/email";
 
@@ -265,7 +265,12 @@ describe.skipIf(!hasDb)("notification emails", () => {
         label: "Prayer request",
         heading: "For my mother",
         context: "From Mary Smith",
-        snippet: "Surgery Thursday.",
+        body: "Surgery Thursday.",
+        bodyFormat: "plain",
+        event: null,
+        poll: null,
+        attachments: { images: 0, files: [] },
+        truncated: false,
         subject: "Prayer request: For my mother",
         action: "Read the prayer request",
         url: `${SITE}/prayer-requests`,
@@ -283,7 +288,7 @@ describe.skipIf(!hasDb)("notification emails", () => {
       });
     });
 
-    it("quotes a group message as plain text and links to the message itself", async () => {
+    it("quotes a group message whole, formatting kept, and links to the message itself", async () => {
       const group = await as(author).call("POST", "/api/groups", {
         title: "Youth Group",
         visibility: "PUBLIC",
@@ -307,7 +312,9 @@ describe.skipIf(!hasDb)("notification emails", () => {
         label: "New activity",
         heading: "Youth Group",
         context: "Mary Smith posted",
-        snippet: "Pizza on Friday -- details",
+        // The markup itself: email-content.ts renders it as the app does.
+        body: "**Pizza** on _Friday_ -- [details](https://example.com)",
+        bodyFormat: "rich",
         subject: "New message in Youth Group",
         url: `${SITE}/groups/${groupId}?message=${root.body.id}`,
       });
@@ -340,13 +347,174 @@ describe.skipIf(!hasDb)("notification emails", () => {
       });
     });
 
-    it("shortens a long text at a word", () => {
-      const long = `${"word ".repeat(100)}end`;
-      const short = shorten(long)!;
-      expect(short.length).toBeLessThanOrEqual(SNIPPET_LENGTH + 1);
-      expect(short.endsWith("word…")).toBe(true);
-      expect(shorten("   ")).toBeNull();
-      expect(shorten("Short.")).toBe("Short.");
+    it("keeps a long text whole, and cuts only past the safety limit", () => {
+      const long = "word ".repeat(400).trim();
+      expect(capBody(long)).toEqual({ body: long, truncated: false });
+
+      const huge = "word ".repeat(BODY_LIMIT).trim();
+      const capped = capBody(huge);
+      expect(capped.truncated).toBe(true);
+      expect(capped.body!.length).toBeLessThanOrEqual(BODY_LIMIT);
+      expect(capped.body!.endsWith("word")).toBe(true);
+
+      expect(capBody("   ")).toEqual({ body: null, truncated: false });
+    });
+  });
+
+  describe("polls, events and attachments", () => {
+    let groupId: string;
+
+    beforeEach(async () => {
+      const group = await as(author).call("POST", "/api/groups", {
+        title: "Youth Group",
+        visibility: "PUBLIC",
+      });
+      groupId = group.body.id as string;
+      await as(author).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      await optIn(member);
+    });
+
+    const onlyItem = async () => {
+      const due = await pending();
+      expect(due).toHaveLength(1);
+      expect(due[0]!.items).toHaveLength(1);
+      return due[0]!.items[0]!;
+    };
+
+    it("lists a poll's question and every option, in order", async () => {
+      const poll = await as(author).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "POLL",
+        poll: {
+          question: "Which night for pizza?",
+          options: ["Friday", "Saturday", "Sunday"],
+          allowsMultiple: true,
+        },
+      });
+      expect(poll.status).toBe(201);
+      expect(await onlyItem()).toMatchObject({
+        context: "Mary Smith posted a poll",
+        subject: "New poll in Youth Group",
+        action: "Vote in the app",
+        body: null,
+        poll: {
+          question: "Which night for pizza?",
+          options: ["Friday", "Saturday", "Sunday"],
+          allowsMultiple: true,
+        },
+        event: null,
+      });
+    });
+
+    it("says when and where an event is", async () => {
+      await as(author).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: {
+          eventTitle: "Pizza night",
+          eventDate: "2031-11-14",
+          startTime: "18:30",
+          endTime: "20:00",
+          location: "Parish hall",
+          eventDescription: "Bring a friend. Sign up at https://example.com/signup",
+        },
+      });
+      expect(await onlyItem()).toMatchObject({
+        context: "Mary Smith posted an event",
+        subject: "New event in Youth Group",
+        action: "Open the event",
+        event: {
+          title: "Pizza night",
+          when: "Friday, November 14, 2031 · 6:30 – 8:00 PM",
+          location: "Parish hall",
+          description: "Bring a friend. Sign up at https://example.com/signup",
+          cancelled: false,
+        },
+      });
+    });
+
+    it("shows the event as it now stands when it changes, and says when it is cancelled", async () => {
+      const event = await as(author).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "EVENT",
+        event: { eventTitle: "Pizza night", eventDate: "2031-11-14" },
+      });
+      await db().query("update notifications set emailed_at = now()");
+      await db().query(
+        `insert into notifications (app_user_id, organization_id, type, group_id, group_post_id)
+         values ($1, $2, 'GROUP_EVENT', $3, $4)`,
+        [member.appUserId, org, groupId, event.body.id]
+      );
+      await db().query(
+        "update group_posts set deleted_at = now(), deleted_by_person_id = $2 where id = $1",
+        [event.body.id, author.personId]
+      );
+      expect(await onlyItem()).toMatchObject({
+        label: "Event changed",
+        context: "An event was cancelled",
+        subject: "Event cancelled in Youth Group",
+        event: { title: "Pizza night", when: "Friday, November 14, 2031", cancelled: true },
+      });
+    });
+
+    it("counts photos and names files, linking to neither", async () => {
+      const post = await as(author).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Handouts for Sunday",
+      });
+      await db().query(
+        `insert into group_post_attachments
+           (post_id, photo_key, kind, filename, content_type, byte_size, width, height, position)
+         values ($1, 'k/1/', 'IMAGE', 'a.jpg', 'image/jpeg', 10, 100, 100, 0),
+                ($1, 'k/2/', 'FILE', 'agenda.pdf', 'application/pdf', 10, null, null, 1),
+                ($1, 'k/3/', 'IMAGE', 'b.jpg', 'image/jpeg', 10, 100, 100, 2),
+                ($1, 'k/4/', 'FILE', 'map.docx', 'application/msword', 10, null, null, 3)`,
+        [post.body.id]
+      );
+      const item = await onlyItem();
+      expect(item.attachments).toEqual({ images: 2, files: ["agenda.pdf", "map.docx"] });
+
+      const { html, text } = renderNotificationEmail({
+        organizationName: "All Saints",
+        items: [item],
+        settingsUrl: `${SITE}/settings`,
+        unsubscribeUrl: `${SITE}/unsubscribe?token=t`,
+        oneClickUnsubscribeUrl: `${SITE}/api/public/email-unsubscribe?token=t`,
+      });
+      expect(html).toContain("2 photos");
+      expect(html).toContain("agenda.pdf");
+      expect(html).toContain("Open the app to download");
+      expect(html).not.toContain("k/2/");
+      expect(html).not.toMatch(/href="[^"]*agenda\.pdf/);
+      expect(text).toContain("[File: agenda.pdf]");
+    });
+
+    it("counts a prayer request's photos", async () => {
+      const id = await postPrayerRequest();
+      await db().query(
+        `insert into prayer_request_images (prayer_request_id, photo_key, width, height, position)
+         values ($1, 'k/1/', 10, 10, 0)`,
+        [id]
+      );
+      const due = await pending();
+      expect(due[0]!.items[0]!.attachments).toEqual({ images: 1, files: [] });
+    });
+
+    it("leaves a reported post unquoted", async () => {
+      const post = await as(author).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Something reported",
+      });
+      await db().query("update notifications set emailed_at = now()");
+      await db().query(
+        `insert into notifications (app_user_id, organization_id, type, group_id, group_post_id)
+         values ($1, $2, 'GROUP_POST_REPORT', $3, $4)`,
+        [member.appUserId, org, groupId, post.body.id]
+      );
+      expect(await onlyItem()).toMatchObject({
+        label: "A post was reported",
+        body: null,
+        poll: null,
+        event: null,
+        attachments: { images: 0, files: [] },
+      });
     });
   });
 
@@ -397,7 +565,12 @@ describe("renderNotificationEmail", () => {
     label: "Prayer request",
     heading: "For my mother",
     context: "From Mary Smith",
-    snippet: "Surgery Thursday.",
+    body: "Surgery Thursday.",
+    bodyFormat: "plain",
+    event: null,
+    poll: null,
+    attachments: { images: 0, files: [] },
+    truncated: false,
     subject: "Prayer request: For my mother",
     action: "Read the prayer request",
     url: `${SITE}/prayer-requests`,
@@ -422,7 +595,7 @@ describe("renderNotificationEmail", () => {
 
   it("escapes everything a member wrote", () => {
     const { html } = render([
-      item({ heading: "<script>x</script>", snippet: `"quoted" & <b>bold</b>` }),
+      item({ heading: "<script>x</script>", body: `"quoted" & <b>bold</b>` }),
     ]);
     expect(html).not.toContain("<script>");
     expect(html).toContain("&lt;script&gt;");
@@ -443,5 +616,94 @@ describe("renderNotificationEmail", () => {
       { name: "List-Unsubscribe", value: `<${SITE}/api/public/email-unsubscribe?token=t>` },
       { name: "List-Unsubscribe-Post", value: "List-Unsubscribe=One-Click" },
     ]);
+  });
+
+  describe("message formatting", () => {
+    const rich = (body: string) => render([item({ body, bodyFormat: "rich" })]);
+
+    it("keeps bold, italics, underline and strikethrough", () => {
+      const { html } = rich("**Bold** _italic_ ++under++ ~~gone~~");
+      expect(html).toContain("<strong>Bold</strong>");
+      expect(html).toContain("<em>italic</em>");
+      expect(html).toContain("<u>under</u>");
+      expect(html).toContain("<s>gone</s>");
+    });
+
+    it("keeps bulleted and numbered lists", () => {
+      const { html, text } = rich("Bring:\n- Chairs\n- Snacks\n\n1. First\n2. Second");
+      expect(html).toMatch(/<ul[^>]*><li[^>]*>Chairs<\/li><li[^>]*>Snacks<\/li><\/ul>/);
+      expect(html).toMatch(/<ol[^>]*><li[^>]*>First<\/li><li[^>]*>Second<\/li><\/ol>/);
+      expect(text).toContain("• Chairs");
+      expect(text).toContain("1. First");
+    });
+
+    it("shows a link with its own words as just those words, clickable", () => {
+      const { html, text } = rich("See the [sign-up sheet](https://forms.example.com/abc)");
+      expect(html).toMatch(/<a href="https:\/\/forms\.example\.com\/abc"[^>]*>sign-up sheet<\/a>/);
+      expect(html).not.toContain(">https://forms.example.com/abc<");
+      // Plain text has no other way to say where it goes.
+      expect(text).toContain("sign-up sheet (https://forms.example.com/abc)");
+    });
+
+    it("shows a bare address in full, clickable", () => {
+      const { html } = rich("Photos at https://example.com/album.");
+      expect(html).toContain(
+        '<a href="https://example.com/album" style="color:#b42d23;text-decoration:underline;">https://example.com/album</a>.'
+      );
+    });
+
+    it("links a bare address in a prayer request too", () => {
+      const { html } = render([item({ body: "Updates: https://caringbridge.org/x" })]);
+      expect(html).toContain('href="https://caringbridge.org/x"');
+    });
+
+    it("never links an unsafe address", () => {
+      const { html } = rich("[click](javascript:alert(1))");
+      expect(html).not.toContain("javascript:");
+      expect(html).not.toContain('<a href="j');
+    });
+
+    it("says the rest is in the app when cut", () => {
+      const { html, text } = render([item({ truncated: true })]);
+      expect(html).toContain("Read the rest in the app");
+      expect(text).toContain("Read the rest in the app");
+    });
+  });
+
+  it("renders a poll's options", () => {
+    const { html, text } = render([
+      item({
+        body: null,
+        poll: {
+          question: "Which night?",
+          options: ["Friday", "<Saturday>"],
+          allowsMultiple: false,
+        },
+      }),
+    ]);
+    expect(html).toContain("Which night?");
+    expect(html).toContain("Pick one");
+    expect(html).toContain("&lt;Saturday&gt;");
+    expect(text).toContain("( ) Friday");
+  });
+
+  it("renders an event's when and where", () => {
+    const { html, text } = render([
+      item({
+        body: null,
+        event: {
+          title: "Pizza night",
+          when: "Friday, November 14 · 6:30 – 8:00 PM",
+          location: "Parish hall",
+          description: "Bring a friend",
+          cancelled: false,
+        },
+      }),
+    ]);
+    expect(html).toContain("Pizza night");
+    expect(html).toContain("Friday, November 14 · 6:30 – 8:00 PM");
+    expect(html).toContain("Parish hall");
+    expect(text).toContain("When: Friday, November 14 · 6:30 – 8:00 PM");
+    expect(text).toContain("Where: Parish hall");
   });
 });

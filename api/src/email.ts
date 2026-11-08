@@ -1,4 +1,5 @@
 import { SendEmailCommand, SESv2Client } from "@aws-sdk/client-sesv2";
+import { contentHtml, contentText, escapeHtml, type EmailContent } from "./email-content";
 
 /**
  * Outbound email: the invitation, the sign-in code (see auth-challenge.ts,
@@ -327,16 +328,18 @@ export async function sendEmailChangedNoticeEmail(params: {
 // Notification emails
 // ---------------------------------------------------------------------------
 
-/** One notification, as the email shows it. Built by services/notification-email.ts. */
-export interface NotificationEmailItem {
+/**
+ * One notification, as the email shows it. Built by services/notification-email.ts.
+ * What it says of the post itself -- text, event, poll, attachments -- is the
+ * `EmailContent` it extends; see email-content.ts.
+ */
+export interface NotificationEmailItem extends EmailContent {
   /** "Prayer request", "You were mentioned" -- the bell's label for the type. */
   label: string;
   /** The prayer request's title, the group's name, the requester's name. */
   heading: string;
   /** Who and where, e.g. "Mary Smith in Youth Group". Null when there is nothing to say. */
   context: string | null;
-  /** The text itself, already plain and shortened. Null for types that have none. */
-  snippet: string | null;
   /** The subject when this is the only item, e.g. "Prayer request: For my mother". */
   subject: string;
   /** The button's words, e.g. "Read the prayer request". */
@@ -383,7 +386,7 @@ export function renderNotificationEmail(params: {
     ...items.flatMap((item) => [
       `${item.label.toUpperCase()}: ${item.heading}`,
       ...(item.context ? [item.context] : []),
-      ...(item.snippet ? ["", item.snippet] : []),
+      ...contentText(item),
       "",
       `${item.action}: ${item.url}`,
       "",
@@ -408,12 +411,8 @@ export function renderNotificationEmail(params: {
                     ? `
                 <p style="margin:4px 0 0;font-size:14px;color:#6b6b6b;">${escapeHtml(item.context)}</p>`
                     : ""
-                }${
-                  item.snippet
-                    ? `
-                <p style="margin:12px 0 0;font-size:15px;line-height:1.5;color:#333333;">${escapeHtml(item.snippet).replace(/\n/g, "<br>")}</p>`
-                    : ""
                 }
+                ${contentHtml(item)}
                 <p style="margin:16px 0 0;">${emailButton(item.url, item.action)}</p>
               </td>
             </tr>
@@ -454,13 +453,4 @@ function maskEmail(email: string): string {
   const [local, domain] = email.split("@");
   if (!domain || !local) return email;
   return `${local[0]}${"*".repeat(Math.max(local.length - 1, 3))}@${domain}`;
-}
-
-function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
 }
