@@ -1,5 +1,5 @@
 import { useLocation, useSearchParams } from "react-router";
-import type { GroupPostKind } from "@shared";
+import { MESSAGE_PARAM } from "@shared";
 
 /**
  * Links to one message in a group, and what a page does on arriving by one.
@@ -15,39 +15,9 @@ import type { GroupPostKind } from "@shared";
  * page, can build one without importing the whole group page.
  */
 
-/** The query parameter that names the message a link is about. */
-export const MESSAGE_PARAM = "message";
-
-/** Where a message's thread lives. */
-export function threadPath(groupId: string, postId: string): string {
-  return `/groups/${groupId}/threads/${postId}`;
-}
-
-/**
- * Where an event lives: its own page (EventDetail.tsx), not a chat thread. An
- * event's discussion is there too, so this is where "Reply" on one goes.
- */
-export function eventDetailPath(groupId: string, postId: string): string {
-  return `/groups/${groupId}/events/${postId}`;
-}
-
-/**
- * The link to one message. `parentKind` says what a reply hangs off -- a
- * message's thread or an event's page -- and is ignored for a post of its own.
- */
-export function messagePath(
-  groupId: string,
-  post: { id: string; parentPostId: string | null },
-  parentKind?: GroupPostKind | null
-): string {
-  const query = `?${MESSAGE_PARAM}=${encodeURIComponent(post.id)}`;
-  if (!post.parentPostId) return `/groups/${groupId}${query}`;
-  return `${
-    parentKind === "EVENT"
-      ? eventDetailPath(groupId, post.parentPostId)
-      : threadPath(groupId, post.parentPostId)
-  }${query}`;
-}
+// The links themselves live in api/src/notification-links.ts, so the
+// notification email builds exactly the links the bell does.
+export { MESSAGE_PARAM, eventDetailPath, messagePath, threadPath } from "@shared";
 
 /**
  * The message this navigation was asked to show, and the navigation's own key.

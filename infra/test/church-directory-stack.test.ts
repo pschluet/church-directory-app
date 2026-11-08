@@ -354,12 +354,41 @@ describe("ChurchDirectoryStack", () => {
        * bucket grant and a database grant but no Maps key at all -- it has
        * nothing to do with geocoding.
        */
-      template.resourceCountIs("AWS::Events::Rule", 2);
+      template.hasResourceProperties("AWS::Events::Rule", {
+        ScheduleExpression: "rate(1 day)",
+        Description: Match.stringLikeRegexp("Purge group posts"),
+      });
       template.hasResourceProperties("AWS::Lambda::Function", {
         Environment: {
           Variables: Match.objectLike({ DB_AUTH: "iam" }),
         },
         VpcConfig: Match.objectLike({ Ipv6AllowedForDualStack: Match.absent() }),
+      });
+    });
+
+    it("sends notification emails every minute, one run at a time, over IPv6", () => {
+      /*
+       * Three schedules now: the geocode refresh, the retention purge, and
+       * this. Reserved concurrency of one is load-bearing -- two overlapping
+       * runs could read the same un-stamped notifications and mail them
+       * twice -- and without IPv6 the function cannot reach SES at all.
+       */
+      template.resourceCountIs("AWS::Events::Rule", 3);
+      template.hasResourceProperties("AWS::Events::Rule", {
+        ScheduleExpression: "rate(1 minute)",
+        State: "ENABLED",
+      });
+      template.hasResourceProperties("AWS::Lambda::Function", {
+        ReservedConcurrentExecutions: 1,
+        Timeout: 120,
+        Environment: {
+          Variables: Match.objectLike({
+            DB_AUTH: "iam",
+            SITE_URL: Match.stringLikeRegexp("^https://"),
+            FROM_EMAIL: Match.stringLikeRegexp("^no-reply@"),
+          }),
+        },
+        VpcConfig: Match.objectLike({ Ipv6AllowedForDualStack: true }),
       });
     });
 
@@ -402,8 +431,8 @@ describe("ChurchDirectoryStack", () => {
           Environment: { Variables: Match.objectLike({ FROM_EMAIL: Match.anyValue() }) },
         },
       });
-      // The API and the auth challenge function.
-      expect(Object.keys(functions)).toHaveLength(2);
+      // The API, the auth challenge function, and the notification email sender.
+      expect(Object.keys(functions)).toHaveLength(3);
       for (const fn of Object.values(functions)) {
         const fromName = fn.Properties?.Environment?.Variables?.FROM_NAME as string;
         expect(fromName).toBeTruthy();

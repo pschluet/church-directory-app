@@ -78,7 +78,11 @@ export function Settings() {
       body: Partial<
         Pick<
           NotificationPreferencesDto,
-          "prayerRequests" | "prayerRequestReviews" | "directoryRequests" | "groupNotificationPref"
+          | "prayerRequests"
+          | "prayerRequestReviews"
+          | "directoryRequests"
+          | "groupNotificationPref"
+          | "emailNotifications"
         >
       >
     ) =>
@@ -200,6 +204,7 @@ export function Settings() {
   const directoryRequests = preferences?.directoryRequests ?? true;
   const groupNotificationPref = preferences?.groupNotificationPref ?? "ALL";
   const groupExceptions = preferences?.groupExceptions ?? [];
+  const emailNotifications = preferences?.emailNotifications ?? false;
   const saving =
     preferencesQuery.isPending ||
     savePreferences.isPending ||
@@ -210,6 +215,15 @@ export function Settings() {
   const anyGroupNotifications =
     groupNotificationPref !== "NONE" || groupExceptions.some((e) => e.notificationPref !== "NONE");
   const message = error ?? preferencesQuery.error?.message ?? null;
+  // Both delivery switches -- push on this device, and email -- say so rather
+  // than leaving somebody with one on and nothing selected to send.
+  // Where the emails go: the sign-in address, which Sign-in above can change.
+  const signInEmail = me?.appUser.email ?? "your sign-in address";
+  const nothingSelected =
+    !prayerRequests &&
+    !(canApprovePrayerRequests && prayerRequestReviews) &&
+    !(isAdmin && directoryRequests) &&
+    !anyGroupNotifications;
 
   return (
     <>
@@ -229,8 +243,8 @@ export function Settings() {
       <section className="mt-4 rounded-lg border border-line bg-surface p-4">
         <h2 className="font-bold text-ink">Notifications</h2>
         <p className="mt-1 text-sm text-ink-muted">
-          The directory can tell you about prayer requests and group messages two ways: a badge on
-          the bell in the top corner, and a notification on your phone or computer.
+          The directory can tell you about prayer requests and group messages three ways: a badge on
+          the bell in the top corner, a notification on your phone or computer, and email.
         </p>
 
         <div className="mt-5">
@@ -363,12 +377,7 @@ export function Settings() {
             <Switch
               label="Push notifications"
               hint={
-                // The two switches compose, so say so rather than leaving
-                // somebody with push on and nothing selected to send.
-                !prayerRequests &&
-                !(canApprovePrayerRequests && prayerRequestReviews) &&
-                !(isAdmin && directoryRequests) &&
-                !anyGroupNotifications
+                nothingSelected
                   ? "Nothing to send while everything above is switched off."
                   : subscribed
                     ? "This device will be notified even when the directory is closed."
@@ -381,6 +390,30 @@ export function Settings() {
           ) : (
             <PushUnavailable availability={availability} />
           )}
+        </div>
+
+        {/*
+          Per account, unlike push: an inbox is not a device. Off until
+          switched on -- the one channel that is opt in (see
+          V37__email_notifications.sql for why).
+        */}
+        <div className="mt-5 border-t border-line pt-5">
+          <h3 className="mb-2 text-sm font-bold uppercase tracking-wide text-ink-muted">
+            By email
+          </h3>
+          <Switch
+            label="Email notifications"
+            hint={
+              nothingSelected
+                ? "Nothing to send while everything above is switched off."
+                : emailNotifications
+                  ? `Sent to ${signInEmail} a few minutes after something arrives. Anything you have already seen here is left out.`
+                  : `We will email ${signInEmail} a few minutes after something arrives, with a link straight to it.`
+            }
+            checked={emailNotifications}
+            disabled={saving}
+            onChange={(next) => savePreferences.mutate({ emailNotifications: next })}
+          />
         </div>
       </section>
 

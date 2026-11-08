@@ -685,6 +685,69 @@ export class ChurchDirectoryStack extends Stack {
       targets: [new eventTargets.LambdaFunction(expireGroupPostsFn)],
     });
 
+    // -------------------------------------------------------------------
+    // Notification emails: every minute, mail the members who switched email
+    // on whatever has landed in their bell, batched per person. See
+    // api/src/send-notification-emails.ts and
+    // api/src/services/notification-email.ts. Same subnets, security group
+    // and database grant as the API; it reaches SES over IPv6 through the
+    // dual-stack endpoint api/src/email.ts already uses.
+    // -------------------------------------------------------------------
+    const sendNotificationEmailsFn = new NodejsFunction(this, "SendNotificationEmailsFunction", {
+      entry: path.join(__dirname, "..", "..", "api", "src", "send-notification-emails.ts"),
+      handler: "handler",
+      runtime: lambda.Runtime.NODEJS_22_X,
+      architecture: lambda.Architecture.ARM_64,
+      memorySize: 256,
+      // The handler stops starting sends after 75s and leaves the rest for the
+      // next run, so this is headroom for the last send and the database.
+      timeout: Duration.minutes(2),
+      // One at a time. A run that overlapped the previous one could read the
+      // same un-stamped rows and mail them twice.
+      reservedConcurrentExecutions: 1,
+      bundling: { minify: true, target: "node22" },
+      vpc,
+      vpcSubnets: { subnetType: ec2.SubnetType.PRIVATE_ISOLATED },
+      securityGroups: [apiSecurityGroup],
+      // As with apiFn: SES is outside the VPC, and IPv6 is the only way out.
+      // Without this every send hangs until the timeout.
+      ipv6AllowedForDualStack: true,
+      logGroup: new logs.LogGroup(this, "SendNotificationEmailsLogGroup", {
+        retention: logs.RetentionDays.ONE_MONTH,
+        removalPolicy: RemovalPolicy.DESTROY,
+      }),
+      environment: {
+        DB_HOST: database.dbInstanceEndpointAddress,
+        DB_PORT: database.dbInstanceEndpointPort,
+        DB_NAME,
+        DB_USER: APP_DB_ROLE,
+        DB_AUTH: "iam",
+        SITE_URL: `https://${domainName}`,
+        FROM_EMAIL: `no-reply@${hostedZoneName}`,
+        FROM_NAME: EMAIL_FROM_NAME,
+      },
+    });
+    sendNotificationEmailsFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["rds-db:connect"],
+        resources: [
+          `arn:aws:rds-db:${this.region}:${this.account}:dbuser:${database.instanceResourceId}/${APP_DB_ROLE}`,
+        ],
+      })
+    );
+    sendNotificationEmailsFn.addToRolePolicy(
+      new iam.PolicyStatement({
+        actions: ["ses:SendEmail"],
+        resources: [`arn:aws:ses:${this.region}:${this.account}:identity/${hostedZoneName}`],
+      })
+    );
+
+    new events.Rule(this, "SendNotificationEmailsSchedule", {
+      schedule: events.Schedule.rate(Duration.minutes(1)),
+      description: "Email opted-in members their new notifications, batched per person",
+      targets: [new eventTargets.LambdaFunction(sendNotificationEmailsFn)],
+    });
+
     photosBucket.grantReadWrite(apiFn);
     photosBucket.grantDelete(apiFn);
     apiFn.addToRolePolicy(

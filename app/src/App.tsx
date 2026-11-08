@@ -17,6 +17,7 @@ import { Groups } from "./pages/Groups";
 import { GroupDetail } from "./pages/GroupDetail";
 import { EventDetail } from "./pages/EventDetail";
 import { PublicEvent } from "./pages/PublicEvent";
+import { Unsubscribe } from "./pages/Unsubscribe";
 import { Help } from "./pages/Help";
 import { Settings } from "./pages/Settings";
 import { FamilyDetail } from "./pages/FamilyDetail";
@@ -45,6 +46,9 @@ export const router = createBrowserRouter([
   // How to install the app and turn on notifications. Signed-out too: it is
   // what someone is sent before they have the app or an account in it.
   { path: "/help", element: <Help /> },
+  // The "Unsubscribe" link in a notification email. Signed-out too: the token
+  // in the link is the credential, so it works from any browser.
+  { path: "/unsubscribe", element: <Unsubscribe /> },
   {
     element: <RootGate />,
     children: [

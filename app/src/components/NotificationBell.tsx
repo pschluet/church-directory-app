@@ -1,8 +1,7 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "./nav";
-import type { InboxDto, NotificationDto, NotificationType } from "@shared";
-import { messagePath } from "../lib/messageLinks";
+import { NOTIFICATION_LABELS, notificationPath as notificationHref, type InboxDto } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { formatPostedAt } from "../lib/format";
@@ -23,45 +22,6 @@ import { useNow } from "./ui";
  * Opening it marks everything read, which is what the requirement asks for --
  * "when the notifications are viewed, the badge should go away".
  */
-/**
- * What each kind of notification is, in the panel.
- *
- * The title alone is the whole message for a posted request; for one waiting to
- * be reviewed the title only says *which* request, and this is what says it
- * needs the reader to do something.
- */
-const NOTIFICATION_LABELS: Record<NotificationType, string> = {
-  PRAYER_REQUEST: "Prayer request",
-  PRAYER_REQUEST_REVIEW: "Needs your approval",
-  GROUP_POST: "New activity",
-  GROUP_MENTION: "You were mentioned",
-  GROUP_JOIN_REQUEST: "Someone wants to join",
-  GROUP_EVENT: "Event changed",
-  GROUP_POST_REPORT: "A post was reported",
-  DIRECTORY_REQUEST: "Asked to be added to the directory",
-};
-
-/**
- * Where tapping a notification lands -- the message it is about (which the
- * page then scrolls to and lights), its group when it is about no one message,
- * People & Accounts for a directory request, or the prayer requests page.
- */
-function notificationHref(
-  notification: Pick<
-    NotificationDto,
-    "type" | "groupId" | "groupPostId" | "groupPostParentId" | "groupPostParentKind"
-  >
-): string {
-  if (notification.type === "DIRECTORY_REQUEST") return "/admin/users";
-  if (!notification.groupId) return "/prayer-requests";
-  if (!notification.groupPostId) return `/groups/${notification.groupId}`;
-  return messagePath(
-    notification.groupId,
-    { id: notification.groupPostId, parentPostId: notification.groupPostParentId },
-    notification.groupPostParentKind
-  );
-}
-
 export function NotificationBell({ className = "" }: { className?: string }) {
   const queryClient = useQueryClient();
   const [open, setOpen] = useState(false);
