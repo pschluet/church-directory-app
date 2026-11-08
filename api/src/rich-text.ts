@@ -240,3 +240,66 @@ export function toPlainText(body: string): string {
 
 // ---------------------------------------------------------------------------
 // The editor's document (ProseMirror JSON) <-> body
+
+// ---------------------------------------------------------------------------
+// Bare web addresses
+// ---------------------------------------------------------------------------
+
+/**
+ * Bare web addresses in plain text -- a prayer request, an event description,
+ * or the text of a message -- found the same way by the app (LinkifiedText) and
+ * the notification email, so a link that works in one works in the other.
+ *
+ * Only http(s) addresses match, so `javascript:` and the like can never become
+ * a link.
+ */
+const URL_PATTERN = /https?:\/\/[^\s<>"]+/gi;
+
+/** Punctuation that, at the very end, almost always ends the sentence rather than the address. */
+const TRAILING = /[.,;:!?'"]$/;
+
+/**
+ * Where the address really ends: "see https://x.org." means https://x.org, and
+ * "(https://x.org)" leaves its closing paren behind -- but a paren the address
+ * opened itself, as in a Wikipedia link, stays.
+ */
+function trimUrl(url: string): string {
+  let end = url.length;
+  for (;;) {
+    const last = url[end - 1];
+    if (last !== undefined && TRAILING.test(last)) {
+      end--;
+      continue;
+    }
+    const pair = last === ")" ? "(" : last === "]" ? "[" : null;
+    if (pair) {
+      const head = url.slice(0, end);
+      const opens = head.split(pair).length - 1;
+      const closes = head.split(last!).length - 1;
+      if (closes > opens) {
+        end--;
+        continue;
+      }
+    }
+    return url.slice(0, end);
+  }
+}
+
+export type LinkedText = { kind: "text"; text: string } | { kind: "url"; url: string };
+
+/** `text` split into runs of plain text and bare web addresses, in order. */
+export function splitLinks(text: string): LinkedText[] {
+  const out: LinkedText[] = [];
+  let last = 0;
+  for (const match of text.matchAll(URL_PATTERN)) {
+    const url = trimUrl(match[0]);
+    // "https://" alone (or with only punctuation after it) is not an address.
+    if (/^https?:\/\/$/i.test(url)) continue;
+    const start = match.index;
+    if (start > last) out.push({ kind: "text", text: text.slice(last, start) });
+    out.push({ kind: "url", url });
+    last = start + url.length;
+  }
+  if (last < text.length) out.push({ kind: "text", text: text.slice(last) });
+  return out;
+}

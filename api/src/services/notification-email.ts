@@ -1,9 +1,11 @@
 import type { Queryable } from "../db";
 import { sendNotificationEmail, type NotificationEmailItem } from "../email";
+import type { EmailContent, EmailEvent } from "../email-content";
 import {
   NOTIFICATION_LABELS,
+  formatEventDay,
+  formatEventTimes,
   notificationPath,
-  toPlainText,
   type GroupPostKind,
   type NotificationType,
 } from "../types";
@@ -43,8 +45,12 @@ export const BATCH_WINDOW_MS = 2 * 60 * 1000;
 /** Older than this and a notification is never emailed. */
 const MAX_AGE = "1 day";
 
-/** How much of a prayer request or message an email quotes. */
-export const SNIPPET_LENGTH = 300;
+/**
+ * The most of a message or prayer request one email carries. Posts are shown
+ * in full; this is only a guard against something enormous, far past anything
+ * a member types, with the rest left to the app.
+ */
+export const BODY_LIMIT = 5000;
 
 /**
  * Sends per second. SES's default production quota is 14; staying under it
@@ -69,8 +75,18 @@ interface PendingRow {
   post_kind: GroupPostKind | null;
   post_body: string | null;
   post_author: string | null;
+  post_deleted: boolean | null;
   event_title: string | null;
   event_description: string | null;
+  event_date: Date | string | null;
+  event_start: string | null;
+  event_end: string | null;
+  event_location: string | null;
+  poll_question: string | null;
+  poll_allows_multiple: boolean | null;
+  poll_options: string[] | null;
+  image_count: number;
+  file_names: string[] | null;
   prayer_title: string | null;
   prayer_body: string | null;
   prayer_author: string | null;
@@ -111,8 +127,31 @@ export async function collectPendingEmails(
             gp.kind as post_kind,
             gp.body as post_body,
             nullif(btrim(concat_ws(' ', gpa.first_name, gpa.last_name)), '') as post_author,
+            gp.deleted_at is not null as post_deleted,
             ge.title as event_title,
             ge.description as event_description,
+            ge.event_date::text as event_date,
+            to_char(ge.start_time, 'HH24:MI') as event_start,
+            to_char(ge.end_time, 'HH24:MI') as event_end,
+            ge.location as event_location,
+            gpoll.question as poll_question,
+            gpoll.allows_multiple as poll_allows_multiple,
+            (select array_agg(o.label order by o.position)
+               from group_poll_options o where o.post_id = gpoll.post_id) as poll_options,
+            -- Photos are counted and files named, never linked: both sit
+            -- behind the app's signed cookies (see email-content.ts).
+            case
+              when gp.id is not null then
+                (select count(*)::int from group_post_attachments a
+                  where a.post_id = gp.id and a.kind = 'IMAGE')
+              when pr.id is not null then
+                (select count(*)::int from prayer_request_images i
+                  where i.prayer_request_id = pr.id)
+              else 0
+            end as image_count,
+            (select array_agg(a.filename order by a.position)
+               from group_post_attachments a
+              where a.post_id = gp.id and a.kind = 'FILE') as file_names,
             pr.title as prayer_title,
             pr.body as prayer_body,
             nullif(btrim(concat_ws(' ', pra.first_name, pra.last_name)), '') as prayer_author,
@@ -129,6 +168,7 @@ export async function collectPendingEmails(
        left join group_posts gp on gp.id = n.group_post_id
        left join group_posts parent on parent.id = gp.parent_post_id
        left join group_events ge on ge.post_id = gp.id
+       left join group_polls gpoll on gpoll.post_id = gp.id
        left join persons gpa on gpa.id = gp.author_person_id
        left join directory_requests dr on dr.id = n.directory_request_id
       where np.email_enabled
@@ -163,13 +203,67 @@ export async function collectPendingEmails(
       organizationName: first.organization_name ?? "Directory",
       unsubscribeToken: first.unsubscribe_token,
       notificationIds: list.map((row) => row.id),
-      items: list.map((row) => toItem(row, options.siteUrl)),
+      items: list.map((row) => toItem(row, options.siteUrl, options.now)),
     });
   }
   return due;
 }
 
-function toItem(row: PendingRow, siteUrl: string): NotificationEmailItem {
+const NO_CONTENT: EmailContent = {
+  body: null,
+  bodyFormat: "plain",
+  event: null,
+  poll: null,
+  attachments: { images: 0, files: [] },
+  truncated: false,
+};
+
+/** The event a row is about, ready to show; null when the row is not about one. */
+function eventOf(row: PendingRow, now: Date): EmailEvent | null {
+  if (!row.event_title || !row.event_date) return null;
+  const day = formatEventDay(String(row.event_date), now);
+  const times = formatEventTimes(row.event_start, row.event_end);
+  return {
+    title: row.event_title,
+    when: times ? `${day} · ${times}` : day,
+    location: row.event_location,
+    description: row.event_description,
+    // An event post is soft-deleted when it is cancelled (see V16__groups.sql).
+    cancelled: row.post_deleted === true,
+  };
+}
+
+/** Everything the email shows of the post itself. See email-content.ts. */
+function contentOf(row: PendingRow, now: Date): EmailContent {
+  if (row.type === "PRAYER_REQUEST" || row.type === "PRAYER_REQUEST_REVIEW") {
+    const { body, truncated } = capBody(row.prayer_body);
+    return {
+      ...NO_CONTENT,
+      body,
+      truncated,
+      attachments: { images: row.image_count, files: [] },
+    };
+  }
+  if (!row.group_post_id) return NO_CONTENT;
+
+  const attachments = { images: row.image_count, files: row.file_names ?? [] };
+  if (row.post_kind === "EVENT") return { ...NO_CONTENT, event: eventOf(row, now), attachments };
+  if (row.post_kind === "POLL" && row.poll_question) {
+    return {
+      ...NO_CONTENT,
+      poll: {
+        question: row.poll_question,
+        options: row.poll_options ?? [],
+        allowsMultiple: row.poll_allows_multiple === true,
+      },
+      attachments,
+    };
+  }
+  const { body, truncated } = capBody(row.post_body);
+  return { ...NO_CONTENT, body, bodyFormat: "rich", truncated, attachments };
+}
+
+function toItem(row: PendingRow, siteUrl: string, now: Date): NotificationEmailItem {
   const url =
     siteUrl +
     notificationPath({
@@ -182,15 +276,10 @@ function toItem(row: PendingRow, siteUrl: string): NotificationEmailItem {
   const label = NOTIFICATION_LABELS[row.type];
   const group = row.group_title ?? "your group";
   const author = row.post_author ?? "Somebody";
-  const isEvent = row.post_kind === "EVENT";
-  // An event's words are its title and description; a message's are its body.
-  const postText = isEvent
-    ? [row.event_title, row.event_description ? toPlainText(row.event_description) : null]
-        .filter(Boolean)
-        .join("\n")
-    : row.post_body
-      ? toPlainText(row.post_body)
-      : null;
+  const kind = row.post_kind;
+  const what = kind === "EVENT" ? "an event" : kind === "POLL" ? "a poll" : null;
+  const openAction =
+    kind === "EVENT" ? "Open the event" : kind === "POLL" ? "Vote in the app" : "Open the message";
 
   switch (row.type) {
     case "PRAYER_REQUEST":
@@ -198,10 +287,10 @@ function toItem(row: PendingRow, siteUrl: string): NotificationEmailItem {
       const title = row.prayer_title ?? "Prayer request";
       const review = row.type === "PRAYER_REQUEST_REVIEW";
       return {
+        ...contentOf(row, now),
         label,
         heading: title,
         context: row.prayer_author ? `From ${row.prayer_author}` : null,
-        snippet: shorten(row.prayer_body),
         subject: review ? `Needs your approval: ${title}` : `Prayer request: ${title}`,
         action: review ? "Review the request" : "Read the prayer request",
         url,
@@ -209,56 +298,64 @@ function toItem(row: PendingRow, siteUrl: string): NotificationEmailItem {
     }
     case "GROUP_POST":
       return {
+        ...contentOf(row, now),
         label,
         heading: group,
-        context: isEvent
-          ? `${author} posted an event`
+        context: what
+          ? `${author} posted ${what}`
           : row.group_post_parent_id
             ? `${author} replied`
             : `${author} posted`,
-        snippet: shorten(postText),
-        subject: isEvent ? `New event in ${group}` : `New message in ${group}`,
-        action: isEvent ? "Open the event" : "Open the message",
+        subject:
+          kind === "EVENT"
+            ? `New event in ${group}`
+            : kind === "POLL"
+              ? `New poll in ${group}`
+              : `New message in ${group}`,
+        action: openAction,
         url,
       };
     case "GROUP_MENTION":
       return {
+        ...contentOf(row, now),
         label,
         heading: group,
         context: `${author} mentioned you`,
-        snippet: shorten(postText),
         subject: `${author} mentioned you in ${group}`,
-        action: isEvent ? "Open the event" : "Open the message",
+        action: openAction,
         url,
       };
     case "GROUP_EVENT":
+      // The event as it now stands -- what changed is the point of the email.
       return {
+        ...NO_CONTENT,
+        event: eventOf(row, now),
         label,
         heading: group,
-        context: row.event_title ? `“${row.event_title}” was changed` : "An event was changed",
-        snippet: null,
-        subject: `Event changed in ${group}`,
+        context: row.post_deleted ? "An event was cancelled" : "An event was changed",
+        subject: row.post_deleted ? `Event cancelled in ${group}` : `Event changed in ${group}`,
         action: "Open the event",
         url,
       };
     case "GROUP_JOIN_REQUEST":
       return {
+        ...NO_CONTENT,
         label,
         heading: group,
         context: "Somebody asked to join this group",
-        snippet: null,
         subject: `Someone wants to join ${group}`,
         action: "Review the request",
         url,
       };
     case "GROUP_POST_REPORT":
-      // The reported text is deliberately not quoted: the email would spread
-      // exactly what somebody flagged as not belonging.
+      // The reported post is deliberately not quoted -- nor its poll, event or
+      // attachments: the email would spread exactly what somebody flagged as
+      // not belonging.
       return {
+        ...NO_CONTENT,
         label,
         heading: group,
         context: "A member reported a post",
-        snippet: null,
         subject: `A post in ${group} was reported`,
         action: "Review the post",
         url,
@@ -266,10 +363,10 @@ function toItem(row: PendingRow, siteUrl: string): NotificationEmailItem {
     case "DIRECTORY_REQUEST": {
       const name = row.requester_name ?? "Somebody";
       return {
+        ...NO_CONTENT,
         label,
         heading: name,
         context: null,
-        snippet: null,
         subject: `${name} asked to be added to the directory`,
         action: "Review on People & Accounts",
         url,
@@ -278,14 +375,20 @@ function toItem(row: PendingRow, siteUrl: string): NotificationEmailItem {
   }
 }
 
-/** At most SNIPPET_LENGTH characters, cut at a word where there is one. */
-export function shorten(text: string | null): string | null {
+/**
+ * The text in full, unless it passes BODY_LIMIT -- then cut at a word, with
+ * `truncated` set so the email says the rest is in the app.
+ */
+export function capBody(text: string | null): { body: string | null; truncated: boolean } {
   const trimmed = text?.trim();
-  if (!trimmed) return null;
-  if (trimmed.length <= SNIPPET_LENGTH) return trimmed;
-  const cut = trimmed.slice(0, SNIPPET_LENGTH);
+  if (!trimmed) return { body: null, truncated: false };
+  if (trimmed.length <= BODY_LIMIT) return { body: trimmed, truncated: false };
+  const cut = trimmed.slice(0, BODY_LIMIT);
   const space = cut.lastIndexOf(" ");
-  return `${(space > SNIPPET_LENGTH * 0.6 ? cut.slice(0, space) : cut).trimEnd()}…`;
+  return {
+    body: (space > BODY_LIMIT * 0.8 ? cut.slice(0, space) : cut).trimEnd(),
+    truncated: true,
+  };
 }
 
 export interface SendResult {
