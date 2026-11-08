@@ -282,9 +282,20 @@ RDS is the only meaningful line item, at roughly **$13–15/month** ($0 for the 
 months if the account is still free-tier eligible). Everything else is effectively free at
 parish scale: no NAT gateway, Lambda and CloudFront free tiers, HTTP API at about
 $1/million requests, Cognito Essentials free under 10,000 monthly actives, SES at
-$0.10/1,000 emails, a few cents of S3, pennies per deploy for the Fargate migration task, and
+$0.10/1,000 emails (notification emails included -- see below), a few cents of S3, pennies per deploy for the Fargate migration task, and
 about $0.60/month for the stopped bastion's root volume (see *Inspecting the deployed
 database*).
+
+**Notification emails are about $1–2/month for a parish of 200.** They are opt in (Settings →
+Notifications → By email), batched per person over two minutes, and skip anything already read
+in the app, so the volume is whatever members chose. Even with every member opted in to every
+group message a busy 200-member parish sends around 75,000 a month, or $7.50. The sender runs
+every minute (a Lambda invocation that usually finds nothing to do, well inside the free tier).
+The cost worth watching is not money but reputation: SES pauses sending from an account whose
+complaint rate passes about 0.1%, and the sign-in code goes out from the same domain. Every
+notification email carries a one-click unsubscribe for that reason. If volume grows, set up an
+SES configuration set that publishes bounces and complaints to an SNS topic, the way the
+database storage alarm emails the super admin.
 
 **Google Maps is $0/month at parish scale**, and not marginally. Every SKU used here gets
 10,000 free calls per month and the allowances do not pool: Dynamic Maps, Geocoding and Place
@@ -380,6 +391,11 @@ Two more things to do once, or the map will be correct and empty:
 with no VAPID keys. The in-app bell is unaffected and is the part worth exercising locally;
 Web Push needs `npm run build:app && npm run preview` (the only local server that runs the
 service worker) and, on iOS, an app added to the home screen.
+
+Notification emails are sent by a scheduled function, which does not run locally. To see
+what would be sent, switch email on in Settings, have another account post something, and run
+`npm run emails:send -w api -- --now` (the flag skips the two-minute batch window). The
+emails are printed rather than sent: the script defaults `EMAIL_MODE=local`.
 
 `DEV_AUTH_EMAIL` makes every request act as that person. The seed prints two addresses to
 try: `paul@example.com` (an administrator) and the super administrator.

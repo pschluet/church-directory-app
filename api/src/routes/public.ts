@@ -226,4 +226,36 @@ routes.post("/events/:token/join-request", async (c) => {
   return c.body(null, 204);
 });
 
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * One-click unsubscribe from notification emails -- the RFC 8058 target a mail
+ * client's "Unsubscribe" button POSTs to (`List-Unsubscribe-Post`), and what
+ * the SPA's /unsubscribe page calls when its button is pressed.
+ *
+ * POST only. A GET that changed anything would be fired by every link scanner
+ * that pre-opens URLs in mail, unsubscribing people who never asked; the
+ * footer link opens a page with a button instead.
+ *
+ * The token is the only credential (see V37__email_notifications.sql). 204
+ * whatever happened -- unknown token, already off -- so the route cannot be used
+ * to find out whether a token is real. It only ever turns email *off*, which is
+ * what makes a credential-in-a-link acceptable here: the worst a leaked link can
+ * do is stop some emails, which the owner can switch back on in Settings.
+ *
+ * Not audited: `audit()` records a `Caller`, and there is none.
+ */
+routes.post("/email-unsubscribe", async (c) => {
+  const token = c.req.query("token") ?? "";
+  if (UUID.test(token)) {
+    await c.get("db").query(
+      `update notification_preferences
+            set email_enabled = false
+          where email_unsubscribe_token = $1 and email_enabled`,
+      [token]
+    );
+  }
+  return c.body(null, 204);
+});
+
 export default routes;

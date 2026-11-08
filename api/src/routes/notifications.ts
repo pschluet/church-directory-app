@@ -52,20 +52,29 @@ interface PreferenceRow {
   prayer_request_reviews: boolean;
   directory_requests: boolean;
   group_notification_pref: GroupNotificationPref;
+  email_enabled: boolean;
 }
 
-/** No row means every default is on, which is why nothing needed backfilling. */
+/**
+ * No row means every default is on, which is why nothing needed backfilling --
+ * except email, which is opt in and so reads as off.
+ */
 function toSwitches(
   row: PreferenceRow | null
 ): Pick<
   NotificationPreferencesDto,
-  "prayerRequests" | "prayerRequestReviews" | "directoryRequests" | "groupNotificationPref"
+  | "prayerRequests"
+  | "prayerRequestReviews"
+  | "directoryRequests"
+  | "groupNotificationPref"
+  | "emailNotifications"
 > {
   return {
     prayerRequests: row?.prayer_requests ?? true,
     prayerRequestReviews: row?.prayer_request_reviews ?? true,
     directoryRequests: row?.directory_requests ?? true,
     groupNotificationPref: row?.group_notification_pref ?? "ALL",
+    emailNotifications: row?.email_enabled ?? false,
   };
 }
 
@@ -77,7 +86,7 @@ function toPreferences(
 }
 
 const PREFERENCE_COLUMNS =
-  "prayer_requests, prayer_request_reviews, directory_requests, group_notification_pref";
+  "prayer_requests, prayer_request_reviews, directory_requests, group_notification_pref, email_enabled";
 
 async function loadPreferences(
   db: Queryable,
@@ -110,15 +119,23 @@ routes.put("/preferences", async (c) => {
     db,
     `insert into notification_preferences
             (app_user_id, prayer_requests, prayer_request_reviews, directory_requests,
-             group_notification_pref)
-     values ($1, coalesce($2, true), coalesce($3, true), coalesce($5, true), coalesce($4, 'ALL'))
+             group_notification_pref, email_enabled, email_enabled_at)
+     values ($1, coalesce($2, true), coalesce($3, true), coalesce($5, true), coalesce($4, 'ALL'),
+             coalesce($6::boolean, false), case when $6::boolean then now() end)
      on conflict (app_user_id) do update
         set prayer_requests = coalesce($2, notification_preferences.prayer_requests),
             prayer_request_reviews =
               coalesce($3, notification_preferences.prayer_request_reviews),
             directory_requests = coalesce($5, notification_preferences.directory_requests),
             group_notification_pref =
-              coalesce($4, notification_preferences.group_notification_pref)
+              coalesce($4, notification_preferences.group_notification_pref),
+            email_enabled = coalesce($6, notification_preferences.email_enabled),
+            -- Restamped only on off -> on: the sender never reaches back past
+            -- this, so switching on does not mail what is already in the bell,
+            -- and saving some other switch while email is on changes nothing.
+            email_enabled_at =
+              case when $6::boolean and not notification_preferences.email_enabled then now()
+                   else notification_preferences.email_enabled_at end
      returning ${PREFERENCE_COLUMNS}`,
     [
       caller.appUserId,
@@ -126,6 +143,7 @@ routes.put("/preferences", async (c) => {
       payload.prayerRequestReviews ?? null,
       payload.groupNotificationPref ?? null,
       payload.directoryRequests ?? null,
+      payload.emailNotifications ?? null,
     ]
   );
 

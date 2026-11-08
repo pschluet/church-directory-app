@@ -365,6 +365,7 @@ describe.skipIf(!hasDb)("notifications", () => {
         prayerRequestReviews: true,
         directoryRequests: true,
         groupNotificationPref: "ALL",
+        emailNotifications: false,
         groupExceptions: [],
       });
 
@@ -383,6 +384,7 @@ describe.skipIf(!hasDb)("notifications", () => {
         prayerRequestReviews: true,
         directoryRequests: true,
         groupNotificationPref: "ALL",
+        emailNotifications: false,
         groupExceptions: [],
       });
 
@@ -422,6 +424,7 @@ describe.skipIf(!hasDb)("notifications", () => {
         prayerRequestReviews: true,
         directoryRequests: true,
         groupNotificationPref: "ALL",
+        emailNotifications: false,
         groupExceptions: [],
       });
     });
@@ -440,6 +443,7 @@ describe.skipIf(!hasDb)("notifications", () => {
         prayerRequestReviews: false,
         directoryRequests: true,
         groupNotificationPref: "ALL",
+        emailNotifications: false,
         groupExceptions: [],
       });
     });
@@ -452,6 +456,7 @@ describe.skipIf(!hasDb)("notifications", () => {
         prayerRequestReviews: true,
         directoryRequests: true,
         groupNotificationPref: "ALL",
+        emailNotifications: false,
         groupExceptions: [],
       });
     });
@@ -475,6 +480,7 @@ describe.skipIf(!hasDb)("notifications", () => {
         prayerRequestReviews: true,
         directoryRequests: true,
         groupNotificationPref: "ALL",
+        emailNotifications: false,
       });
     });
   });

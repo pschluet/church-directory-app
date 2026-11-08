@@ -51,7 +51,7 @@ export const NOTIFICATION_PAGE_SIZE = 30;
  * `or` in that WHERE would bind as `(app_user_id and A) or (B and unread)` and
  * start counting other people's notifications.
  */
-const NOTIFICATION_VISIBLE = `(
+export const NOTIFICATION_VISIBLE = `(
        (n.type = 'PRAYER_REQUEST'
          and pr.status = 'APPROVED'
          and pr.posted_at > now() - interval '${PRAYER_REQUEST_WINDOW}')

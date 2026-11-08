@@ -915,6 +915,11 @@ export const notificationPreferencesSchema = z.object({
   directoryRequests: z.boolean().optional(),
   /** The default for every group; a group's own setting is an exception to it. */
   groupNotificationPref: groupNotificationPrefSchema.optional(),
+  /**
+   * Email whatever the switches above select, a few minutes after it arrives.
+   * Off until switched on -- the one channel that is opt in.
+   */
+  emailNotifications: z.boolean().optional(),
 });
 export type NotificationPreferences = z.infer<typeof notificationPreferencesSchema>;
 
@@ -923,6 +928,7 @@ export interface NotificationPreferencesDto {
   prayerRequestReviews: boolean;
   directoryRequests: boolean;
   groupNotificationPref: GroupNotificationPref;
+  emailNotifications: boolean;
   groupExceptions: GroupNotificationExceptionDto[];
 }
 
@@ -2753,3 +2759,8 @@ export function fullName(person: { firstName: string; lastName: string | null })
 export function searchTerms(q: string): string[] {
   return q.trim().split(/\s+/).filter(Boolean).slice(0, 8);
 }
+
+// Shared with the SPA through `@shared`: the message-formatting parser, and the
+// notification links and labels the bell and the notification email both use.
+export * from "./rich-text";
+export * from "./notification-links";

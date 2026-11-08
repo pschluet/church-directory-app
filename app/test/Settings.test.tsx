@@ -177,9 +177,10 @@ describe("Settings", () => {
       return Promise.resolve({});
     });
     renderWithProviders(<Settings />);
-    expect(
-      await screen.findByText(/Nothing to send while everything above is switched off/)
-    ).toBeInTheDocument();
+    // The email switch says the same thing (see "email notifications" below);
+    // this is about push, so it reads the push switch's own label, hint included.
+    const push = await screen.findByRole("checkbox", { name: /Push notifications/ });
+    expect(push).toHaveAccessibleName(/Nothing to send while everything above is switched off/);
   });
 
   it("subscribes and registers the device", async () => {
@@ -338,6 +339,68 @@ describe("Settings", () => {
         withOrg: false,
       })
     );
+  });
+
+  describe("email notifications", () => {
+    it("is off by default and names the address it would use", async () => {
+      renderWithProviders(<Settings />);
+      const toggle = await screen.findByRole("checkbox", { name: /Email notifications/ });
+      expect(toggle).not.toBeChecked();
+      expect(screen.getByText(/We will email member@test\.example/)).toBeInTheDocument();
+    });
+
+    it("saves only the email switch when turned on", async () => {
+      renderWithProviders(<Settings />);
+      await userEvent.click(await screen.findByRole("checkbox", { name: /Email notifications/ }));
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith("/notifications/preferences", {
+          method: "PUT",
+          body: { emailNotifications: true },
+          withOrg: false,
+        })
+      );
+    });
+
+    it("says what happens once it is on", async () => {
+      apiMock.mockImplementation((path: string) =>
+        Promise.resolve(
+          path === "/notifications/preferences"
+            ? {
+                prayerRequests: true,
+                prayerRequestReviews: true,
+                groupNotificationPref: "ALL",
+                groupExceptions: [],
+                emailNotifications: true,
+              }
+            : {}
+        )
+      );
+      renderWithProviders(<Settings />);
+      expect(await screen.findByRole("checkbox", { name: /Email notifications/ })).toBeChecked();
+      expect(screen.getByText(/Sent to member@test\.example/)).toBeInTheDocument();
+    });
+
+    it("warns when there is nothing selected to send", async () => {
+      apiMock.mockImplementation((path: string) =>
+        Promise.resolve(
+          path === "/notifications/preferences"
+            ? {
+                prayerRequests: false,
+                prayerRequestReviews: true,
+                groupNotificationPref: "NONE",
+                groupExceptions: [],
+                emailNotifications: true,
+              }
+            : {}
+        )
+      );
+      renderWithProviders(<Settings />);
+      await screen.findByRole("checkbox", { name: /Email notifications/ });
+      // Once for push, once for email.
+      expect(
+        screen.getAllByText("Nothing to send while everything above is switched off.")
+      ).toHaveLength(2);
+    });
   });
 
   describe("group message notifications", () => {
