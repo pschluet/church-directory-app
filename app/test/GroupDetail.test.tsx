@@ -1556,10 +1556,11 @@ describe("GroupDetail", () => {
         }),
       ]);
       renderPage();
-      expect(await screen.findByRole("link", { name: "bulletin.pdf" })).toHaveAttribute(
-        "href",
-        "/bulletin.pdf"
-      );
+      const link = await screen.findByRole("link", { name: "bulletin.pdf" });
+      expect(link).toHaveAttribute("href", "/bulletin.pdf");
+      expect(link).toHaveAttribute("download", "bulletin.pdf");
+      // Its own browsing context, so an installed app is not left with no way back.
+      expect(link).toHaveAttribute("target", "_blank");
     });
 
     describe("on the Files tab", () => {
@@ -1601,10 +1602,9 @@ describe("GroupDetail", () => {
       it("keeps Open as a download link for a document", async () => {
         stub({ files: [documentFile] });
         await openFiles();
-        expect(await screen.findByRole("link", { name: "Open" })).toHaveAttribute(
-          "href",
-          "/bulletin.pdf"
-        );
+        const link = await screen.findByRole("link", { name: "Open" });
+        expect(link).toHaveAttribute("href", "/bulletin.pdf");
+        expect(link).toHaveAttribute("target", "_blank");
         expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
       });
     });

@@ -2137,9 +2137,17 @@ function AttachmentStrip({
           </li>
         ) : (
           <li key={attachment.id}>
+            {/*
+             * A new browsing context, not this one: installed as a standalone
+             * app there is no back button, and iOS ignores `download` for a
+             * PDF and previews it in place -- leaving no way back to the
+             * group. In its own context iOS shows a sheet with Done instead.
+             */}
             <a
               href={attachment.downloadUrl ?? undefined}
               download={attachment.filename}
+              target="_blank"
+              rel="noopener noreferrer"
               className="flex items-center gap-2 rounded-md border border-line bg-surface-muted px-3 py-2 text-sm font-bold text-ink hover:border-accent hover:text-accent"
             >
               {attachment.filename}
@@ -4175,11 +4183,12 @@ function FilesTab({ groupId }: { groupId: string }) {
               Open
             </button>
           ) : (
+            // Its own browsing context, for the same reason as AttachmentStrip's.
             <a
               href={file.attachment.fullUrl ?? file.attachment.downloadUrl ?? undefined}
-              target={file.attachment.fullUrl ? "_blank" : undefined}
+              target="_blank"
               download={file.attachment.downloadUrl ? file.attachment.filename : undefined}
-              rel="noreferrer"
+              rel="noopener noreferrer"
               className="shrink-0 font-bold text-accent hover:underline"
             >
               Open
