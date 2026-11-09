@@ -1544,23 +1544,33 @@ describe("GroupDetail", () => {
       ).toBeDisabled();
     });
 
-    it("still downloads a document", async () => {
+    it("opens a document inside the app, with a way back", async () => {
+      // A Word file: shown as a card, so nothing needs pdf.js or a canvas.
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(async () => ({ ok: true, blob: async () => new Blob(["doc"]) }))
+      );
       feedWithPicture([
         attachment({
           id: "a4",
           kind: "FILE",
-          filename: "bulletin.pdf",
+          filename: "minutes.docx",
+          contentType: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
           thumbUrl: null,
           fullUrl: null,
-          downloadUrl: "/bulletin.pdf",
+          downloadUrl: "/minutes.docx",
         }),
       ]);
       renderPage();
-      const link = await screen.findByRole("link", { name: "bulletin.pdf" });
-      expect(link).toHaveAttribute("href", "/bulletin.pdf");
-      expect(link).toHaveAttribute("download", "bulletin.pdf");
-      // Its own browsing context, so an installed app is not left with no way back.
-      expect(link).toHaveAttribute("target", "_blank");
+      // A button, not a link: a link is what iOS opened over the whole app.
+      expect(screen.queryByRole("link", { name: /minutes\.docx/ })).not.toBeInTheDocument();
+      await userEvent.click(await screen.findByRole("button", { name: "Open minutes.docx" }));
+
+      const dialog = await screen.findByRole("dialog", { name: "minutes.docx" });
+      expect(await within(dialog).findByText(/can't be previewed here/)).toBeInTheDocument();
+      await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+      vi.unstubAllGlobals();
     });
 
     describe("on the Files tab", () => {
@@ -1576,10 +1586,11 @@ describe("GroupDetail", () => {
         attachment: attachment({
           id: "a5",
           kind: "FILE",
-          filename: "bulletin.pdf",
+          filename: "notes.txt",
+          contentType: "text/plain",
           thumbUrl: null,
           fullUrl: null,
-          downloadUrl: "/bulletin.pdf",
+          downloadUrl: "/notes.txt",
         }),
       };
 
@@ -1599,13 +1610,21 @@ describe("GroupDetail", () => {
         expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       });
 
-      it("keeps Open as a download link for a document", async () => {
+      it("opens a document from Open inside the app", async () => {
+        vi.stubGlobal(
+          "fetch",
+          vi.fn(async () => ({ ok: true, blob: async () => new Blob(["Agenda"]) }))
+        );
         stub({ files: [documentFile] });
         await openFiles();
-        const link = await screen.findByRole("link", { name: "Open" });
-        expect(link).toHaveAttribute("href", "/bulletin.pdf");
-        expect(link).toHaveAttribute("target", "_blank");
-        expect(screen.queryByRole("button", { name: "Open" })).not.toBeInTheDocument();
+        expect(screen.queryByRole("link", { name: "Open" })).not.toBeInTheDocument();
+        await userEvent.click(await screen.findByRole("button", { name: "Open" }));
+
+        const dialog = await screen.findByRole("dialog", { name: "notes.txt" });
+        expect(await within(dialog).findByText("Agenda")).toBeInTheDocument();
+        await userEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        vi.unstubAllGlobals();
       });
     });
   });

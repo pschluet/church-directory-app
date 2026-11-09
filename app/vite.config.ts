@@ -162,6 +162,10 @@ export default defineConfig(({ mode }) => {
           // can run this app takes the woff2, and precaching the pair would
           // download 96KB nobody ever requests.
           globPatterns: ["**/*.{js,css,html,woff2,svg,ico,png,webmanifest}"],
+          // pdf.js and its worker (~1.7MB) are for the document viewer alone,
+          // so every install would download them for a PDF it may never open.
+          // Left to the network, they are fetched the first time one is.
+          globIgnores: ["**/assets/pdf-*.js", "**/assets/pdf.worker*.js"],
         },
         // The dev server proxies /api and /photos to the Hono server; a worker
         // sitting in front of that only makes local debugging harder.
