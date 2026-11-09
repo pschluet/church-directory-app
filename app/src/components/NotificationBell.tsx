@@ -1,7 +1,12 @@
 import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "./nav";
-import { NOTIFICATION_LABELS, notificationPath as notificationHref, type InboxDto } from "@shared";
+import {
+  NOTIFICATION_LABELS,
+  notificationPath as notificationHref,
+  type InboxDto,
+  type NotificationDto,
+} from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
 import { formatPostedAt } from "../lib/format";
@@ -46,8 +51,8 @@ export function inboxQueryOptions() {
  * locks page scrolling, which is right for a full-screen Modal and wrong for a
  * popover anchored in a header.
  *
- * Opening it marks everything read, which is what the requirement asks for --
- * "when the notifications are viewed, the badge should go away".
+ * Opening it reads nothing: a notification is read once it is clicked, and
+ * "Mark all read" in the panel's header clears the rest in one go.
  */
 export function NotificationBell({ className = "" }: { className?: string }) {
   const queryClient = useQueryClient();
@@ -78,11 +83,60 @@ export function NotificationBell({ className = "" }: { className?: string }) {
 
   const inboxQuery = useQuery(inboxQueryOptions());
 
-  const markRead = useMutation({
+  /*
+   * Set for a moment after "Mark all read", so the rows let go of their unread
+   * marks one after another rather than all in the same frame. Purely visual:
+   * the cache has already changed by the time this is read.
+   */
+  const [sweeping, setSweeping] = useState(false);
+  useEffect(() => {
+    if (!sweeping) return;
+    const timer = window.setTimeout(() => setSweeping(false), 900);
+    return () => window.clearTimeout(timer);
+  }, [sweeping]);
+
+  /*
+   * Both mutations write optimistically, so the bell -- and the home-screen
+   * icon, which `useAppBadge` drives off this same cache entry -- change with
+   * the tap rather than a round trip later.
+   *
+   * Then they settle against the server, and that is not optional: without it
+   * a failed write leaves the badge wrong indefinitely (there is no poll to
+   * correct it), and a push arriving mid-flight can refetch pre-commit state
+   * and strand it at the old number instead.
+   *
+   * Failures are deliberately silent. A read receipt is a background courtesy,
+   * and a warning about it would be more disruptive than the failure -- the
+   * badge coming back after the settle is the signal, and an honest one.
+   * Handled explicitly so the rejection is not merely unobserved.
+   */
+  const settle = () => queryClient.invalidateQueries({ queryKey: qk.notifications() });
+
+  const markOneRead = useMutation({
+    mutationFn: (id: string) =>
+      api(`/notifications/${id}/read`, { method: "POST", withOrg: false }),
+    onMutate: (id) => {
+      queryClient.setQueryData<InboxDto>(qk.notifications(), (previous) => {
+        if (!previous) return previous;
+        const target = previous.notifications.find((n) => n.id === id);
+        if (!target || target.read) return previous;
+        return {
+          // The count can include unread notifications past the page the panel
+          // lists, so it is decremented rather than recounted from the list.
+          unreadCount: Math.max(0, previous.unreadCount - 1),
+          notifications: previous.notifications.map((n) =>
+            n.id === id ? { ...n, read: true } : n
+          ),
+        };
+      });
+    },
+    onSettled: settle,
+    onError: (err) => console.warn("Could not mark the notification read", err),
+  });
+
+  const markAllRead = useMutation({
     mutationFn: () => api("/notifications/read", { method: "POST", withOrg: false }),
     onMutate: () => {
-      // Optimistic, so the badge goes as the panel opens rather than a round
-      // trip later.
       queryClient.setQueryData<InboxDto>(qk.notifications(), (previous) =>
         previous
           ? {
@@ -92,21 +146,7 @@ export function NotificationBell({ className = "" }: { className?: string }) {
           : previous
       );
     },
-    /*
-     * Not optional, and it used to be: this said "a failure is corrected by the
-     * next poll", and there is no next poll. Without settling against the
-     * server a failed mark-read leaves the badge reading 0 forever, and a push
-     * arriving mid-flight can refetch pre-commit state and strand it at the old
-     * number instead. Re-reading once is what makes the guess above safe.
-     */
-    onSettled: () => queryClient.invalidateQueries({ queryKey: qk.notifications() }),
-    /*
-     * Deliberately silent. Marking notifications read is a background
-     * courtesy, and a warning about it failing would be more disruptive than
-     * the failure -- the badge reappearing after `onSettled` re-reads is the
-     * signal, and it is an honest one. Handled explicitly rather than left to
-     * the default so the rejection is not merely unobserved.
-     */
+    onSettled: settle,
     onError: (err) => console.warn("Could not mark notifications read", err),
   });
 
@@ -167,12 +207,19 @@ export function NotificationBell({ className = "" }: { className?: string }) {
   const unread = inbox?.unreadCount ?? 0;
   const notifications = inbox?.notifications ?? [];
 
+  /*
+   * Opening the panel reads nothing. It used to mark everything read, which
+   * cleared the badge for notifications nobody had looked at past their title;
+   * now each one is read when it is clicked, and "Mark all read" is the
+   * explicit way to clear the rest.
+   */
   function toggle(): void {
-    setOpen((wasOpen) => {
-      // Only on the way open, and only when there is something to clear.
-      if (!wasOpen && unread > 0) markRead.mutate();
-      return !wasOpen;
-    });
+    setOpen((wasOpen) => !wasOpen);
+  }
+
+  function markEverythingRead(): void {
+    setSweeping(true);
+    markAllRead.mutate();
   }
 
   return (
@@ -216,36 +263,57 @@ export function NotificationBell({ className = "" }: { className?: string }) {
           role="dialog"
           aria-label="Notifications"
           style={shift > 0 ? { right: -shift } : undefined}
-          className="absolute right-0 z-30 mt-1 w-72 max-w-[calc(100vw-2rem)] overflow-hidden rounded-md border border-line bg-surface text-left shadow-lg"
+          className="absolute right-0 z-30 mt-1 w-80 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-line bg-surface text-left shadow-xl"
         >
+          <div className="flex items-center justify-between gap-2 border-b border-line bg-surface-muted px-3 py-2">
+            <div className="flex min-w-0 items-center gap-2">
+              <h2 className="text-sm font-bold text-ink">Notifications</h2>
+              {unread > 0 ? (
+                <span
+                  aria-live="polite"
+                  className="inline-flex items-center rounded-full bg-primary px-2 text-[0.6875rem] font-bold leading-5 text-white"
+                >
+                  {unread} new
+                </span>
+              ) : notifications.length > 0 ? (
+                <span
+                  aria-live="polite"
+                  className="inline-flex items-center gap-1 text-xs text-ink-muted"
+                >
+                  <CheckIcon className="h-3.5 w-3.5" />
+                  All caught up
+                </span>
+              ) : null}
+            </div>
+            {unread > 0 && (
+              <button
+                type="button"
+                onClick={markEverythingRead}
+                className="inline-flex shrink-0 items-center gap-1 rounded-md px-2 py-1 text-xs font-bold text-primary transition hover:bg-primary/10 focus-visible:bg-primary/10"
+              >
+                <DoubleCheckIcon className="h-4 w-4" />
+                Mark all read
+              </button>
+            )}
+          </div>
+
           {notifications.length === 0 ? (
             <p className="px-3 py-4 text-sm text-ink-muted">Nothing new.</p>
           ) : (
-            <ul className="max-h-80 divide-y divide-line overflow-y-auto">
-              {notifications.map((notification) => (
+            <ul className="max-h-96 divide-y divide-line overflow-y-auto">
+              {notifications.map((notification, index) => (
                 <li key={notification.id}>
-                  <Link
-                    to={notificationHref(notification)}
-                    onClick={() => setOpen(false)}
-                    className="block px-3 py-2.5 transition hover:bg-surface-muted"
-                  >
-                    {/*
-                     * The title is the whole message for a prayer request
-                     * notification, so it gets the emphasis and the unread ones
-                     * are the ones in full-strength ink.
-                     */}
-                    <span
-                      className={`block truncate font-bold ${
-                        notification.read ? "text-ink-muted" : "text-ink"
-                      }`}
-                    >
-                      {notification.title}
-                    </span>
-                    <span className="block text-xs text-ink-muted">
-                      {NOTIFICATION_LABELS[notification.type]} ·{" "}
-                      {formatPostedAt(notification.createdAt, now)}
-                    </span>
-                  </Link>
+                  <NotificationRow
+                    notification={notification}
+                    now={now}
+                    // Staggered only for the sweep, so a single click or a
+                    // refetch changes its row at once.
+                    delayMs={sweeping ? Math.min(index, 10) * 45 : 0}
+                    onClick={() => {
+                      if (!notification.read) markOneRead.mutate(notification.id);
+                      setOpen(false);
+                    }}
+                  />
                 </li>
               ))}
             </ul>
@@ -253,5 +321,102 @@ export function NotificationBell({ className = "" }: { className?: string }) {
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One line of the panel.
+ *
+ * Unread and read differ in more than colour, so the difference survives a
+ * glance, a small screen and somebody who cannot tell red from grey: an unread
+ * row is tinted, hangs off a rail down its left edge, and has a bold title. All of it is
+ * rendered in both states and transitioned, so a row visibly settles into
+ * "read" -- one after another when everything is marked at once -- instead of
+ * being swapped for a different element.
+ */
+function NotificationRow({
+  notification,
+  now,
+  delayMs,
+  onClick,
+}: {
+  notification: NotificationDto;
+  now: Date;
+  delayMs: number;
+  onClick: () => void;
+}) {
+  const unread = !notification.read;
+  const transition = "transition-all duration-300 ease-out motion-reduce:transition-none";
+  const delay = delayMs > 0 ? { transitionDelay: `${delayMs}ms` } : undefined;
+
+  return (
+    <Link
+      to={notificationHref(notification)}
+      onClick={onClick}
+      data-unread={unread || undefined}
+      style={delay}
+      className={`relative flex items-start gap-3 px-3 py-3 ${transition} ${
+        unread ? "bg-primary/[0.06] hover:bg-primary/10" : "bg-surface hover:bg-surface-muted"
+      }`}
+    >
+      {/* The rail: unread rows hang off it, and it retracts as they are read. */}
+      <span
+        aria-hidden="true"
+        style={delay}
+        className={`absolute inset-y-0 left-0 w-[3px] origin-top rounded-r bg-primary ${transition} ${
+          unread ? "scale-y-100" : "scale-y-0"
+        }`}
+      />
+      <span className="min-w-0 flex-1">
+        {unread && <span className="sr-only">Unread: </span>}
+        {/*
+         * The title is the whole message for a prayer request notification,
+         * so it gets the emphasis, and the unread ones are the ones in
+         * full-strength ink.
+         */}
+        <span
+          style={delay}
+          className={`block truncate ${transition} ${
+            unread ? "font-bold text-ink" : "font-normal text-ink-muted"
+          }`}
+        >
+          {notification.title}
+        </span>
+        <span className="block text-xs text-ink-muted">
+          {NOTIFICATION_LABELS[notification.type]} · {formatPostedAt(notification.createdAt, now)}
+        </span>
+      </span>
+    </Link>
+  );
+}
+
+function CheckIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 20 20"
+      className={`${className} fill-none stroke-current`}
+      strokeWidth={2.4}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m4.5 10.5 3.5 3.5 7.5-8" />
+    </svg>
+  );
+}
+
+function DoubleCheckIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      aria-hidden="true"
+      viewBox="0 0 20 20"
+      className={`${className} fill-none stroke-current`}
+      strokeWidth={1.8}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <path d="m1.5 10.5 3.5 3.5 7-8" />
+      <path d="m9.5 13.5.5.5 7-8" />
+    </svg>
   );
 }

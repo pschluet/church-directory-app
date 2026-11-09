@@ -148,6 +148,25 @@ export async function loadInbox(q: Queryable, appUserId: string): Promise<Inbox>
   };
 }
 
+/**
+ * One notification, because the member clicked it. Scoped to the caller, so
+ * somebody else's id is a silent no-op rather than a way to probe for it.
+ * Returns whether anything changed -- false for one already read.
+ */
+export async function markRead(
+  q: Queryable,
+  appUserId: string,
+  notificationId: string
+): Promise<boolean> {
+  const { rows } = await q.query<{ id: string }>(
+    `update notifications set read_at = now()
+      where id = $2 and app_user_id = $1 and read_at is null
+      returning id`,
+    [appUserId, notificationId]
+  );
+  return rows.length > 0;
+}
+
 /** Everything unread, in one statement. Returns how many were cleared. */
 export async function markAllRead(q: Queryable, appUserId: string): Promise<number> {
   const { rows } = await q.query<{ id: string }>(

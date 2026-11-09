@@ -137,6 +137,14 @@ describe.skipIf(!hasDb)("notification emails", () => {
       expect(await pending()).toEqual([]);
     });
 
+    it("skips one the member clicked in the app", async () => {
+      await optIn(member);
+      await postPrayerRequest();
+      const { body } = await as(member).call("GET", "/api/notifications");
+      await as(member).call("POST", `/api/notifications/${body.notifications[0].id}/read`);
+      expect(await pending()).toEqual([]);
+    });
+
     it("skips a notification that no longer leads anywhere", async () => {
       await optIn(member);
       const id = await postPrayerRequest();

@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../auth";
 import { audit } from "../audit";
-import { loadInbox, markAllRead } from "../services/notifications";
+import { loadInbox, markAllRead, markRead } from "../services/notifications";
 import { HTTPException } from "hono/http-exception";
 import {
   groupNotificationPrefUpdateSchema,
@@ -33,17 +33,29 @@ routes.get("/", async (c) => {
 });
 
 /**
- * "When the notifications are viewed, the badge should go away."
+ * "Mark all read", from the panel's header.
  *
- * Everything unread at once rather than per notification: the badge is a count
- * of things not yet looked at, and opening the panel is looking at them.
+ * Opening the panel no longer does this: a notification is read once it has
+ * been clicked, and this is the explicit way to clear the rest at once.
  *
  * Not audited. It is a read receipt, not a change -- nothing any other member
- * can see is different afterwards, and it fires every time the bell is opened.
+ * can see is different afterwards.
  */
 routes.post("/read", async (c) => {
   const caller = c.get("caller");
   const cleared = await markAllRead(c.get("db"), caller.appUserId);
+  return c.json({ cleared });
+});
+
+/**
+ * One notification, as the member clicks it in the panel. Not audited, for the
+ * same reason as the route above. Somebody else's id clears nothing and says
+ * so the same way an already-read one does, so it reveals nothing.
+ */
+routes.post("/:id/read", async (c) => {
+  const caller = c.get("caller");
+  const id = uuidSchema.parse(c.req.param("id"));
+  const cleared = (await markRead(c.get("db"), caller.appUserId, id)) ? 1 : 0;
   return c.json({ cleared });
 });
 
