@@ -194,6 +194,32 @@ describe("MenuButton placement", () => {
     expect(screen.getByRole("menu").className).toContain("top-full");
   });
 
+  describe("beneath the sticky header", () => {
+    afterEach(() => {
+      document.documentElement.style.removeProperty("--app-header-height");
+    });
+
+    it("stays below when the panel would only fit above by going under the header", async () => {
+      // An iPhone SE: the button sits 500px down, but 70px of that is header, so
+      // a 450px panel flipped up would have its first items hidden behind it.
+      document.documentElement.style.setProperty("--app-header-height", "70px");
+      stubGeometry({ roomBelow: 256, panelHeight: 450 });
+      const { trigger } = renderMenu();
+      await userEvent.click(trigger);
+
+      expect(screen.getByRole("menu").className).toContain("top-full");
+    });
+
+    it("still flips above when the panel fits between the header and the button", async () => {
+      document.documentElement.style.setProperty("--app-header-height", "70px");
+      stubGeometry({ roomBelow: 20, panelHeight: 120 });
+      const { trigger } = renderMenu();
+      await userEvent.click(trigger);
+
+      expect(screen.getByRole("menu").className).toContain("bottom-full");
+    });
+  });
+
   it("measures again on the next open, rather than reusing the last placement", async () => {
     stubGeometry({ roomBelow: 20, panelHeight: 120 });
     const { trigger } = renderMenu();
