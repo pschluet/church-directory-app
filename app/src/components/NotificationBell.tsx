@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useId, useLayoutEffect, useRef, useState } from "react";
+import { useEffect, useId, useLayoutEffect, useRef, useState } from "react";
 import { queryOptions, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Link } from "./nav";
 import {
@@ -6,7 +6,6 @@ import {
   notificationPath as notificationHref,
   type InboxDto,
   type NotificationDto,
-  type NotificationType,
 } from "@shared";
 import { api } from "../lib/api";
 import { qk } from "../lib/queryKeys";
@@ -328,10 +327,10 @@ export function NotificationBell({ className = "" }: { className?: string }) {
 /**
  * One line of the panel.
  *
- * Unread and read differ in four ways at once, so the difference survives a
+ * Unread and read differ in three ways at once, so the difference survives a
  * glance, a small screen and somebody who cannot tell red from grey: a tinted
- * row with a rail down its left edge, a coloured glyph, a bold title, and a
- * live dot on the glyph that becomes a check mark once read. All of it is
+ * row with a rail down its left edge, a bold title, and a live dot at the end
+ * of the row that becomes a check mark once read. All of it is
  * rendered in both states and transitioned, so a row visibly settles into
  * "read" -- one after another when everything is marked at once -- instead of
  * being swapped for a different element.
@@ -369,36 +368,6 @@ function NotificationRow({
           unread ? "scale-y-100" : "scale-y-0"
         }`}
       />
-
-      <span
-        aria-hidden="true"
-        style={delay}
-        className={`relative mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${transition} ${
-          unread
-            ? "bg-primary/10 text-primary ring-1 ring-primary/20"
-            : "bg-surface-muted text-ink-muted ring-1 ring-line"
-        }`}
-      >
-        <TypeIcon type={notification.type} className="h-[1.125rem] w-[1.125rem]" />
-
-        {/* Unread: a live dot, with a slow halo where motion is welcome. */}
-        <span
-          style={delay}
-          className={`absolute -right-0.5 -top-0.5 h-3 w-3 rounded-full border-2 border-surface bg-primary ${transition} ${
-            unread ? "notification-live scale-100 opacity-100" : "scale-0 opacity-0"
-          }`}
-        />
-        {/* Read: the dot's place taken by a quiet check mark. */}
-        <span
-          style={delay}
-          className={`absolute -bottom-0.5 -right-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full border border-line bg-surface text-ink-muted ${transition} ${
-            unread ? "scale-0 opacity-0" : "scale-100 opacity-100"
-          }`}
-        >
-          <CheckIcon className="h-2.5 w-2.5" />
-        </span>
-      </span>
-
       <span className="min-w-0 flex-1">
         {unread && <span className="sr-only">Unread: </span>}
         {/*
@@ -416,6 +385,31 @@ function NotificationRow({
         </span>
         <span className="block text-xs text-ink-muted">
           {NOTIFICATION_LABELS[notification.type]} · {formatPostedAt(notification.createdAt, now)}
+        </span>
+      </span>
+
+      {/*
+       * Unread: a live dot, with a slow halo where motion is welcome. Read: the
+       * dot's place taken by a quiet check mark. Both are always rendered and
+       * cross-fade, so a row visibly settles into "read".
+       */}
+      <span
+        aria-hidden="true"
+        className="relative mt-1.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center"
+      >
+        <span
+          style={delay}
+          className={`absolute h-2.5 w-2.5 rounded-full bg-primary ${transition} ${
+            unread ? "notification-live scale-100 opacity-100" : "scale-0 opacity-0"
+          }`}
+        />
+        <span
+          style={delay}
+          className={`absolute text-ink-muted/70 ${transition} ${
+            unread ? "scale-0 opacity-0" : "scale-100 opacity-100"
+          }`}
+        >
+          <CheckIcon className="h-3.5 w-3.5" />
         </span>
       </span>
     </Link>
@@ -449,68 +443,6 @@ function DoubleCheckIcon({ className }: { className?: string }) {
     >
       <path d="m1.5 10.5 3.5 3.5 7-8" />
       <path d="m9.5 13.5.5.5 7-8" />
-    </svg>
-  );
-}
-
-/** A glyph per kind of notification, so the list can be scanned by shape. */
-function TypeIcon({ type, className }: { type: NotificationType; className?: string }) {
-  const paths: Record<NotificationType, ReactNode> = {
-    // A candle, lit.
-    PRAYER_REQUEST: (
-      <>
-        <path d="M10 2.5c1.6 1.9 2.6 3.1 2.6 4.6a2.6 2.6 0 0 1-5.2 0c0-1.5 1-2.7 2.6-4.6Z" />
-        <rect x="7.75" y="11" width="4.5" height="6.5" rx="1" />
-      </>
-    ),
-    // A clipboard waiting for its tick.
-    PRAYER_REQUEST_REVIEW: (
-      <>
-        <rect x="4.5" y="3.5" width="11" height="14" rx="2" />
-        <path d="M8 2.5h4v2.5H8z" />
-        <path d="m7.5 11 1.8 1.8 3.4-3.6" />
-      </>
-    ),
-    GROUP_POST: (
-      <path d="M4 6a2.5 2.5 0 0 1 2.5-2.5h7A2.5 2.5 0 0 1 16 6v4.5a2.5 2.5 0 0 1-2.5 2.5H9.5L6 16v-3a2 2 0 0 1-2-2Z" />
-    ),
-    GROUP_MENTION: (
-      <>
-        <circle cx="10" cy="10" r="2.75" />
-        <path d="M12.75 10v1.1a2 2 0 0 0 4 0V10a6.75 6.75 0 1 0-2.7 5.4" />
-      </>
-    ),
-    GROUP_EVENT: (
-      <>
-        <rect x="3.5" y="4.5" width="13" height="12" rx="2" />
-        <path d="M3.5 8.5h13M7 2.75v3.5M13 2.75v3.5" />
-      </>
-    ),
-    GROUP_JOIN_REQUEST: (
-      <>
-        <circle cx="8" cy="7" r="3" />
-        <path d="M2.75 16.5a5.25 5.25 0 0 1 10.5 0M15.5 6.5v5M13 9h5" />
-      </>
-    ),
-    GROUP_POST_REPORT: <path d="M5 17.5V3.5M5 4h9.5l-2 3.25 2 3.25H5" />,
-    DIRECTORY_REQUEST: (
-      <>
-        <rect x="3.5" y="3" width="12" height="14.5" rx="1.75" />
-        <circle cx="9.5" cy="8.5" r="2.25" />
-        <path d="M6 14.25a3.5 3.5 0 0 1 7 0" />
-      </>
-    ),
-  };
-  return (
-    <svg
-      aria-hidden="true"
-      viewBox="0 0 20 20"
-      className={`${className} fill-none stroke-current`}
-      strokeWidth={1.6}
-      strokeLinecap="round"
-      strokeLinejoin="round"
-    >
-      {paths[type]}
     </svg>
   );
 }
