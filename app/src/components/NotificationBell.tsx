@@ -327,10 +327,9 @@ export function NotificationBell({ className = "" }: { className?: string }) {
 /**
  * One line of the panel.
  *
- * Unread and read differ in three ways at once, so the difference survives a
- * glance, a small screen and somebody who cannot tell red from grey: a tinted
- * row with a rail down its left edge, a bold title, and a live dot at the end
- * of the row that becomes a check mark once read. All of it is
+ * Unread and read differ in more than colour, so the difference survives a
+ * glance, a small screen and somebody who cannot tell red from grey: an unread
+ * row is tinted, hangs off a rail down its left edge, and has a bold title. All of it is
  * rendered in both states and transitioned, so a row visibly settles into
  * "read" -- one after another when everything is marked at once -- instead of
  * being swapped for a different element.
@@ -385,31 +384,6 @@ function NotificationRow({
         </span>
         <span className="block text-xs text-ink-muted">
           {NOTIFICATION_LABELS[notification.type]} · {formatPostedAt(notification.createdAt, now)}
-        </span>
-      </span>
-
-      {/*
-       * Unread: a live dot, with a slow halo where motion is welcome. Read: the
-       * dot's place taken by a quiet check mark. Both are always rendered and
-       * cross-fade, so a row visibly settles into "read".
-       */}
-      <span
-        aria-hidden="true"
-        className="relative mt-1.5 flex h-3.5 w-3.5 shrink-0 items-center justify-center"
-      >
-        <span
-          style={delay}
-          className={`absolute h-2.5 w-2.5 rounded-full bg-primary ${transition} ${
-            unread ? "notification-live scale-100 opacity-100" : "scale-0 opacity-0"
-          }`}
-        />
-        <span
-          style={delay}
-          className={`absolute text-ink-muted/70 ${transition} ${
-            unread ? "scale-0 opacity-0" : "scale-100 opacity-100"
-          }`}
-        >
-          <CheckIcon className="h-3.5 w-3.5" />
         </span>
       </span>
     </Link>
