@@ -29,6 +29,7 @@ import {
   groupVisibilityLabel,
   type GroupDto,
   type GroupEventRsvpDto,
+  type GroupFileDto,
   type GroupJoinRequestDto,
   type GroupMemberDto,
   type GroupMemberRole,
@@ -62,6 +63,7 @@ import { useNavStack } from "../components/NavStack";
 import { TYPING_SIGNAL_INTERVAL_MS, typingLabel, useGroupLive } from "../components/useGroupLive";
 import { useFillViewport } from "../components/useFillViewport";
 import { useInfiniteScroll } from "../components/useInfiniteScroll";
+import { DocumentViewer } from "../components/DocumentViewer";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import { PersonPicker, type PickedPerson } from "../components/PersonPicker";
 import { useGroupAttachmentPicker } from "../components/useGroupAttachmentPicker";
@@ -2108,12 +2110,14 @@ function AttachmentStrip({
   onMediaLoad?: (() => void) | undefined;
 }) {
   const [zoomed, setZoomed] = useState<GroupPostDto["attachments"][number] | null>(null);
+  const [opened, setOpened] = useState<GroupPostDto["attachments"][number] | null>(null);
   if (attachments.length === 0) return null;
   return (
     <ul className="mt-2 flex flex-wrap gap-2">
       {zoomed?.fullUrl && (
         <PhotoLightbox src={zoomed.fullUrl} alt={zoomed.filename} onClose={() => setZoomed(null)} />
       )}
+      {opened && <DocumentViewer document={opened} onClose={() => setOpened(null)} />}
       {attachments.map((attachment) =>
         attachment.kind === "IMAGE" ? (
           <li key={attachment.id}>
@@ -2137,21 +2141,16 @@ function AttachmentStrip({
           </li>
         ) : (
           <li key={attachment.id}>
-            {/*
-             * A new browsing context, not this one: installed as a standalone
-             * app there is no back button, and iOS ignores `download` for a
-             * PDF and previews it in place -- leaving no way back to the
-             * group. In its own context iOS shows a sheet with Done instead.
-             */}
-            <a
-              href={attachment.downloadUrl ?? undefined}
-              download={attachment.filename}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="flex items-center gap-2 rounded-md border border-line bg-surface-muted px-3 py-2 text-sm font-bold text-ink hover:border-accent hover:text-accent"
+            {/* Opened inside the app: see DocumentViewer for why it is not a link. */}
+            <button
+              type="button"
+              onClick={() => setOpened(attachment)}
+              disabled={!attachment.downloadUrl}
+              aria-label={`Open ${attachment.filename}`}
+              className="flex items-center gap-2 rounded-md border border-line bg-surface-muted px-3 py-2 text-left text-sm font-bold text-ink hover:border-accent hover:text-accent"
             >
               {attachment.filename}
-            </a>
+            </button>
           </li>
         )
       )}
@@ -4121,6 +4120,7 @@ export function RsvpListModal({
 function FilesTab({ groupId }: { groupId: string }) {
   const { organizationId } = useMe();
   const [zoomed, setZoomed] = useState<{ src: string; alt: string } | null>(null);
+  const [opened, setOpened] = useState<GroupFileDto["attachment"] | null>(null);
   const filesQuery = useQuery({
     queryKey: qk.groupFiles(organizationId, groupId),
     queryFn: ({ signal }) =>
@@ -4143,6 +4143,7 @@ function FilesTab({ groupId }: { groupId: string }) {
       {zoomed && (
         <PhotoLightbox src={zoomed.src} alt={zoomed.alt} onClose={() => setZoomed(null)} />
       )}
+      {opened && <DocumentViewer document={opened} onClose={() => setOpened(null)} />}
       {files.map((file) => (
         <li key={file.attachment.id} className="flex items-start justify-between gap-3 p-3">
           <div className="flex min-w-0 items-start gap-3">
@@ -4183,16 +4184,15 @@ function FilesTab({ groupId }: { groupId: string }) {
               Open
             </button>
           ) : (
-            // Its own browsing context, for the same reason as AttachmentStrip's.
-            <a
-              href={file.attachment.fullUrl ?? file.attachment.downloadUrl ?? undefined}
-              target="_blank"
-              download={file.attachment.downloadUrl ? file.attachment.filename : undefined}
-              rel="noopener noreferrer"
+            // Opened inside the app, as in AttachmentStrip: see DocumentViewer.
+            <button
+              type="button"
+              onClick={() => setOpened(file.attachment)}
+              disabled={!file.attachment.downloadUrl}
               className="shrink-0 font-bold text-accent hover:underline"
             >
               Open
-            </a>
+            </button>
           )}
         </li>
       ))}
