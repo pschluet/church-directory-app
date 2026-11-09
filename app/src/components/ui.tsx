@@ -636,13 +636,32 @@ export function MenuButton({
 
     // The part that can be seen, in the same coordinates as the button's box.
     const viewport = window.visualViewport;
-    const visibleTop = originTop + (viewport?.offsetTop ?? 0);
-    const visibleBottom = visibleTop + (viewport?.height ?? window.innerHeight);
+    const viewportTop = originTop + (viewport?.offsetTop ?? 0);
+    const visibleBottom = viewportTop + (viewport?.height ?? window.innerHeight);
+    /*
+     * The sticky app header covers the top of that, and sits over a menu (z-40
+     * against z-30). On a short phone -- an iPhone SE -- the person page's menu
+     * flipped up into that strip and its first items were hidden behind the
+     * header. AppShell publishes the header's height; zero where there is none.
+     */
+    const headerHeight =
+      parseFloat(
+        getComputedStyle(document.documentElement).getPropertyValue("--app-header-height")
+      ) || 0;
+    const visibleTop = viewportTop + headerHeight;
     const roomBelow = visibleBottom - buttonBox.bottom;
     const roomAbove = buttonBox.top - visibleTop;
-    // Only flip when there is genuinely more room the other way, so a panel
-    // taller than the whole viewport does not end up pinned to the top.
-    const flip = roomBelow < panelHeight + GAP && roomAbove > roomBelow;
+    /*
+     * Only flip when there is genuinely more room the other way, so a panel
+     * taller than the whole viewport does not end up pinned to the top. An
+     * in-page panel must also fit above outright: one that hangs below can be
+     * scrolled into view, but one cut off at the top is under the header and
+     * out of reach. A portalled panel is clamped to the top edge instead.
+     */
+    const flip =
+      roomBelow < panelHeight + GAP &&
+      roomAbove > roomBelow &&
+      (portal || roomAbove >= panelHeight + GAP);
     setPlacement(flip ? "above" : "below");
     if (portal) {
       const horizontal =
