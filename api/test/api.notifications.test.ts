@@ -540,6 +540,66 @@ describe.skipIf(!hasDb)("notifications", () => {
     });
   });
 
+  describe("marking one read", () => {
+    it("reads only the one clicked", async () => {
+      await post("First");
+      await post("Second");
+      const before = (await inbox(member)).body;
+      const second = before.notifications[0];
+      expect(second).toMatchObject({ title: "Second", read: false });
+
+      const { status, body } = await as(member).call(
+        "POST",
+        `/api/notifications/${second.id}/read`
+      );
+      expect(status).toBe(200);
+      expect(body.cleared).toBe(1);
+
+      const after = (await inbox(member)).body;
+      expect(after.unreadCount).toBe(1);
+      expect(after.notifications[0]).toMatchObject({ title: "Second", read: true });
+      expect(after.notifications[1]).toMatchObject({ title: "First", read: false });
+    });
+
+    it("clears nothing the second time", async () => {
+      await post();
+      const [n] = (await inbox(member)).body.notifications;
+      await as(member).call("POST", `/api/notifications/${n.id}/read`);
+      const { body } = await as(member).call("POST", `/api/notifications/${n.id}/read`);
+      expect(body.cleared).toBe(0);
+    });
+
+    it("cannot read somebody else's, and says so no differently", async () => {
+      await post();
+      const [theirs] = (await inbox(other)).body.notifications;
+
+      const { status, body } = await as(member).call(
+        "POST",
+        `/api/notifications/${theirs.id}/read`
+      );
+      expect(status).toBe(200);
+      expect(body.cleared).toBe(0);
+      expect((await inbox(other)).body.unreadCount).toBe(1);
+      expect((await inbox(member)).body.unreadCount).toBe(1);
+    });
+
+    it("rejects an id that is not a uuid", async () => {
+      const { status } = await as(member).call("POST", "/api/notifications/nope/read");
+      expect(status).toBe(400);
+    });
+
+    it("is not audited", async () => {
+      await post();
+      const [n] = (await inbox(member)).body.notifications;
+      const count = async () =>
+        (await db().query<{ count: string }>("select count(*)::text as count from audit_log"))
+          .rows[0]!.count;
+      const before = await count();
+      await as(member).call("POST", `/api/notifications/${n.id}/read`);
+      expect(await count()).toBe(before);
+    });
+  });
+
   describe("notifications that no longer lead anywhere", () => {
     it("drops one whose request has aged out of the window", async () => {
       const id = await post();

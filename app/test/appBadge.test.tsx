@@ -75,21 +75,69 @@ function Harness() {
 }
 
 describe("useAppBadge", () => {
-  it("puts the bell's count on the icon, and clears it when the bell is opened", async () => {
-    installBadging();
-    let current: InboxDto = { unreadCount: 3, notifications: [] };
+  const item = (id: string) => ({
+    id,
+    type: "PRAYER_REQUEST" as const,
+    title: `Request ${id}`,
+    prayerRequestId: `pr-${id}`,
+    groupId: null,
+    groupPostId: null,
+    groupPostParentId: null,
+    groupPostParentKind: null,
+    directoryRequestId: null,
+    createdAt: new Date().toISOString(),
+    read: false,
+  });
+
+  /** A server that honours both mark-read routes. */
+  function serve(initial: InboxDto) {
+    let current = initial;
     apiMock.mockImplementation((path: string) => {
       if (path === "/notifications") return Promise.resolve(current);
-      current = { unreadCount: 0, notifications: [] };
-      return Promise.resolve({ cleared: 3 });
+      const one = /^\/notifications\/([^/]+)\/read$/.exec(path);
+      current = {
+        unreadCount: one ? current.unreadCount - 1 : 0,
+        notifications: current.notifications.map((n) =>
+          !one || n.id === one[1] ? { ...n, read: true } : n
+        ),
+      };
+      return Promise.resolve({ cleared: 1 });
     });
+  }
+
+  it("puts the bell's count on the icon, and leaves it there when the bell is only opened", async () => {
+    installBadging();
+    serve({ unreadCount: 3, notifications: [item("1"), item("2"), item("3")] });
 
     renderWithProviders(<Harness />);
-
     await waitFor(() => expect(setAppBadge).toHaveBeenCalledWith(3));
-    expect(clearAppBadge).not.toHaveBeenCalled();
 
     await userEvent.click(screen.getByRole("button", { name: /notifications, 3 unread/i }));
+    expect(screen.getByRole("dialog", { name: "Notifications" })).toBeInTheDocument();
+    expect(clearAppBadge).not.toHaveBeenCalled();
+    expect(setAppBadge).toHaveBeenLastCalledWith(3);
+  });
+
+  it("follows a single click down by one", async () => {
+    installBadging();
+    serve({ unreadCount: 3, notifications: [item("1"), item("2"), item("3")] });
+
+    renderWithProviders(<Harness />);
+    await userEvent.click(await screen.findByRole("button", { name: /3 unread/i }));
+    await userEvent.click(screen.getByRole("link", { name: /Request 2/ }));
+
+    await waitFor(() => expect(setAppBadge).toHaveBeenLastCalledWith(2));
+    expect(screen.getByRole("button", { name: "Notifications, 2 unread" })).toBeInTheDocument();
+    expect(clearAppBadge).not.toHaveBeenCalled();
+  });
+
+  it("clears the icon on Mark all read", async () => {
+    installBadging();
+    serve({ unreadCount: 3, notifications: [item("1"), item("2"), item("3")] });
+
+    renderWithProviders(<Harness />);
+    await userEvent.click(await screen.findByRole("button", { name: /3 unread/i }));
+    await userEvent.click(screen.getByRole("button", { name: "Mark all read" }));
 
     await waitFor(() => expect(clearAppBadge).toHaveBeenCalled());
   });

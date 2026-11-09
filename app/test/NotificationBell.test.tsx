@@ -21,20 +21,33 @@ function inbox(overrides: Partial<InboxDto> = {}): InboxDto {
 }
 
 /**
- * Answers the inbox read, and records the mark-read call.
+ * Answers the inbox read, and both mark-read calls.
  *
- * Stateful, because the bell now settles its optimistic update against the
- * server: mark-read invalidates the inbox, so a stub that kept replying with
+ * Stateful, because the bell settles its optimistic updates against the
+ * server: a mark-read invalidates the inbox, so a stub that kept replying with
  * the old unread count would be modelling a server that ignores the write, and
  * the badge would correctly come back.
  *
- * `afterRead` overrides what the inbox reports once the write has happened, for
- * the case where the two legitimately disagree.
+ * `afterRead` overrides what the inbox reports once "Mark all read" has
+ * happened, for the case where the two legitimately disagree.
  */
 function stub(value: InboxDto, { afterRead }: { afterRead?: InboxDto } = {}) {
   let current = value;
   apiMock.mockImplementation((path: string) => {
     if (path === "/notifications") return Promise.resolve(current);
+    const one = /^\/notifications\/([^/]+)\/read$/.exec(path);
+    if (one) {
+      const target = current.notifications.find((n) => n.id === one[1] && !n.read);
+      if (target) {
+        current = {
+          unreadCount: current.unreadCount - 1,
+          notifications: current.notifications.map((n) =>
+            n.id === target.id ? { ...n, read: true } : n
+          ),
+        };
+      }
+      return Promise.resolve({ cleared: target ? 1 : 0 });
+    }
     const cleared = current.unreadCount;
     current = afterRead ?? {
       unreadCount: 0,
@@ -139,21 +152,121 @@ describe("NotificationBell", () => {
     ]);
   });
 
-  it("clears the badge as the panel opens", async () => {
-    stub(inbox({ unreadCount: 2, notifications: [notification("1", "For Fr. John")] }));
+  it("leaves everything unread when the panel is only opened", async () => {
+    stub(
+      inbox({
+        unreadCount: 2,
+        notifications: [notification("1", "For Fr. John"), notification("2", "For safe travels")],
+      })
+    );
     renderWithProviders(<NotificationBell />);
 
     await userEvent.click(await screen.findByRole("button", { name: /2 unread/ }));
 
-    await waitFor(() =>
-      expect(apiMock).toHaveBeenCalledWith("/notifications/read", {
-        method: "POST",
-        withOrg: false,
+    expect(screen.getByRole("dialog", { name: "Notifications" })).toBeInTheDocument();
+    expect(screen.getByText("2 new")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Notifications, 2 unread" })).toBeInTheDocument();
+    expect(apiMock).not.toHaveBeenCalledWith("/notifications/read", expect.anything());
+    expect(apiMock.mock.calls.filter(([path]) => String(path).endsWith("/read"))).toHaveLength(0);
+  });
+
+  it("tells unread from read, to a screen reader as well as by eye", async () => {
+    stub(
+      inbox({
+        unreadCount: 1,
+        notifications: [notification("1", "For Fr. John"), notification("2", "Old news", true)],
       })
     );
-    // Optimistically, so the badge goes with the tap rather than a round trip
-    // later -- and it stays gone once the settle refetch agrees.
+    renderWithProviders(<NotificationBell />);
+    await userEvent.click(await screen.findByRole("button", { name: /1 unread/ }));
+
+    const [unreadLink, readLink] = screen.getAllByRole("link");
+    expect(unreadLink).toHaveAccessibleName(/^Unread:\s*For Fr\. John/);
+    expect(unreadLink).toHaveAttribute("data-unread", "true");
+    expect(readLink).toHaveAccessibleName(/^Old news/);
+    expect(readLink).not.toHaveAttribute("data-unread");
+  });
+
+  it("marks one read when it is clicked, and only that one", async () => {
+    stub(
+      inbox({
+        unreadCount: 2,
+        notifications: [notification("1", "For Fr. John"), notification("2", "For safe travels")],
+      })
+    );
+    renderWithProviders(<NotificationBell />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /2 unread/ }));
+    await userEvent.click(screen.getByRole("link", { name: /For Fr\. John/ }));
+
+    expect(apiMock).toHaveBeenCalledWith("/notifications/1/read", {
+      method: "POST",
+      withOrg: false,
+    });
+    expect(apiMock).not.toHaveBeenCalledWith("/notifications/2/read", expect.anything());
+    expect(apiMock).not.toHaveBeenCalledWith("/notifications/read", expect.anything());
+    // Optimistically, and still so once the settle refetch agrees.
+    expect(
+      await screen.findByRole("button", { name: "Notifications, 1 unread" })
+    ).toBeInTheDocument();
+
+    await userEvent.click(screen.getByRole("button", { name: /1 unread/ }));
+    expect(screen.getByRole("link", { name: /^For Fr\. John/ })).not.toHaveAttribute("data-unread");
+    expect(screen.getByRole("link", { name: /^Unread:\s*For safe travels/ })).toBeInTheDocument();
+  });
+
+  it("makes no call for clicking one already read", async () => {
+    stub(
+      inbox({
+        unreadCount: 1,
+        notifications: [notification("1", "For Fr. John"), notification("2", "Old news", true)],
+      })
+    );
+    renderWithProviders(<NotificationBell />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /1 unread/ }));
+    await userEvent.click(screen.getByRole("link", { name: /Old news/ }));
+
+    expect(apiMock.mock.calls.filter(([path]) => String(path).endsWith("/read"))).toHaveLength(0);
+    expect(screen.getByRole("button", { name: "Notifications, 1 unread" })).toBeInTheDocument();
+  });
+
+  it("decrements rather than recounts, for unread past the listed page", async () => {
+    stub(inbox({ unreadCount: 42, notifications: [notification("1", "For Fr. John")] }));
+    renderWithProviders(<NotificationBell />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /42 unread/ }));
+    await userEvent.click(screen.getByRole("link", { name: /For Fr\. John/ }));
+
+    expect(
+      await screen.findByRole("button", { name: "Notifications, 41 unread" })
+    ).toBeInTheDocument();
+  });
+
+  it("marks everything read from the header, and says it is all caught up", async () => {
+    stub(
+      inbox({
+        unreadCount: 2,
+        notifications: [notification("1", "For Fr. John"), notification("2", "For safe travels")],
+      })
+    );
+    renderWithProviders(<NotificationBell />);
+
+    await userEvent.click(await screen.findByRole("button", { name: /2 unread/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Mark all read" }));
+
+    expect(apiMock).toHaveBeenCalledWith("/notifications/read", {
+      method: "POST",
+      withOrg: false,
+    });
     expect(await screen.findByRole("button", { name: "Notifications" })).toBeInTheDocument();
+    // The panel stays open so the member sees it happen.
+    expect(screen.getByRole("dialog", { name: "Notifications" })).toBeInTheDocument();
+    expect(screen.getByText("All caught up")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+    for (const link of screen.getAllByRole("link")) {
+      expect(link).not.toHaveAttribute("data-unread");
+    }
   });
 
   it("settles the badge against the server rather than trusting the guess", async () => {
@@ -174,6 +287,7 @@ describe("NotificationBell", () => {
     renderWithProviders(<NotificationBell />);
 
     await userEvent.click(await screen.findByRole("button", { name: /2 unread/ }));
+    await userEvent.click(screen.getByRole("button", { name: "Mark all read" }));
 
     expect(
       await screen.findByRole("button", { name: "Notifications, 1 unread" })
@@ -196,13 +310,14 @@ describe("NotificationBell", () => {
     expect(reads()).toBe(before);
   });
 
-  it("does not call mark-read when there was nothing unread", async () => {
+  it("offers no Mark all read when there is nothing unread", async () => {
     stub(inbox({ unreadCount: 0, notifications: [notification("1", "Old news", true)] }));
     renderWithProviders(<NotificationBell />);
 
     await userEvent.click(await screen.findByRole("button", { name: "Notifications" }));
     expect(screen.getByRole("dialog", { name: "Notifications" })).toBeInTheDocument();
-    expect(apiMock).not.toHaveBeenCalledWith("/notifications/read", expect.anything());
+    expect(screen.queryByRole("button", { name: "Mark all read" })).not.toBeInTheDocument();
+    expect(screen.getByText("All caught up")).toBeInTheDocument();
   });
 
   it("distinguishes a request waiting for review from a posted one", async () => {

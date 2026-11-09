@@ -370,3 +370,23 @@
     animation: message-flash-still 2000ms ease-out;
   }
 }
+
+/*
+ * The dot on an unread notification in the bell's panel: a slow halo breathing
+ * out from it, so the unread rows read as live without anything flashing.
+ * Nothing moves under reduced motion -- the dot itself is still there.
+ */
+@keyframes notification-live {
+  0% {
+    box-shadow: 0 0 0 0 color-mix(in srgb, var(--color-primary) 45%, transparent);
+  }
+  70%,
+  100% {
+    box-shadow: 0 0 0 6px color-mix(in srgb, var(--color-primary) 0%, transparent);
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .notification-live {
+    animation: notification-live 2.4s ease-out infinite;
+  }
+}
