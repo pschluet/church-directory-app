@@ -710,6 +710,25 @@ describe("AdminUsers last active", () => {
     expect(screen.getByText("Never active")).toBeInTheDocument();
   });
 
+  it("shows the exact time when the line is tapped, and back again", async () => {
+    mockLoad([], [], [recent]);
+    renderPage();
+
+    const user = userEvent.setup();
+    const exact = new Date(recent.lastSeenAt!).toLocaleString(undefined, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    });
+    await user.click(await screen.findByRole("button", { name: "Active 2 hours ago" }));
+    expect(screen.getByRole("button", { name: `Active ${exact}` })).toHaveAttribute(
+      "aria-pressed",
+      "true"
+    );
+
+    await user.click(screen.getByRole("button", { name: `Active ${exact}` }));
+    expect(screen.getByRole("button", { name: "Active 2 hours ago" })).toBeInTheDocument();
+  });
+
   it("sorts by last active in either direction", async () => {
     mockLoad([], [], [never, stale, recent]);
     renderPage();

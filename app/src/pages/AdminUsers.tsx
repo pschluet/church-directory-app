@@ -708,17 +708,38 @@ function DirectoryRequestsSection({
 }
 
 /**
- * "Active 2 hours ago", with the exact time on hover. Recorded at most every
- * few minutes (see LAST_SEEN_THROTTLE_MS in api/src/auth.ts), which is finer
- * than anything formatPostedAt shows past its first hour.
+ * "Active 2 hours ago"; tap it for the exact time, tap again to go back.
+ *
+ * A tap rather than only a hover `title`, which a phone has no way to show --
+ * the same reason InfoPopover opens on click. The `title` stays for a mouse.
+ * Recorded at most every few minutes (see LAST_SEEN_THROTTLE_MS in
+ * api/src/auth.ts), so the exact time is to the minute, not the second.
  */
 function LastSeen({ at }: { at: string | null }) {
+  const [exact, setExact] = useState(false);
   if (!at) return <span className="text-sm text-ink-muted">Never active</span>;
-  const label = formatPostedAt(at);
+
+  const absolute = new Date(at).toLocaleString(undefined, {
+    dateStyle: "medium",
+    timeStyle: "short",
+  });
+  const relative = formatPostedAt(at);
+  const label = exact
+    ? absolute
+    : relative === "Just now" || relative === "Yesterday"
+      ? relative.toLowerCase()
+      : relative;
+
   return (
-    <time dateTime={at} title={new Date(at).toLocaleString()} className="text-sm text-ink-muted">
-      Active {label === "Just now" || label === "Yesterday" ? label.toLowerCase() : label}
-    </time>
+    <button
+      type="button"
+      aria-pressed={exact}
+      title={exact ? "Show how long ago" : absolute}
+      onClick={() => setExact((was) => !was)}
+      className="text-sm text-ink-muted underline decoration-dotted underline-offset-2 hover:text-accent"
+    >
+      <time dateTime={at}>Active {label}</time>
+    </button>
   );
 }
 
