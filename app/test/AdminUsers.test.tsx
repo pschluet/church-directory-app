@@ -9,7 +9,7 @@ import type {
   MeDto,
   MergeRequestDto,
 } from "@shared";
-import { AdminUsers } from "../src/pages/AdminUsers";
+import { AdminUsers, sortByLastSeen } from "../src/pages/AdminUsers";
 
 const api = vi.fn();
 vi.mock("../src/lib/api", () => ({
@@ -641,5 +641,88 @@ describe("AdminUsers", () => {
         })
       );
     });
+  });
+});
+
+describe("sortByLastSeen", () => {
+  const at = (id: string, lastSeenAt: string | null) => ({ ...USER, id, lastSeenAt }) as AppUserDto;
+  const users = [
+    at("never-1", null),
+    at("old", "2026-01-01T00:00:00.000Z"),
+    at("new", "2026-11-01T00:00:00.000Z"),
+    at("never-2", null),
+    at("mid", "2026-06-01T00:00:00.000Z"),
+  ];
+  const ids = (list: AppUserDto[]) => list.map((u) => u.id);
+
+  it("leaves the server's order alone by default", () => {
+    expect(sortByLastSeen(users, "default")).toBe(users);
+  });
+
+  it("puts the most recently active first, never-active last", () => {
+    expect(ids(sortByLastSeen(users, "desc"))).toEqual(["new", "mid", "old", "never-1", "never-2"]);
+  });
+
+  it("puts the least recently active first, never-active still last", () => {
+    expect(ids(sortByLastSeen(users, "asc"))).toEqual(["old", "mid", "new", "never-1", "never-2"]);
+  });
+});
+
+describe("AdminUsers last active", () => {
+  beforeEach(() => {
+    api.mockReset();
+  });
+
+  const recent = {
+    ...USER,
+    id: "recent",
+    email: "recent@example.com",
+    personName: "Recent Person",
+    lastSeenAt: new Date(Date.now() - 2 * 60 * 60_000).toISOString(),
+  } as AppUserDto;
+  const never = {
+    ...USER,
+    id: "never",
+    email: "never@example.com",
+    personName: "Never Person",
+    lastSeenAt: null,
+  } as AppUserDto;
+  const stale = {
+    ...USER,
+    id: "stale",
+    email: "stale@example.com",
+    personName: "Stale Person",
+    lastSeenAt: new Date(Date.now() - 3 * 24 * 60 * 60_000).toISOString(),
+  } as AppUserDto;
+
+  const names = () =>
+    screen
+      .getAllByRole("listitem")
+      .map((li) => li.textContent ?? "")
+      .map((text) => /(Recent|Never|Stale) Person/.exec(text)?.[0])
+      .filter(Boolean);
+
+  it("shows when each account was last active", async () => {
+    mockLoad([], [], [recent, never]);
+    renderPage();
+
+    expect(await screen.findByText("Active 2 hours ago")).toBeInTheDocument();
+    expect(screen.getByText("Never active")).toBeInTheDocument();
+  });
+
+  it("sorts by last active in either direction", async () => {
+    mockLoad([], [], [never, stale, recent]);
+    renderPage();
+    await screen.findByText("Recent Person");
+    expect(names()).toEqual(["Never Person", "Stale Person", "Recent Person"]);
+
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("combobox", { name: "Sort accounts" }));
+    await user.click(await screen.findByRole("option", { name: "Last active: newest first" }));
+    await waitFor(() => expect(names()).toEqual(["Recent Person", "Stale Person", "Never Person"]));
+
+    await user.click(screen.getByRole("combobox", { name: "Sort accounts" }));
+    await user.click(await screen.findByRole("option", { name: "Last active: oldest first" }));
+    await waitFor(() => expect(names()).toEqual(["Stale Person", "Recent Person", "Never Person"]));
   });
 });

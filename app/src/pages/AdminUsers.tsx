@@ -74,6 +74,42 @@ type UserStatus = AppUserDto["status"];
 const ROLE_OPTIONS = ROLES.map((value) => ({ value, label: roleLabel(value) }));
 const STATUS_OPTIONS = USER_STATUSES.map((value) => ({ value, label: userStatusLabel(value) }));
 
+/**
+ * The list's order. Only by last activity -- the server's order (by email) is
+ * the default -- in either direction. `default` rather than an empty string so
+ * the Select has a real value to show.
+ */
+export type UserSort = "default" | "desc" | "asc";
+
+const SORT_OPTIONS: { value: UserSort; label: string }[] = [
+  { value: "default", label: "Default order" },
+  { value: "desc", label: "Last active: newest first" },
+  { value: "asc", label: "Last active: oldest first" },
+];
+
+function readSort(params: URLSearchParams): UserSort {
+  const value = params.get("sort");
+  return value === "asc" || value === "desc" ? value : "default";
+}
+
+/**
+ * Orders accounts by `lastSeenAt` in the direction asked. Accounts that have
+ * never been active go last either way: "oldest first" is for finding people
+ * who have drifted away, and someone who has not signed in yet is a different
+ * question, which the Invited status filter already answers. The sort is
+ * stable, so ties and the never-active tail keep the server's order.
+ */
+export function sortByLastSeen(users: AppUserDto[], sort: UserSort): AppUserDto[] {
+  if (sort === "default") return users;
+  const direction = sort === "asc" ? 1 : -1;
+  return [...users].sort((a, b) => {
+    if (!a.lastSeenAt || !b.lastSeenAt) {
+      return (a.lastSeenAt ? 0 : 1) - (b.lastSeenAt ? 0 : 1);
+    }
+    return direction * (Date.parse(a.lastSeenAt) - Date.parse(b.lastSeenAt));
+  });
+}
+
 /** Whatever of `allowed` the URL names, ignoring anything a hand-edited link added. */
 function readList<T extends string>(params: URLSearchParams, key: string, allowed: readonly T[]) {
   const named = params.getAll(key);
@@ -106,6 +142,7 @@ export function AdminUsers() {
   const roles = useMemo(() => readList(params, "role", ROLES), [params]);
   const statuses = useMemo(() => readList(params, "status", USER_STATUSES), [params]);
   const filtering = search.trim() !== "" || roles.length > 0 || statuses.length > 0;
+  const sort = readSort(params);
 
   function updateParams(mutate: (updated: URLSearchParams) => void): void {
     setParams(
@@ -132,9 +169,16 @@ export function AdminUsers() {
     });
   }
 
+  function setSort(next: UserSort): void {
+    updateParams((updated) => {
+      if (next === "default") updated.delete("sort");
+      else updated.set("sort", next);
+    });
+  }
+
   function clearFilters(): void {
     updateParams((updated) => {
-      for (const key of ["q", "role", "status"]) updated.delete(key);
+      for (const key of ["q", "role", "status", "sort"]) updated.delete(key);
     });
   }
   // Mutation failures only; the read's own is `usersQuery.error`.
@@ -209,14 +253,15 @@ export function AdminUsers() {
    */
   const shown = useMemo(() => {
     const terms = search.toLowerCase().split(/\s+/).filter(Boolean);
-    return users.filter((user) => {
+    const matching = users.filter((user) => {
       if (roles.length > 0 && !roles.includes(user.role)) return false;
       if (statuses.length > 0 && !statuses.includes(user.status)) return false;
       if (terms.length === 0) return true;
       const haystack = [user.personName, user.email].filter(Boolean).join(" ").toLowerCase();
       return terms.every((term) => haystack.includes(term));
     });
-  }, [users, search, roles, statuses]);
+    return sortByLastSeen(matching, sort);
+  }, [users, search, roles, statuses, sort]);
 
   // Only the accounts list gates the page, exactly as it did when it was the
   // one call in the Promise.all without a catch around it.
@@ -365,6 +410,13 @@ export function AdminUsers() {
               onChange={(values) => setList("status", values)}
               className="w-full sm:w-48"
             />
+            <Select
+              aria-label="Sort accounts"
+              options={SORT_OPTIONS}
+              value={sort}
+              onChange={setSort}
+              className="w-full sm:w-64"
+            />
           </>
         }
       />
@@ -486,6 +538,7 @@ export function AdminUsers() {
                 <div className="mt-2 flex flex-wrap items-center gap-2">
                   <Badge>{roleLabel(user.role)}</Badge>
                   <StatusBadge status={user.status} />
+                  <LastSeen at={user.lastSeenAt} />
                 </div>
               </div>
               <UserActions
@@ -651,6 +704,21 @@ function DirectoryRequestsSection({
         </ul>
       )}
     </section>
+  );
+}
+
+/**
+ * "Active 2 hours ago", with the exact time on hover. Recorded at most every
+ * few minutes (see LAST_SEEN_THROTTLE_MS in api/src/auth.ts), which is finer
+ * than anything formatPostedAt shows past its first hour.
+ */
+function LastSeen({ at }: { at: string | null }) {
+  if (!at) return <span className="text-sm text-ink-muted">Never active</span>;
+  const label = formatPostedAt(at);
+  return (
+    <time dateTime={at} title={new Date(at).toLocaleString()} className="text-sm text-ink-muted">
+      Active {label === "Just now" || label === "Yesterday" ? label.toLowerCase() : label}
+    </time>
   );
 }
 
