@@ -42,6 +42,7 @@ interface AppUserRow {
   person_id: string | null;
   first_name: string | null;
   last_name: string | null;
+  last_seen_at: Date | null;
 }
 
 const APP_USER_SELECT = `
@@ -50,6 +51,7 @@ const APP_USER_SELECT = `
          u.role,
          u.status,
          u.organization_id,
+         u.last_seen_at,
          o.name as organization_name,
          p.id as person_id,
          p.first_name,
@@ -72,6 +74,7 @@ function toAppUser(row: AppUserRow): AppUserDto {
     personName: row.first_name
       ? fullName({ firstName: row.first_name, lastName: row.last_name })
       : null,
+    lastSeenAt: row.last_seen_at?.toISOString() ?? null,
   };
 }
 

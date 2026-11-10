@@ -1,0 +1,15 @@
+-- When each account last made an authenticated API call, for the "Active ..."
+-- line and the last-active sort on People & Accounts.
+--
+-- Written by the auth middleware (api/src/auth.ts), but at most once every few
+-- minutes per account: the value is read on the query that resolves the caller
+-- anyway, and the UPDATE only runs when it is stale. So nearly every request
+-- costs nothing extra, and the column is approximate to within that window.
+--
+-- Null means the account has not made a call since this column was added --
+-- for an INVITED account, never.
+--
+-- Deliberately unindexed. The admin list reads it for one parish's accounts,
+-- which it already fetches in full, and leaving it out of every index lets
+-- Postgres make each of these updates a HOT update.
+alter table app_users add column last_seen_at timestamptz;

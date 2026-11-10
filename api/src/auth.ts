@@ -50,6 +50,8 @@ export interface Caller {
   isAdmin: boolean;
   /** True for PRAYER_REQUEST_ADMIN and everything above it. */
   canApprovePrayerRequests: boolean;
+  /** When this account last called the API, to within `LAST_SEEN_THROTTLE_MS`. */
+  lastSeenAt: string | null;
 }
 
 export type AppEnv = {
@@ -87,6 +89,7 @@ interface AppUserRow {
   organization_id: string | null;
   person_id: string | null;
   family_id: string | null;
+  last_seen_at: Date | null;
 }
 
 const SELECT_APP_USER = `
@@ -96,6 +99,7 @@ const SELECT_APP_USER = `
          u.role,
          u.status,
          u.organization_id,
+         u.last_seen_at,
          p.id as person_id,
          p.family_id
     from app_users u
@@ -178,6 +182,41 @@ async function activateOnFirstSignIn(q: Queryable, user: AppUserRow): Promise<Ap
 }
 
 /**
+ * How stale `last_seen_at` may get before a request rewrites it.
+ *
+ * Every request already reads the column on the query above, so the common
+ * case costs nothing; only the first request after this window pays for a
+ * one-row UPDATE by primary key. Writing on every call would put that round
+ * trip in front of every handler -- the deployed pool is a single connection
+ * (see db.ts), so nothing else on the request could overlap it -- and churn a
+ * dead row version per call for a value nobody reads to the second.
+ */
+export const LAST_SEEN_THROTTLE_MS = 5 * 60_000;
+
+/**
+ * Records that this account just made a call, if the last record is stale.
+ *
+ * The WHERE clause repeats the staleness test, so two requests racing past the
+ * check write once between them. The new time is patched into the row we hold,
+ * as `activateOnFirstSignIn` does with the status, rather than re-selected.
+ */
+async function touchLastSeen(q: Queryable, user: AppUserRow): Promise<AppUserRow> {
+  const now = new Date();
+  if (user.last_seen_at && now.getTime() - user.last_seen_at.getTime() < LAST_SEEN_THROTTLE_MS) {
+    return user;
+  }
+
+  await q.query(
+    `update app_users
+        set last_seen_at = now()
+      where id = $1
+        and (last_seen_at is null or last_seen_at < now() - make_interval(secs => $2))`,
+    [user.id, LAST_SEEN_THROTTLE_MS / 1000]
+  );
+  return { ...user, last_seen_at: now };
+}
+
+/**
  * Which organization is this request about?
  *
  * Everyone but a super admin is pinned to their own. A super admin may pass
@@ -210,16 +249,18 @@ export function authMiddleware(queryable: Queryable = db): MiddlewareHandler<App
     if (!claims) throw new HTTPException(401, { message: "Not signed in" });
     c.set("claims", claims);
 
-    const user = await findOrBindAppUser(queryable, claims);
-    if (!user) {
+    const found = await findOrBindAppUser(queryable, claims);
+    if (!found) {
       // The token is valid but there is no account for it. Sign-up is
       // disabled, so this means the account was deleted, or someone was
       // created directly in Cognito rather than through the invite flow.
       throw new HTTPException(403, { message: "No directory account for this sign-in" });
     }
-    if (user.status === "DISABLED") {
+    if (found.status === "DISABLED") {
       throw new HTTPException(403, { message: "This account has been disabled" });
     }
+    // After the DISABLED check, so a refused call does not count as activity.
+    const user = await touchLastSeen(queryable, found);
 
     const organizationId = await resolveOrganizationId(queryable, c, user);
 
@@ -235,6 +276,7 @@ export function authMiddleware(queryable: Queryable = db): MiddlewareHandler<App
       isSuperAdmin: user.role === "SUPER_ADMIN",
       isAdmin: user.role === "SUPER_ADMIN" || user.role === "ADMIN",
       canApprovePrayerRequests: hasRole(user.role, "PRAYER_REQUEST_ADMIN"),
+      lastSeenAt: user.last_seen_at?.toISOString() ?? null,
     });
 
     await next();

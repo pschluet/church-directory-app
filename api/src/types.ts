@@ -2079,6 +2079,11 @@ export interface AppUserDto {
   organizationName: string | null;
   personId: string | null;
   personName: string | null;
+  /**
+   * ISO instant of the account's last API call, to within a few minutes; null
+   * if it has never made one.
+   */
+  lastSeenAt: string | null;
 }
 
 export interface MeDto {

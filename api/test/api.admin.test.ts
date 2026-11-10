@@ -607,6 +607,88 @@ describe.skipIf(!hasDb)("account management", () => {
     });
   });
 
+  describe("last active", () => {
+    const lastSeenOf = async (appUserId: string): Promise<Date | null> => {
+      const { rows } = await db().query<{ last_seen_at: Date | null }>(
+        "select last_seen_at from app_users where id = $1",
+        [appUserId]
+      );
+      return rows[0]!.last_seen_at;
+    };
+
+    it("records a call and lists it on People & Accounts", async () => {
+      const member = await createUser(db(), { organizationId: orgId, email: "m@test.example" });
+      expect(await lastSeenOf(member.appUserId)).toBeNull();
+
+      await as(member).call("GET", "/api/me");
+
+      const { body } = await as(admin).call("GET", "/api/admin/users");
+      const listed = body.users.find((u: any) => u.email === "m@test.example");
+      expect(listed.lastSeenAt).toEqual(expect.any(String));
+      expect(Date.now() - Date.parse(listed.lastSeenAt)).toBeLessThan(60_000);
+    });
+
+    it("shows null for an account that has never called", async () => {
+      await createUser(db(), { organizationId: orgId, email: "quiet@test.example" });
+
+      const { body } = await as(admin).call("GET", "/api/admin/users");
+      expect(body.users.find((u: any) => u.email === "quiet@test.example").lastSeenAt).toBeNull();
+    });
+
+    it("echoes it on GET /api/me, on the very request that records it", async () => {
+      const member = await createUser(db(), { organizationId: orgId });
+      const { body } = await as(member).call("GET", "/api/me");
+      expect(body.appUser.lastSeenAt).toEqual(expect.any(String));
+    });
+
+    it("does not rewrite it on every call within the throttle window", async () => {
+      const member = await createUser(db(), { organizationId: orgId });
+      const recent = new Date(Date.now() - 60_000);
+      await db().query("update app_users set last_seen_at = $2 where id = $1", [
+        member.appUserId,
+        recent,
+      ]);
+
+      await as(member).call("GET", "/api/me");
+
+      expect((await lastSeenOf(member.appUserId))?.getTime()).toBe(recent.getTime());
+    });
+
+    it("refreshes it once it is stale", async () => {
+      const member = await createUser(db(), { organizationId: orgId });
+      const stale = new Date(Date.now() - 60 * 60_000);
+      await db().query("update app_users set last_seen_at = $2 where id = $1", [
+        member.appUserId,
+        stale,
+      ]);
+
+      await as(member).call("GET", "/api/me");
+
+      const seen = await lastSeenOf(member.appUserId);
+      expect(seen!.getTime()).toBeGreaterThan(stale.getTime());
+      expect(Date.now() - seen!.getTime()).toBeLessThan(60_000);
+    });
+
+    it("does not count a disabled account's refused call", async () => {
+      await db().query(
+        `insert into app_users (cognito_sub, email, role, organization_id, status)
+         values ('sub-disabled', 'disabled@test.example', 'USER', $1, 'DISABLED')`,
+        [orgId]
+      );
+
+      const { status } = await client(db(), {
+        sub: "sub-disabled",
+        email: "disabled@test.example",
+      }).call("GET", "/api/me");
+
+      expect(status).toBe(403);
+      const { rows } = await db().query(
+        "select last_seen_at from app_users where email = 'disabled@test.example'"
+      );
+      expect(rows[0]!.last_seen_at).toBeNull();
+    });
+  });
+
   describe("bootstrap super admin", () => {
     it("binds an unclaimed account to the Cognito subject on first sign-in", async () => {
       // V3__bootstrap_super_admin.sql inserts exactly this: a super admin row

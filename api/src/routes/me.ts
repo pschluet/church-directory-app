@@ -104,6 +104,7 @@ async function loadMe(db: AppEnv["Variables"]["db"], caller: Caller): Promise<Me
       organizationName: homeName,
       personId: caller.personId,
       personName: person ? fullName(person) : null,
+      lastSeenAt: caller.lastSeenAt,
     },
     person,
     organization: org && { id: org.id, name: org.name },
