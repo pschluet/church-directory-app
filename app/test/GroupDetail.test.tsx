@@ -162,6 +162,7 @@ function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
     mentionsEveryone: false,
     event: null,
     poll: null,
+    signup: null,
     replyCount: 0,
     lastReplyAt: null,
     canEdit: false,

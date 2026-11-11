@@ -109,6 +109,23 @@ describe("flyerLayout", () => {
     expect(layout.rows[1]?.value[0]?.text).toBe("6:00 – 8:00 PM");
   });
 
+  it("shows given rows and call to action instead of the event's (a sign-up's flyer)", () => {
+    const layout = flyerLayout(
+      event({
+        rows: [
+          ["DATES", "Dec 6, Dec 13"],
+          ["NEEDED", "Oranges, Candy canes"],
+        ],
+        callToAction: "Scan to sign up",
+      }),
+      URL,
+      fake
+    );
+    expect(layout.rows.map((row) => row.label.text)).toEqual(["DATES", "NEEDED"]);
+    expect(layout.rows[1]?.value[0]?.text).toBe("Oranges, Candy canes");
+    expect(layout.caption.text).toBe("Scan to sign up");
+  });
+
   it("leaves out rows with nothing to say", () => {
     const layout = flyerLayout(
       event({ startTime: null, endTime: null, location: null }),

@@ -46,6 +46,14 @@ export interface FlyerEvent {
   location: string | null;
   organizationName: string;
   cancelled?: boolean;
+  /**
+   * Labelled rows to show instead of date, time and location -- what a flyer
+   * for something other than an event (a sign-up) lists. `eventDate` and the
+   * rest are ignored when this is set.
+   */
+  rows?: Array<[string, string]>;
+  /** The line under the QR code; "Scan to RSVP" unless given. */
+  callToAction?: string;
 }
 
 /**
@@ -391,10 +399,14 @@ export function flyerLayout(
   cursor += rule.h + 22;
 
   // Date, time and location as labelled rows.
-  const rowSpecs: Array<[string, string]> = [["DATE", formatFlyerDate(event.eventDate)]];
-  const times = formatEventTimes(event.startTime, event.endTime);
-  if (times) rowSpecs.push(["TIME", times]);
-  if (event.location?.trim()) rowSpecs.push(["LOCATION", event.location.trim()]);
+  const rowSpecs: Array<[string, string]> = event.rows ?? [
+    ["DATE", formatFlyerDate(event.eventDate)],
+  ];
+  if (!event.rows) {
+    const times = formatEventTimes(event.startTime, event.endTime);
+    if (times) rowSpecs.push(["TIME", times]);
+    if (event.location?.trim()) rowSpecs.push(["LOCATION", event.location.trim()]);
+  }
   const valueX = MARGIN + LABEL_WIDTH;
   const rows: FlyerRow[] = rowSpecs.map(([label, value]) => {
     const wrapped = clampLines(
@@ -465,7 +477,7 @@ export function flyerLayout(
     descriptionClipped: clamped.clipped,
     qr: { x: centerX - QR_SIZE / 2, y: qrTop, size: QR_SIZE, scale, moduleCount },
     caption: {
-      text: "Scan to RSVP",
+      text: event.callToAction ?? "Scan to RSVP",
       x: centerX,
       y: captionBaseline,
       size: CAPTION_SIZE,

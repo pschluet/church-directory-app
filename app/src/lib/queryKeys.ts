@@ -43,6 +43,9 @@ export const qk = {
    * Keyed apart from `publicEvent` so the two answers never share an entry.
    */
   eventByToken: (token: string) => ["event-by-token", token] as const,
+  /** A sign-up's public page and its signed-in resolver -- the same split as events. */
+  publicSignup: (token: string) => ["public-signup", token] as const,
+  signupByToken: (token: string) => ["signup-by-token", token] as const,
 
   org: (orgId: string | null) => ["org", orgId] as const,
 

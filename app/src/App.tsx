@@ -17,6 +17,7 @@ import { Groups } from "./pages/Groups";
 import { GroupDetail } from "./pages/GroupDetail";
 import { EventDetail } from "./pages/EventDetail";
 import { PublicEvent } from "./pages/PublicEvent";
+import { PublicSignup } from "./pages/PublicSignup";
 import { Unsubscribe } from "./pages/Unsubscribe";
 import { Help } from "./pages/Help";
 import { Settings } from "./pages/Settings";
@@ -43,6 +44,7 @@ export const router = createBrowserRouter([
     signed-in reader on into the app itself -- see PublicEvent.tsx.
   */
   { path: "/e/:token", element: <PublicEvent /> },
+  { path: "/s/:token", element: <PublicSignup /> },
   // How to install the app and turn on notifications. Signed-out too: it is
   // what someone is sent before they have the app or an account in it.
   { path: "/help", element: <Help /> },
