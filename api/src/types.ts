@@ -235,6 +235,7 @@ export const AUDIT_ACTIONS = [
   "group.post.dismissReport",
   "group.post.expire",
   "group.publicRsvp.delete",
+  "group.signupEntry.delete",
 ] as const;
 export type AuditAction = (typeof AUDIT_ACTIONS)[number];
 
@@ -305,6 +306,7 @@ const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   "group.post.dismissReport": "Group post report dismissed",
   "group.post.expire": "Group posts expired",
   "group.publicRsvp.delete": "Public RSVP removed",
+  "group.signupEntry.delete": "Sign-up entry removed",
 };
 
 /**
@@ -1032,7 +1034,7 @@ export const GROUP_JOIN_REQUEST_STATUSES = ["PENDING", "APPROVED", "DENIED", "CA
 export const groupJoinRequestStatusSchema = z.enum(GROUP_JOIN_REQUEST_STATUSES);
 export type GroupJoinRequestStatus = z.infer<typeof groupJoinRequestStatusSchema>;
 
-export const GROUP_POST_KINDS = ["MESSAGE", "EVENT", "POLL"] as const;
+export const GROUP_POST_KINDS = ["MESSAGE", "EVENT", "POLL", "SIGNUP"] as const;
 export const groupPostKindSchema = z.enum(GROUP_POST_KINDS);
 export type GroupPostKind = z.infer<typeof groupPostKindSchema>;
 
@@ -1080,6 +1082,35 @@ export const GROUP_POLL_OPTION_MAX = 100;
 export const GROUP_POLL_MIN_OPTIONS = 2;
 /** Enough for any real choice, and a card that still fits on a phone screen. */
 export const GROUP_POLL_MAX_OPTIONS = 10;
+/**
+ * Sign-ups (see V39__group_signups.sql). The template is only the starting
+ * point the organizer picked -- nothing branches on it but the icon.
+ */
+export const SIGNUP_TEMPLATES = [
+  "POTLUCK",
+  "MEAL_TRAIN",
+  "FLOWERS",
+  "STOCKINGS",
+  "CUSTOM",
+] as const;
+export const signupTemplateSchema = z.enum(SIGNUP_TEMPLATES);
+export type SignupTemplate = z.infer<typeof signupTemplateSchema>;
+/** Whether a signer is asked for a note ("What are you bringing?"). */
+export const SIGNUP_NOTE_MODES = ["NONE", "OPTIONAL", "REQUIRED"] as const;
+export const signupNoteModeSchema = z.enum(SIGNUP_NOTE_MODES);
+export type SignupNoteMode = z.infer<typeof signupNoteModeSchema>;
+export const GROUP_SIGNUP_TITLE_MAX = 150;
+export const GROUP_SIGNUP_DESCRIPTION_MAX = 2000;
+export const GROUP_SIGNUP_INFO_MAX = 1000;
+export const GROUP_SIGNUP_PROMPT_MAX = 100;
+export const GROUP_SIGNUP_SLOT_LABEL_MAX = 100;
+export const GROUP_SIGNUP_NOTE_MAX = 200;
+/** A daily meal train for three months, with room to spare. */
+export const GROUP_SIGNUP_MAX_SLOTS = 100;
+export const GROUP_SIGNUP_MAX_CAPACITY = 999;
+export const GROUP_SIGNUP_MAX_WRITE_INS = 50;
+/** Most public entries one sign-up takes, as PUBLIC_RSVP_MAX_PER_EVENT does for an event. */
+export const PUBLIC_SIGNUP_MAX_ENTRIES = 500;
 /** Matches PRAYER_REQUEST_MAX_IMAGES's reasoning: a feed stays readable. */
 export const GROUP_POST_MAX_ATTACHMENTS = 10;
 
@@ -1183,6 +1214,113 @@ const groupPollFieldsSchema = z
     path: ["options"],
   });
 
+const isoDate = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Pick a date");
+
+/**
+ * One slot as the organizer edits it. `id` is set for a slot that already
+ * exists (an edit keeps its entries); absent, it is a new slot. A slot with
+ * neither a date nor a label is a general "anything" slot.
+ */
+export const groupSignupSlotInputSchema = z.object({
+  id: uuidSchema.optional(),
+  date: isoDate.nullable().optional(),
+  label: trimmedOptional(GROUP_SIGNUP_SLOT_LABEL_MAX),
+  /** Null or absent: unlimited. */
+  capacity: z.number().int().min(1).max(GROUP_SIGNUP_MAX_CAPACITY).nullable().optional(),
+});
+export type GroupSignupSlotInput = z.infer<typeof groupSignupSlotInputSchema>;
+
+export const groupSignupFieldsSchema = z
+  .object({
+    title: z.string().trim().min(1, "Give the sign-up a title").max(GROUP_SIGNUP_TITLE_MAX),
+    description: trimmedOptional(GROUP_SIGNUP_DESCRIPTION_MAX),
+    template: signupTemplateSchema.default("CUSTOM"),
+    recipientPersonId: uuidSchema.nullable().optional(),
+    importantInfo: trimmedOptional(GROUP_SIGNUP_INFO_MAX),
+    noteMode: signupNoteModeSchema.default("NONE"),
+    notePrompt: trimmedOptional(GROUP_SIGNUP_PROMPT_MAX),
+    writeInsEnabled: z.boolean().default(false),
+    /** Null: no limit. */
+    writeInMax: z.number().int().min(1).max(GROUP_SIGNUP_MAX_WRITE_INS).nullable().optional(),
+    /** As for an event: absent on a PATCH leaves it; the create route reads absent as false. */
+    publicEnabled: z.boolean().optional(),
+    /** Last day sign-ups are taken. */
+    closesOn: isoDate.nullable().optional(),
+    /**
+     * The organizer's slots, in order. Empty means one general unlimited slot.
+     * Write-ins are never listed here: they belong to the people who added them.
+     */
+    slots: z
+      .array(groupSignupSlotInputSchema)
+      .max(GROUP_SIGNUP_MAX_SLOTS, `A sign-up can have at most ${GROUP_SIGNUP_MAX_SLOTS} slots`)
+      .default([]),
+  })
+  .superRefine((value, ctx) => {
+    const ids = value.slots.map((s) => s.id).filter(Boolean);
+    if (new Set(ids).size !== ids.length) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["slots"], message: "Duplicate slot" });
+    }
+    const keys = value.slots.map((s) => `${s.date ?? ""}|${(s.label ?? "").toLowerCase()}`);
+    if (new Set(keys).size !== keys.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["slots"],
+        message: "Each slot must be different",
+      });
+    }
+    if (value.slots.length > 1 && value.slots.some((s) => !s.date && !s.label)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["slots"],
+        message: "Give each slot a date or a name",
+      });
+    }
+  });
+export type GroupSignupFields = z.infer<typeof groupSignupFieldsSchema>;
+
+/**
+ * Signing up. Either `slotId` (an existing slot) or `writeIn` (the signer's own
+ * item, which becomes a new slot) -- never both.
+ */
+export const signupEntryCreateSchema = z
+  .object({
+    slotId: uuidSchema.optional(),
+    writeIn: z.string().trim().min(1).max(GROUP_SIGNUP_SLOT_LABEL_MAX).optional(),
+    quantity: z.number().int().min(1).max(GROUP_SIGNUP_MAX_CAPACITY).default(1),
+    note: trimmedOptional(GROUP_SIGNUP_NOTE_MAX),
+  })
+  .refine((v) => Boolean(v.slotId) !== Boolean(v.writeIn), {
+    message: "Pick a slot or name what you are bringing",
+    path: ["slotId"],
+  });
+export type SignupEntryCreate = z.infer<typeof signupEntryCreateSchema>;
+
+/** Changing an entry. Absent fields stay as they are; `writeIn` renames a write-in. */
+export const signupEntryUpdateSchema = z.object({
+  quantity: z.number().int().min(1).max(GROUP_SIGNUP_MAX_CAPACITY).optional(),
+  note: trimmedOptional(GROUP_SIGNUP_NOTE_MAX),
+  writeIn: z.string().trim().min(1).max(GROUP_SIGNUP_SLOT_LABEL_MAX).optional(),
+});
+export type SignupEntryUpdate = z.infer<typeof signupEntryUpdateSchema>;
+
+/** Signing up through the public share page: an entry, plus who you are. */
+export const publicSignupEntryCreateSchema = signupEntryCreateSchema.and(
+  z.object({
+    firstName: z.string().trim().min(1, "Enter your first name").max(100),
+    lastName: z.string().trim().min(1, "Enter your last name").max(100),
+    email: z.string().trim().toLowerCase().email("Enter a valid email address").max(254),
+  })
+);
+export type PublicSignupEntryCreate = z.infer<typeof publicSignupEntryCreateSchema>;
+
+/** Changing or cancelling a public entry needs the token handed back when it was made. */
+export const publicSignupEntryUpdateSchema = signupEntryUpdateSchema.extend({
+  editToken: z.string().min(16).max(128),
+});
+export const publicSignupEntryDeleteSchema = z.object({
+  editToken: z.string().min(16).max(128),
+});
+
 export const groupPostCreateSchema = z
   .object({
     kind: groupPostKindSchema.default("MESSAGE"),
@@ -1193,6 +1331,7 @@ export const groupPostCreateSchema = z
     attachments: z.array(groupPostAttachmentSchema).max(GROUP_POST_MAX_ATTACHMENTS).default([]),
     event: groupEventFieldsSchema.optional(),
     poll: groupPollFieldsSchema.optional(),
+    signup: groupSignupFieldsSchema.optional(),
   })
   .superRefine((value, ctx) => {
     // Words, or at least a picture or file to show: an attachment alone is a message.
@@ -1231,6 +1370,20 @@ export const groupPostCreateSchema = z
         message: "A reply cannot be a poll",
       });
     }
+    if (value.kind === "SIGNUP" && !value.signup) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["signup"],
+        message: "A sign-up needs its details",
+      });
+    }
+    if (value.kind === "SIGNUP" && value.parentPostId) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["parentPostId"],
+        message: "A reply cannot be a sign-up",
+      });
+    }
   });
 export type GroupPostCreate = z.infer<typeof groupPostCreateSchema>;
 
@@ -1246,6 +1399,7 @@ export const groupPostUpdateSchema = z.object({
   /** Absent leaves @everyone alone, for the same reason. */
   mentionsEveryone: z.boolean().optional(),
   event: groupEventFieldsSchema.optional(),
+  signup: groupSignupFieldsSchema.optional(),
 });
 export type GroupPostUpdate = z.infer<typeof groupPostUpdateSchema>;
 
@@ -1522,6 +1676,111 @@ export interface GroupPollDto {
   options: GroupPollOptionDto[];
 }
 
+export interface SignupEntryDto {
+  id: string;
+  /** Null for somebody who signed up through the public page. */
+  personId: string | null;
+  name: string;
+  quantity: number;
+  note: string | null;
+  isPublic: boolean;
+  /** Whether this is the caller's own entry -- what shows Change and Remove. */
+  isMine: boolean;
+  /** Public entries only, and only for the organizer and moderators. */
+  email: string | null;
+  canRemove: boolean;
+}
+
+export interface SignupSlotDto {
+  id: string;
+  date: string | null;
+  label: string | null;
+  /** Null: unlimited. */
+  capacity: number | null;
+  /** Sum of the entries' quantities. */
+  taken: number;
+  isWriteIn: boolean;
+  /** A dated slot whose day is over, or the whole sign-up closed. */
+  closed: boolean;
+  entries: SignupEntryDto[];
+}
+
+export interface GroupSignupDto {
+  title: string;
+  description: string | null;
+  template: SignupTemplate;
+  recipient: { personId: string; name: string } | null;
+  importantInfo: string | null;
+  noteMode: SignupNoteMode;
+  notePrompt: string | null;
+  writeInsEnabled: boolean;
+  writeInMax: number | null;
+  writeInCount: number;
+  publicEnabled: boolean;
+  /** What /s/<shareToken> resolves. Never rotated. */
+  shareToken: string;
+  closesOn: string | null;
+  /** Past `closesOn`, or the post deleted. */
+  closed: boolean;
+  /** The organizer's slots in order, then write-ins in the order they were added. */
+  slots: SignupSlotDto[];
+  /** Organizer or moderator: may see public addresses and remove anyone's entry. */
+  canManage: boolean;
+}
+
+/** An entry as the public page shows it: what, never who. */
+export interface PublicSignupEntryDto {
+  id: string;
+  quantity: number;
+  note: string | null;
+}
+
+export interface PublicSignupSlotDto {
+  id: string;
+  date: string | null;
+  label: string | null;
+  capacity: number | null;
+  taken: number;
+  isWriteIn: boolean;
+  closed: boolean;
+  entries: PublicSignupEntryDto[];
+}
+
+/**
+ * A sign-up as its public share page shows it. Only returned when the organizer
+ * opened it to the public; even then, no names -- not members', not strangers'.
+ */
+export interface PublicSignupDto {
+  title: string;
+  description: string | null;
+  template: SignupTemplate;
+  importantInfo: string | null;
+  noteMode: SignupNoteMode;
+  notePrompt: string | null;
+  writeInsEnabled: boolean;
+  writeInMax: number | null;
+  writeInCount: number;
+  closesOn: string | null;
+  closed: boolean;
+  cancelled: boolean;
+  organizationName: string;
+  /** PUBLIC groups only. */
+  groupName: string | null;
+  slots: PublicSignupSlotDto[];
+}
+
+/** What a public sign-up returns: the only time the edit token is ever seen. */
+export interface PublicSignupEntryCreatedDto {
+  entryId: string;
+  editToken: string;
+}
+
+/** What /api/signups/by-token/:token resolves a share token to. */
+export interface SignupTokenTargetDto {
+  groupId: string;
+  postId: string;
+}
+
 export interface GroupPostAttachmentDto {
   id: string;
   kind: GroupAttachmentKind;
@@ -1587,6 +1846,8 @@ export interface GroupPostDto {
   event: GroupEventDto | null;
   /** Null for anything but a poll, and for a deleted one. */
   poll: GroupPollDto | null;
+  /** Null for anything but a sign-up, and for a deleted one. */
+  signup: GroupSignupDto | null;
   /** How many replies exist, whether or not this response included them. */
   replyCount: number;
   /** When the newest reply was posted, or null with none -- what the feed's reply summary says. */

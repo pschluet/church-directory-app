@@ -1,9 +1,30 @@
 import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { AppEnv } from "../auth";
+import { timingSafeEqual } from "node:crypto";
 import { one, type Queryable } from "../db";
 import {
+  createSignupEntry,
+  deleteSignupEntry,
+  hashEditToken,
+  loadEntry,
+  lockSignup,
+  newEditToken,
+  signupSlotsSubselect,
+  toPublicSignupSlotDto,
+  updateSignupEntry,
+  type SignupSlotRow,
+} from "../services/group-signups";
+import {
   PUBLIC_RSVP_MAX_PER_EVENT,
+  PUBLIC_SIGNUP_MAX_ENTRIES,
+  publicSignupEntryCreateSchema,
+  publicSignupEntryDeleteSchema,
+  publicSignupEntryUpdateSchema,
+  type PublicSignupDto,
+  type PublicSignupEntryCreatedDto,
+  type SignupNoteMode,
+  type SignupTemplate,
   publicEventRsvpSchema,
   publicJoinRequestSchema,
   type GroupVisibility,
@@ -223,6 +244,166 @@ routes.post("/events/:token/join-request", async (c) => {
     email: payload.email,
   });
 
+  return c.body(null, 204);
+});
+
+// ---------------------------------------------------------------------------
+// Sign-up share pages -- /s/<token>. The same rules as an event's: the token is
+// the only authorization, a sign-up that is not public is the same 404 as a
+// made-up token, and nothing here ever names a person.
+// ---------------------------------------------------------------------------
+
+interface PublicSignupRow {
+  post_id: string;
+  title: string;
+  description: string | null;
+  template: SignupTemplate;
+  important_info: string | null;
+  note_mode: SignupNoteMode;
+  note_prompt: string | null;
+  write_ins_enabled: boolean;
+  write_in_max: number | null;
+  public_enabled: boolean;
+  closes_on: Date | string | null;
+  past_close: boolean;
+  deleted_at: Date | string | null;
+  organization_name: string;
+  group_title: string;
+  group_visibility: GroupVisibility;
+  slots: SignupSlotRow[];
+}
+
+async function loadPublicSignup(db: Queryable, token: string): Promise<PublicSignupRow> {
+  if (token.length < 16 || token.length > 64) throw new HTTPException(404, { message: NOT_FOUND });
+  const row = await one<PublicSignupRow>(
+    db,
+    `select gsu.post_id, gsu.title, gsu.description, gsu.template, gsu.important_info,
+            gsu.note_mode, gsu.note_prompt, gsu.write_ins_enabled, gsu.write_in_max,
+            gsu.public_enabled, gsu.closes_on,
+            coalesce(gsu.closes_on < (now() at time zone 'UTC' - interval '12 hours')::date, false)
+              as past_close,
+            p.deleted_at,
+            o.name as organization_name,
+            g.title as group_title,
+            g.visibility as group_visibility,
+            ${signupSlotsSubselect("gsu.post_id")} as slots
+       from group_signups gsu
+       join group_posts p on p.id = gsu.post_id
+       join groups g on g.id = p.group_id
+       join organizations o on o.id = g.organization_id
+      where gsu.share_token = $1`,
+    [token]
+  );
+  // As for events: with public sign-up off, nothing reaches an anonymous caller.
+  if (!row?.public_enabled) throw new HTTPException(404, { message: NOT_FOUND });
+  return row;
+}
+
+function toPublicSignupDto(row: PublicSignupRow): PublicSignupDto {
+  const cancelled = row.deleted_at !== null;
+  const closed = cancelled || row.past_close;
+  return {
+    title: row.title,
+    description: row.description,
+    template: row.template,
+    importantInfo: row.important_info,
+    noteMode: row.note_mode,
+    notePrompt: row.note_prompt,
+    writeInsEnabled: row.write_ins_enabled,
+    writeInMax: row.write_in_max,
+    writeInCount: row.slots.filter((s) => s.isWriteIn).length,
+    closesOn: row.closes_on === null ? null : toIsoDate(row.closes_on),
+    closed,
+    cancelled,
+    organizationName: row.organization_name,
+    groupName: row.group_visibility === "PUBLIC" ? row.group_title : null,
+    slots: row.slots.map((slot) => toPublicSignupSlotDto(slot, closed)),
+  };
+}
+
+routes.get("/signups/:token", async (c) => {
+  const row = await loadPublicSignup(c.get("db"), c.req.param("token"));
+  return c.json(toPublicSignupDto(row));
+});
+
+/**
+ * Signing up without an account. The response carries the edit token -- the
+ * only time it is ever seen, since only its hash is stored. The page keeps it
+ * and shows it as a link; nothing is emailed (see the RSVP route above).
+ */
+routes.post("/signups/:token/entries", async (c) => {
+  const db = c.get("db");
+  const row = await loadPublicSignup(db, c.req.param("token"));
+  const payload = publicSignupEntryCreateSchema.parse(await c.req.json());
+
+  const count = await one<{ n: number }>(
+    db,
+    "select count(*)::int as n from group_signup_entries where post_id = $1 and app_user_id is null",
+    [row.post_id]
+  );
+  if ((count?.n ?? 0) >= PUBLIC_SIGNUP_MAX_ENTRIES) {
+    throw new HTTPException(429, { message: "This sign-up is not taking more entries online" });
+  }
+
+  const { token, hash } = newEditToken();
+  const entryId = await db.transaction(async (tx) => {
+    const signup = await lockSignup(tx, row.post_id);
+    return createSignupEntry(tx, signup, payload, {
+      firstName: payload.firstName,
+      lastName: payload.lastName,
+      email: payload.email,
+      editTokenHash: hash,
+    });
+  });
+  const body: PublicSignupEntryCreatedDto = { entryId, editToken: token };
+  return c.json(body, 201);
+});
+
+/** The edit token must match the entry's -- compared in constant time. */
+function assertEditToken(stored: string | null, given: string): void {
+  const expected = Buffer.from(stored ?? "", "hex");
+  const actual = Buffer.from(hashEditToken(given), "hex");
+  if (expected.length !== actual.length || !timingSafeEqual(expected, actual)) {
+    // 404, not 403: a wrong token learns nothing about whether the entry exists.
+    throw new HTTPException(404, { message: NOT_FOUND });
+  }
+}
+
+const UUID_PARAM = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+function entryIdParam(value: string): string {
+  if (!UUID_PARAM.test(value)) throw new HTTPException(404, { message: NOT_FOUND });
+  return value;
+}
+
+routes.patch("/signups/:token/entries/:entryId", async (c) => {
+  const db = c.get("db");
+  const row = await loadPublicSignup(db, c.req.param("token"));
+  const entryId = entryIdParam(c.req.param("entryId"));
+  const payload = publicSignupEntryUpdateSchema.parse(await c.req.json());
+
+  await db.transaction(async (tx) => {
+    const signup = await lockSignup(tx, row.post_id);
+    const entry = await loadEntry(tx, row.post_id, entryId);
+    assertEditToken(entry.edit_token_hash, payload.editToken);
+    await updateSignupEntry(tx, signup, entry, payload);
+  });
+  return c.body(null, 204);
+});
+
+routes.delete("/signups/:token/entries/:entryId", async (c) => {
+  const db = c.get("db");
+  const row = await loadPublicSignup(db, c.req.param("token"));
+  const entryId = entryIdParam(c.req.param("entryId"));
+  const payload = publicSignupEntryDeleteSchema.parse(await c.req.json());
+
+  await db.transaction(async (tx) => {
+    const signup = await lockSignup(tx, row.post_id);
+    const entry = await loadEntry(tx, row.post_id, entryId);
+    assertEditToken(entry.edit_token_hash, payload.editToken);
+    if (signup.closed) throw new HTTPException(409, { message: "This sign-up is closed" });
+    await deleteSignupEntry(tx, entry);
+  });
   return c.body(null, 204);
 });
 

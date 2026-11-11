@@ -47,6 +47,15 @@ import {
   toGroupPostDto,
   type GroupPostRow,
 } from "../services/group-posts";
+import {
+  createSignupEntry,
+  deleteSignupEntry,
+  insertSignup,
+  loadEntry,
+  lockSignup,
+  updateSignup,
+  updateSignupEntry,
+} from "../services/group-signups";
 import { clearTyping, loadActivityAt, loadTypingNames, markTyping } from "../services/group-live";
 import {
   loadGroupNotificationDefault,
@@ -70,6 +79,8 @@ import {
   reactionEmojiSchema,
   groupPollVoteSchema,
   groupRsvpSchema,
+  signupEntryCreateSchema,
+  signupEntryUpdateSchema,
   groupSettingsSchema,
   groupUpdateSchema,
   groupVisibilityChangeSchema,
@@ -1162,6 +1173,20 @@ function assertAttachmentsBelongToCaller(
   }
 }
 
+/** A sign-up's recipient has to be somebody in the caller's own parish. */
+async function assertPersonInOrganization(
+  q: Queryable,
+  personId: string,
+  organizationId: string
+): Promise<void> {
+  const found = await one<{ id: string }>(
+    q,
+    "select id from persons where id = $1 and organization_id = $2 and deleted_at is null",
+    [personId, organizationId]
+  );
+  if (!found) throw new HTTPException(400, { message: "That person is not in this directory" });
+}
+
 routes.post("/:id/posts", async (c) => {
   const caller = c.get("caller");
   const db = c.get("db");
@@ -1186,6 +1211,9 @@ routes.post("/:id/posts", async (c) => {
     assertAttachmentsBelongToCaller(organizationId, caller.personId, attachment.photoKey);
   }
   await assertMentionsAreMembers(db, id, payload.mentionedAppUserIds);
+  if (payload.kind === "SIGNUP" && payload.signup?.recipientPersonId) {
+    await assertPersonInOrganization(db, payload.signup.recipientPersonId, organizationId);
+  }
 
   let notifiedPost: string[] = [];
   let notifiedMention: string[] = [];
@@ -1242,6 +1270,11 @@ routes.post("/:id/posts", async (c) => {
            from unnest($2::text[]) with ordinality as t(label, position)`,
         [created.id, payload.poll.options]
       );
+    }
+
+    if (payload.kind === "SIGNUP" && payload.signup) {
+      // A ULID share token, set once and never rotated -- as for an event.
+      await insertSignup(tx, created.id, payload.signup, ulid());
     }
 
     await insertAttachments(tx, created.id, payload.attachments, 0);
@@ -1336,6 +1369,9 @@ routes.patch("/:id/posts/:postId", async (c) => {
   } else if (changesAttachments) {
     throw new HTTPException(400, { message: "An event cannot have attachments" });
   }
+  if (payload.signup && row.kind === "SIGNUP" && payload.signup.recipientPersonId) {
+    await assertPersonInOrganization(db, payload.signup.recipientPersonId, organizationId);
+  }
 
   let notifiedMention: string[] = [];
 
@@ -1381,6 +1417,12 @@ routes.patch("/:id/posts/:postId", async (c) => {
           payload.event.publicRsvpEnabled ?? null,
         ]
       );
+      await tx.query("update group_posts set edited_at = now() where id = $1", [postId]);
+    }
+
+    if (payload.signup && row.kind === "SIGNUP") {
+      // Never the share token: a printed flyer has to keep working.
+      await updateSignup(tx, postId, payload.signup);
       await tx.query("update group_posts set edited_at = now() where id = $1", [postId]);
     }
 
@@ -1767,6 +1809,104 @@ routes.delete("/:id/posts/:postId/public-rsvps/:rsvpId", async (c) => {
 });
 
 // ---------------------------------------------------------------------------
+// Sign-up entries
+// ---------------------------------------------------------------------------
+
+/**
+ * The checks every member's entry write shares: gated like a poll vote --
+ * anyone who can react may sign up, which rules out an archived group and a
+ * parish admin looking in on a group they are not in. Returns the post row.
+ */
+async function signupEntryContext(c: Context<AppEnv>) {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+  const postId = uuidSchema.parse(c.req.param("postId"));
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroupContent(access);
+
+  const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
+  if (row?.kind !== "SIGNUP") throw new HTTPException(404, { message: "Sign-up not found" });
+  if (row.deleted_at) throw new HTTPException(409, { message: "That sign-up was deleted" });
+  const canManage =
+    (caller.personId !== null && row.author_person_id === caller.personId) || access.canModerate;
+  return { caller, db, id, postId, access, canManage };
+}
+
+async function signupResponse(
+  c: Context<AppEnv>,
+  ctx: Awaited<ReturnType<typeof signupEntryContext>>
+) {
+  const updated = await loadGroupPostRow(ctx.db, ctx.caller.appUserId, ctx.postId, ctx.id);
+  return c.json(toGroupPostDto(updated!, ctx.access, ctx.caller.personId));
+}
+
+routes.post("/:id/posts/:postId/signup/entries", async (c) => {
+  const ctx = await signupEntryContext(c);
+  assertCanReact(ctx.access);
+  const payload = signupEntryCreateSchema.parse(await c.req.json());
+
+  await ctx.db.transaction(async (tx) => {
+    const signup = await lockSignup(tx, ctx.postId);
+    await createSignupEntry(tx, signup, payload, { appUserId: ctx.caller.appUserId });
+  });
+  return signupResponse(c, ctx);
+});
+
+routes.patch("/:id/posts/:postId/signup/entries/:entryId", async (c) => {
+  const ctx = await signupEntryContext(c);
+  assertCanReact(ctx.access);
+  const entryId = uuidSchema.parse(c.req.param("entryId"));
+  const payload = signupEntryUpdateSchema.parse(await c.req.json());
+
+  await ctx.db.transaction(async (tx) => {
+    const signup = await lockSignup(tx, ctx.postId);
+    const entry = await loadEntry(tx, ctx.postId, entryId);
+    // Only your own: the organizer can remove an entry, never rewrite it.
+    if (entry.app_user_id !== ctx.caller.appUserId) {
+      throw new HTTPException(403, { message: "You can only change your own sign-up" });
+    }
+    await updateSignupEntry(tx, signup, entry, payload);
+  });
+  return signupResponse(c, ctx);
+});
+
+/**
+ * Taking an entry off. Your own while the sign-up is open; the organizer or a
+ * moderator any entry at any time -- a stranger's bogus entry on a printed
+ * sign-up must not be permanent. Removing somebody else's is audited.
+ */
+routes.delete("/:id/posts/:postId/signup/entries/:entryId", async (c) => {
+  const ctx = await signupEntryContext(c);
+  const entryId = uuidSchema.parse(c.req.param("entryId"));
+
+  await ctx.db.transaction(async (tx) => {
+    const signup = await lockSignup(tx, ctx.postId);
+    const entry = await loadEntry(tx, ctx.postId, entryId);
+    const isMine = entry.app_user_id === ctx.caller.appUserId;
+    if (!isMine && !ctx.canManage) {
+      throw new HTTPException(403, { message: "Only the organizer can remove that" });
+    }
+    if (isMine && !ctx.canManage && signup.closed) {
+      throw new HTTPException(409, { message: "This sign-up is closed" });
+    }
+    await deleteSignupEntry(tx, entry);
+    if (!isMine) {
+      await audit(tx, ctx.caller, {
+        action: "group.signupEntry.delete",
+        entityType: "groupPost",
+        entityId: ctx.postId,
+        changes: { groupId: ctx.id, entryId },
+      });
+    }
+  });
+  return signupResponse(c, ctx);
+});
+
+// ---------------------------------------------------------------------------
 // Reactions
 // ---------------------------------------------------------------------------
 
@@ -1863,6 +2003,8 @@ routes.post("/:id/posts/:postId/report", async (c) => {
     excerpt = `[Event] ${row.event_title ?? ""}`;
   } else if (row.kind === "POLL") {
     excerpt = `[Poll] ${row.poll_question ?? ""}`.slice(0, 280);
+  } else if (row.kind === "SIGNUP") {
+    excerpt = `[Sign-up] ${row.signup_title ?? ""}`.slice(0, 280);
   } else if (row.body) {
     excerpt = row.body.slice(0, 280);
   } else {
