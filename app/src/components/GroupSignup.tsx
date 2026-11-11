@@ -1036,11 +1036,12 @@ export function SignupSlots({
     const mine = slot.entries.find((e) => e.isMine);
     const title = general ? "Who's bringing what" : slotTitle(slot);
     const open = canSignUp && !slot.closed && !mine && left !== 0 && !slot.isWriteIn;
+    const formOpen = editing?.kind === "slot" && editing.slotId === slot.id;
     const editingEntry =
       editing?.kind === "entry" ? slot.entries.find((e) => e.id === editing.entryId) : undefined;
     return (
       <li key={slot.id} className={`space-y-1.5 py-3 ${slot.closed ? "opacity-70" : ""}`}>
-        <div className="flex items-baseline justify-between gap-3">
+        <div className="flex items-center justify-between gap-3">
           <p className="min-w-0 break-words font-bold text-ink">
             {title}
             {slot.isWriteIn && (
@@ -1049,17 +1050,29 @@ export function SignupSlots({
               </span>
             )}
           </p>
-          <p className="shrink-0 text-sm tabular-nums text-ink-muted">
-            {slot.isWriteIn
-              ? `×${slot.capacity ?? 1}`
-              : slot.capacity === null
-                ? slot.taken > 0
-                  ? `${slot.taken} signed up`
-                  : ""
-                : left === 0
-                  ? "Full"
-                  : `${slot.taken} of ${slot.capacity}`}
-          </p>
+          <div className="flex shrink-0 items-center gap-3">
+            <p className="shrink-0 text-sm tabular-nums text-ink-muted">
+              {slot.isWriteIn
+                ? `×${slot.capacity ?? 1}`
+                : slot.capacity === null
+                  ? slot.taken > 0
+                    ? `${slot.taken} signed up`
+                    : ""
+                  : left === 0
+                    ? "Full"
+                    : `${slot.taken} of ${slot.capacity}`}
+            </p>
+            {open && !formOpen && (
+              <Button
+                variant="secondary"
+                className="!px-3 !py-1 text-sm"
+                onClick={() => setEditing({ kind: "slot", slotId: slot.id })}
+                aria-label={`Sign up${title ? ` for ${title}` : ""}`}
+              >
+                Sign up
+              </Button>
+            )}
+          </div>
         </div>
         {slot.capacity !== null && !slot.isWriteIn && slot.capacity > 1 && (
           <ProgressBar taken={slot.taken} capacity={slot.capacity} />
@@ -1097,29 +1110,19 @@ export function SignupSlots({
         {slot.closed && slot.entries.length === 0 && (
           <p className="text-sm text-ink-muted">{view.closed ? "Closed" : "Date has passed"}</p>
         )}
-        {open &&
-          (editing?.kind === "slot" && editing.slotId === slot.id ? (
-            <EntryForm
-              view={view}
-              slot={slot}
-              entry={null}
-              writeIn={false}
-              busy={busy}
-              extra={formExtra}
-              submitLabel="Sign up"
-              onCancel={() => setEditing(null)}
-              onSubmit={(input) => run(onCreate({ ...input, slotId: slot.id }))}
-            />
-          ) : (
-            <Button
-              variant="secondary"
-              className="!px-3 !py-1.5 text-sm"
-              onClick={() => setEditing({ kind: "slot", slotId: slot.id })}
-              aria-label={`Sign up${title ? ` for ${title}` : ""}`}
-            >
-              Sign up
-            </Button>
-          ))}
+        {open && formOpen && (
+          <EntryForm
+            view={view}
+            slot={slot}
+            entry={null}
+            writeIn={false}
+            busy={busy}
+            extra={formExtra}
+            submitLabel="Sign up"
+            onCancel={() => setEditing(null)}
+            onSubmit={(input) => run(onCreate({ ...input, slotId: slot.id }))}
+          />
+        )}
       </li>
     );
   }
