@@ -5,7 +5,9 @@ import { api } from "../lib/api";
 import { Button, Field, Modal, Select, Spinner, inputClass } from "./ui";
 
 /**
- * "Request to be added", from the sign-in page.
+ * "Request to be added", from the sign-in page and a sign-up's share page.
+ * The share page passes its parish's name as `initialChurchName`, so the
+ * church is chosen already; the reader can still change it.
  *
  * A Modal, which is already the two shapes this wants: a sheet up from the
  * bottom on a phone and a centred dialog from `md` up.
@@ -22,9 +24,11 @@ import { Button, Field, Modal, Select, Spinner, inputClass } from "./ui";
  */
 export function RequestAccessModal({
   initialEmail = "",
+  initialChurchName,
   onClose,
 }: {
   initialEmail?: string;
+  initialChurchName?: string;
   onClose: () => void;
 }) {
   const [firstName, setFirstName] = useState("");
@@ -49,6 +53,9 @@ export function RequestAccessModal({
       }),
   });
   const churches = churchesQuery.data?.churches ?? [];
+  // Until the reader picks one, the church named by the page that opened this.
+  const churchId =
+    organizationId || (churches.find((church) => church.name === initialChurchName)?.id ?? "");
 
   if (sent) {
     return (
@@ -67,7 +74,7 @@ export function RequestAccessModal({
   }
 
   const complete =
-    firstName.trim() !== "" && lastName.trim() !== "" && email.trim() !== "" && organizationId;
+    firstName.trim() !== "" && lastName.trim() !== "" && email.trim() !== "" && churchId;
 
   return (
     <Modal title="Request to be added" onClose={onClose}>
@@ -81,7 +88,13 @@ export function RequestAccessModal({
             await api("/directory-requests", {
               method: "POST",
               withOrg: false,
-              body: { firstName, lastName, email, organizationId, website: website || undefined },
+              body: {
+                firstName,
+                lastName,
+                email,
+                organizationId: churchId,
+                website: website || undefined,
+              },
             });
             setSent(true);
           } catch (err) {
@@ -135,7 +148,7 @@ export function RequestAccessModal({
           ) : (
             <Select
               required
-              value={organizationId}
+              value={churchId}
               onChange={setOrganizationId}
               placeholder="Choose a church…"
               options={churches.map((church) => ({ value: church.id, label: church.name }))}
