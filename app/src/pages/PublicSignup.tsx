@@ -37,6 +37,13 @@ import { SignInForm } from "./Login";
  * sent to the sign-up in its group; anybody else gets the public page, if the
  * organizer opened it, and a sign-in prompt that names nothing if not.
  *
+ * The public page leads with sign-in, like the event page: the sign-up's
+ * details, then "Members: sign in to sign up", then a folded "Not a member?"
+ * card that holds the slots and the name and email fields. It starts unfolded
+ * for a returning stranger -- one whose browser holds edit tokens for this
+ * sign-up, or who followed their "save this link" URL -- so their own entries
+ * are where they left them.
+ *
  * The public page never names anyone. A stranger's own entries are known by
  * the edit tokens this browser holds -- from signing up here, or from the
  * "save this link" URL (`?entry=<id>.<token>`), which works on any device.
@@ -158,6 +165,9 @@ function PublicSignupPage({
   const [signer, setSigner] = useState<Signer>(loadSigner);
   const [saved, setSaved] = useState<{ entryId: string; editToken: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  const [reveal, setReveal] = useState(
+    () => Object.keys(tokens).length > 0 || params.get("entry") !== null
+  );
 
   // An edit link opened on this device: remember its token like one made here.
   useEffect(() => {
@@ -303,82 +313,102 @@ function PublicSignupPage({
               </p>
             )}
             {signup.importantInfo && <ImportantInfo text={signup.importantInfo} />}
-
-            {editUrl && (
-              <div
-                role="status"
-                className="space-y-2 rounded-xl border border-accent/40 bg-accent/5 p-4 text-ink"
-              >
-                <p className="font-bold">You're signed up. Thank you!</p>
-                <p className="text-sm">
-                  Save this link to change or cancel your sign-up later. Nothing is emailed to you.
-                </p>
-                <div className="flex gap-2">
-                  <input
-                    readOnly
-                    aria-label="Your edit link"
-                    className={`${inputClass} text-sm`}
-                    value={editUrl}
-                    onFocus={(e) => e.target.select()}
-                  />
-                  <Button
-                    variant="secondary"
-                    onClick={() => {
-                      void navigator.clipboard?.writeText(editUrl).then(() => setCopied(true));
-                    }}
-                  >
-                    {copied ? "Copied" : "Copy"}
-                  </Button>
-                </div>
-              </div>
-            )}
-
-            <SignupSlots
-              view={view}
-              canSignUp={!signup.closed}
-              linkPeople={false}
-              busy={write.isPending}
-              error={error}
-              formExtra={nameFields}
-              onCreate={async (input) => {
-                setLocalError(null);
-                setSaved(null);
-                try {
-                  return await create(input);
-                } catch (err) {
-                  if ((err as { local?: boolean }).local) setLocalError((err as Error).message);
-                  throw err;
-                }
-              }}
-              onUpdate={(entryId, input) => {
-                setLocalError(null);
-                return write.mutateAsync({
-                  path: `${base}/${entryId}`,
-                  method: "PATCH",
-                  body: { ...input, editToken: tokens[entryId] },
-                });
-              }}
-              onRemove={(entry) => {
-                setLocalError(null);
-                write.mutate({
-                  path: `${base}/${entry.id}`,
-                  method: "DELETE",
-                  body: { editToken: tokens[entry.id] },
-                });
-              }}
-            />
           </div>
         </article>
 
         <div className="flex justify-center">
           <SignInForm
-            title="Members: sign in"
+            // Nothing to sign up for once it is removed or closed; members can still sign in.
+            title={
+              signup.cancelled || signup.closed ? "Members: sign in" : "Members: sign in to sign up"
+            }
             headingLevel="h2"
             autoFocus={false}
             offerRequest={false}
             fullWidth
           />
         </div>
+
+        {!signup.cancelled && (
+          <div className="rounded-lg border border-line bg-surface p-6 shadow-sm md:p-8">
+            <button
+              type="button"
+              aria-expanded={reveal}
+              onClick={() => setReveal((value) => !value)}
+              className="w-full text-left font-bold text-primary underline-offset-2 hover:text-accent hover:underline"
+            >
+              Not a member? Sign up without an account.
+            </button>
+            {reveal && (
+              <div className="mt-4 space-y-4">
+                {editUrl && (
+                  <div
+                    role="status"
+                    className="space-y-2 rounded-xl border border-accent/40 bg-accent/5 p-4 text-ink"
+                  >
+                    <p className="font-bold">You're signed up. Thank you!</p>
+                    <p className="text-sm">
+                      Save this link to change or cancel your sign-up later. Nothing is emailed to
+                      you.
+                    </p>
+                    <div className="flex gap-2">
+                      <input
+                        readOnly
+                        aria-label="Your edit link"
+                        className={`${inputClass} text-sm`}
+                        value={editUrl}
+                        onFocus={(e) => e.target.select()}
+                      />
+                      <Button
+                        variant="secondary"
+                        onClick={() => {
+                          void navigator.clipboard?.writeText(editUrl).then(() => setCopied(true));
+                        }}
+                      >
+                        {copied ? "Copied" : "Copy"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+
+                <SignupSlots
+                  view={view}
+                  canSignUp={!signup.closed}
+                  linkPeople={false}
+                  busy={write.isPending}
+                  error={error}
+                  formExtra={nameFields}
+                  onCreate={async (input) => {
+                    setLocalError(null);
+                    setSaved(null);
+                    try {
+                      return await create(input);
+                    } catch (err) {
+                      if ((err as { local?: boolean }).local) setLocalError((err as Error).message);
+                      throw err;
+                    }
+                  }}
+                  onUpdate={(entryId, input) => {
+                    setLocalError(null);
+                    return write.mutateAsync({
+                      path: `${base}/${entryId}`,
+                      method: "PATCH",
+                      body: { ...input, editToken: tokens[entryId] },
+                    });
+                  }}
+                  onRemove={(entry) => {
+                    setLocalError(null);
+                    write.mutate({
+                      path: `${base}/${entry.id}`,
+                      method: "DELETE",
+                      body: { editToken: tokens[entry.id] },
+                    });
+                  }}
+                />
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </LandingFrame>
   );
