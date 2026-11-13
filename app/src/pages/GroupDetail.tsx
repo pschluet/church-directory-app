@@ -81,7 +81,7 @@ import { downloadEventIcs } from "../lib/ics";
 import { EventQrModal } from "../components/EventQrModal";
 import { PollBlock, PollComposerModal } from "../components/GroupPoll";
 import { ShareButtons } from "../components/ShareButtons";
-import { SignupBlock, SignupComposerModal } from "../components/GroupSignup";
+import { SignupBlock, SignupComposerModal, SignupIcon } from "../components/GroupSignup";
 import { parseBody, toPlainText, type Inline, type ListBlock } from "../lib/richText";
 import type { Editor } from "@tiptap/react";
 import {
@@ -123,9 +123,9 @@ const FormatButtons = lazy(() =>
  * renders off of come from -- nothing here re-derives a permission.
  */
 
-export type Tab = "messages" | "files" | "events";
+export type Tab = "messages" | "files" | "events" | "signups";
 
-const TABS: readonly Tab[] = ["messages", "files", "events"];
+const TABS: readonly Tab[] = ["messages", "files", "events", "signups"];
 
 /**
  * Which tab a group URL is on. `/groups/:id` is Messages -- the canonical
@@ -371,9 +371,9 @@ export function GroupDetail() {
             </div>
           </div>
 
-          {/* Three small icons at the right of the title row, not a row of text
-              tabs: the title line is then the only chrome above the conversation. */}
-          {!postId && <SectionIcons tab={tab} onChange={setTab} />}
+          {/* One button at the right of the title row, not a row of tabs: it
+              opens into the section picker and closes back to the section. */}
+          {!postId && <SectionPicker tab={tab} onChange={setTab} />}
         </div>
       </header>
 
@@ -428,6 +428,16 @@ export function GroupDetail() {
       {!postId && tab === "files" && <FilesTab groupId={groupId} />}
       {!postId && tab === "events" && (
         <EventsTab
+          groupId={groupId}
+          members={group.members}
+          canReact={group.canReact}
+          now={now}
+          onReport={setReporting}
+          onChanged={refresh}
+        />
+      )}
+      {!postId && tab === "signups" && (
+        <SignupsTab
           groupId={groupId}
           members={group.members}
           canReact={group.canReact}
@@ -510,40 +520,177 @@ const SECTIONS: { tab: Tab; label: string; icon: ReactNode }[] = [
       <path d="M6 1.8a.8.8 0 0 1 .8.8V4h6.4V2.6a.8.8 0 0 1 1.6 0V4H16a2 2 0 0 1 2 2v9a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h1.2V2.6a.8.8 0 0 1 .8-.8ZM3.6 8v7a.4.4 0 0 0 .4.4h12a.4.4 0 0 0 .4-.4V8H3.6Z" />
     ),
   },
+  { tab: "signups", label: "Sign-ups", icon: null },
 ];
 
-/**
- * Messages, Files and Events as three small icons beside the group's title.
- * Icon-only to save the row that text tabs took; each keeps its name for
- * screen readers (`aria-label`) and for a mouse (`title`), and the current one
- * is marked with `aria-current` and a tinted background.
- */
-function SectionIcons({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => void }) {
+function SectionGlyph({ section }: { section: (typeof SECTIONS)[number] }) {
+  if (section.tab === "signups") return <SignupIcon className="h-5 w-5" />;
   return (
-    <nav aria-label="Group sections" className="flex shrink-0 items-center gap-0.5">
-      {SECTIONS.map((section) => {
-        const current = tab === section.tab;
-        return (
-          <button
-            key={section.tab}
-            type="button"
-            aria-label={section.label}
-            title={section.label}
-            aria-current={current ? "page" : undefined}
-            onClick={() => onChange(section.tab)}
-            className={`tap-target inline-flex items-center justify-center rounded-lg transition ${
-              current
-                ? "bg-accent-light/40 text-primary"
-                : "text-ink-muted hover:bg-surface-muted hover:text-ink"
-            }`}
-          >
-            <svg aria-hidden="true" viewBox="0 0 20 20" className="h-5 w-5 fill-current">
-              {section.icon}
-            </svg>
-          </button>
-        );
-      })}
-    </nav>
+    <svg aria-hidden="true" viewBox="0 0 20 20" className="h-5 w-5 fill-current">
+      {section.icon}
+    </svg>
+  );
+}
+
+/** How long the picker shows the thumb landing on a choice before it folds away. */
+const PICK_SETTLE_MS = 180;
+
+/**
+ * The group's sections as one button beside its title, which opens into a
+ * picker. Four tabs would crowd the title row; one button showing where you
+ * are, with the rest a tap away, does not.
+ *
+ * Open, the picker grows leftward out of the button (a clip-path from the
+ * button's width to the full pill), over the title rather than pushing
+ * anything below it, and its options fade in from the right. Picking one
+ * slides the highlight to it, switches the section at once, and folds the
+ * pill back into the button, which now names the new section. Escape, a click
+ * outside, or the current section closes it without moving. See theme.css
+ * (`.section-picker`); under reduced motion all of it is instant.
+ */
+function SectionPicker({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => void }) {
+  const [open, setOpen] = useState(false);
+  /** The highlighted option -- the current tab, or the one just picked while the pill folds. */
+  const [chosen, setChosen] = useState<Tab>(tab);
+  const [thumb, setThumb] = useState<{ left: number; width: number } | null>(null);
+  const [collapsedWidth, setCollapsedWidth] = useState(0);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const closeTimer = useRef<number | null>(null);
+  const current = SECTIONS.find((s) => s.tab === tab) ?? SECTIONS[0]!;
+
+  useEffect(() => {
+    if (!open) setChosen(tab);
+  }, [open, tab]);
+
+  // The thumb sits under the chosen option; measured, so labels of any width fit.
+  useLayoutEffect(() => {
+    const index = SECTIONS.findIndex((s) => s.tab === chosen);
+    const el = optionRefs.current[index];
+    if (el) setThumb({ left: el.offsetLeft, width: el.offsetWidth });
+    if (triggerRef.current) setCollapsedWidth(triggerRef.current.offsetWidth);
+  }, [chosen, tab, open]);
+
+  const close = useCallback((refocus: boolean) => {
+    setOpen(false);
+    if (refocus) triggerRef.current?.focus();
+  }, []);
+
+  // Escape and a click outside fold it away. Not useDismissable: that locks
+  // page scroll, which a small picker in the header has no business doing.
+  useEffect(() => {
+    if (!open) return;
+    const onPointerDown = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) close(false);
+    };
+    const onKey = (event: globalThis.KeyboardEvent) => {
+      if (event.key === "Escape") close(true);
+    };
+    document.addEventListener("pointerdown", onPointerDown);
+    document.addEventListener("keydown", onKey);
+    const index = SECTIONS.findIndex((s) => s.tab === tab);
+    optionRefs.current[index]?.focus({ preventScroll: true });
+    return () => {
+      document.removeEventListener("pointerdown", onPointerDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open, close, tab]);
+
+  useEffect(
+    () => () => {
+      if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    },
+    []
+  );
+
+  function pick(next: Tab): void {
+    setChosen(next);
+    if (next !== tab) onChange(next);
+    if (closeTimer.current !== null) window.clearTimeout(closeTimer.current);
+    closeTimer.current = window.setTimeout(() => close(true), next === tab ? 0 : PICK_SETTLE_MS);
+  }
+
+  function onOptionKeyDown(event: KeyboardEvent<HTMLElement>): void {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    event.preventDefault();
+    const options = optionRefs.current;
+    const at = options.findIndex((el) => el === document.activeElement);
+    const step = event.key === "ArrowRight" ? 1 : -1;
+    options[(at + step + options.length) % options.length]?.focus();
+  }
+
+  return (
+    <div ref={rootRef} className="relative shrink-0">
+      <button
+        ref={triggerRef}
+        type="button"
+        aria-haspopup="true"
+        aria-expanded={open}
+        aria-label={`Section: ${current.label}`}
+        onClick={() => setOpen(true)}
+        className={`section-trigger inline-flex items-center gap-1.5 rounded-full border border-line bg-surface py-1.5 pr-2.5 pl-3 font-bold text-ink shadow-sm hover:border-accent ${
+          open ? "opacity-0" : ""
+        }`}
+      >
+        <span className="text-primary">
+          <SectionGlyph section={current} />
+        </span>
+        {/* Keyed, so a new section's name fades in rather than just appearing. */}
+        <span key={current.tab} className="section-label text-sm">
+          {current.label}
+        </span>
+        <svg
+          aria-hidden="true"
+          viewBox="0 0 20 20"
+          className={`section-chevron h-4 w-4 fill-current text-ink-muted ${open ? "rotate-180" : ""}`}
+        >
+          <path d="M5.3 7.3a1 1 0 0 1 1.4 0L10 10.6l3.3-3.3a1 1 0 1 1 1.4 1.4l-4 4a1 1 0 0 1-1.4 0l-4-4a1 1 0 0 1 0-1.4Z" />
+        </svg>
+      </button>
+
+      <nav
+        aria-label="Group sections"
+        data-open={open}
+        inert={!open}
+        aria-hidden={!open}
+        onKeyDown={onOptionKeyDown}
+        style={{ "--collapsed-w": `${collapsedWidth}px` } as React.CSSProperties}
+        className="section-picker absolute top-0 right-0 z-30 flex items-center gap-0.5 rounded-full border border-line bg-surface p-[3px] shadow-lg"
+      >
+        {thumb && (
+          <span
+            aria-hidden="true"
+            className="section-thumb absolute top-[3px] bottom-[3px] rounded-full bg-accent-light/50"
+            style={{ left: thumb.left, width: thumb.width }}
+          />
+        )}
+        {SECTIONS.map((section, index) => {
+          const isChosen = chosen === section.tab;
+          return (
+            <button
+              key={section.tab}
+              ref={(el) => {
+                optionRefs.current[index] = el;
+              }}
+              type="button"
+              aria-label={section.label}
+              aria-current={tab === section.tab ? "page" : undefined}
+              onClick={() => pick(section.tab)}
+              style={{ "--i": SECTIONS.length - 1 - index } as React.CSSProperties}
+              className={`section-option relative inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-bold whitespace-nowrap focus-visible:outline-2 focus-visible:outline-accent ${
+                isChosen ? "text-primary" : "text-ink-muted hover:text-ink"
+              }`}
+            >
+              <SectionGlyph section={section} />
+              <span aria-hidden="true" className="hidden min-[400px]:inline">
+                {section.label}
+              </span>
+            </button>
+          );
+        })}
+      </nav>
+    </div>
   );
 }
 
@@ -4279,6 +4426,84 @@ function EventsTab({
     <div className="space-y-8">
       {upcoming.length > 0 && section("Upcoming", upcoming)}
       {past.length > 0 && section("Past", past)}
+    </div>
+  );
+}
+
+/**
+ * The Sign-ups tab: every sign-up posted to the group, the ones still taking
+ * names first. The same cards as in Messages, so signing up works here too.
+ */
+function SignupsTab({
+  groupId,
+  members,
+  canReact,
+  now,
+  onReport,
+  onChanged,
+}: {
+  groupId: string;
+  members: GroupMemberDto[];
+  canReact: boolean;
+  now: Date;
+  onReport: (post: GroupPostDto) => void;
+  onChanged: () => Promise<unknown>;
+}) {
+  const { organizationId } = useMe();
+  const queryClient = useQueryClient();
+  const signupsQuery = useQuery({
+    queryKey: qk.groupSignups(organizationId, groupId),
+    queryFn: ({ signal }) =>
+      api<{ signups: GroupPostDto[] }>(`/groups/${groupId}/signups`, { signal }),
+  });
+  // A change made from this tab refreshes this list as well as the feed.
+  const changed = async () => {
+    await Promise.all([
+      onChanged(),
+      queryClient.invalidateQueries({ queryKey: qk.groupSignups(organizationId, groupId) }),
+    ]);
+  };
+
+  const signups = signupsQuery.data?.signups ?? [];
+  if (signupsQuery.isPending) return <Spinner label="Loading sign-ups" />;
+  if (signups.length === 0)
+    return (
+      <EmptyState title="No sign-ups yet">Sign-ups posted to Messages show up here.</EmptyState>
+    );
+
+  const open = signups.filter((p) => p.signup && !p.signup.closed);
+  const closed = signups.filter((p) => p.signup?.closed);
+
+  const section = (title: string, posts: GroupPostDto[]) => (
+    <section>
+      <h2 className="mb-3 flex items-center gap-2 text-sm font-bold uppercase tracking-wide text-ink-muted">
+        {title}
+        <span className="rounded-full bg-surface-muted px-2 py-0.5 text-xs">{posts.length}</span>
+      </h2>
+      <ul className="space-y-4">
+        {posts.map((post) => (
+          <ChatRow
+            key={post.id}
+            post={post}
+            showHeader
+            groupId={groupId}
+            members={members}
+            now={now}
+            onReport={onReport}
+            onChanged={changed}
+            canReact={canReact}
+            isReply
+            variant="card"
+          />
+        ))}
+      </ul>
+    </section>
+  );
+
+  return (
+    <div className="space-y-8">
+      {open.length > 0 && section("Open", open)}
+      {closed.length > 0 && section("Closed", closed)}
     </div>
   );
 }

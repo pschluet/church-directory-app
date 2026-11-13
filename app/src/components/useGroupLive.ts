@@ -63,6 +63,7 @@ export function useGroupLive(
       qk.groupPosts(organizationId, groupId),
       qk.groupFiles(organizationId, groupId),
       qk.groupEvents(organizationId, groupId),
+      qk.groupSignups(organizationId, groupId),
       qk.notifications(),
     ]) {
       void queryClient.invalidateQueries({ queryKey, refetchType: "active" });

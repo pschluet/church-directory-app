@@ -1123,6 +1123,29 @@ routes.get("/:id/events", async (c) => {
   return c.json({ events });
 });
 
+/** The group's sign-ups, for the Sign-ups tab: newest first, deleted ones left out. */
+routes.get("/:id/signups", async (c) => {
+  const caller = c.get("caller");
+  const db = c.get("db");
+  const organizationId = requireOrganizationId(c);
+  const id = uuidSchema.parse(c.req.param("id"));
+
+  const group = await loadGroupRow(db, id, organizationId);
+  const access = await loadAccess(db, caller, group);
+  assertCanReadGroupContent(access);
+
+  const { rows } = await db.query<GroupPostRow>(
+    `${GROUP_POST_SELECT}
+      where p.group_id = $2 and p.kind = 'SIGNUP' and p.deleted_at is null
+      order by p.created_at desc
+      limit 200`,
+    [caller.appUserId, id]
+  );
+
+  const signups = rows.map((row) => toGroupPostDto(row, access, caller.personId));
+  return c.json({ signups });
+});
+
 /** Appends attachments to a post, numbering them from `startPosition`. */
 async function insertAttachments(
   tx: Queryable,

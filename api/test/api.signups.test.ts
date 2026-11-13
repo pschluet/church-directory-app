@@ -328,6 +328,26 @@ describe.skipIf(!hasDb)("sign-ups", () => {
     expect(res.status).toBe(400);
   });
 
+  it("lists the group's sign-ups for the Sign-ups tab, leaving out deleted ones", async () => {
+    const kept = await createSignup({ title: "Kept" });
+    const gone = await createSignup({ title: "Gone" });
+    await as(organizer).call("DELETE", `/api/groups/${groupId}/posts/${gone.id}`);
+    const res = await as(member).call("GET", `/api/groups/${groupId}/signups`);
+    expect(res.status).toBe(200);
+    expect(res.body.signups.map((p: any) => p.id)).toEqual([kept.id]);
+    expect(res.body.signups[0].signup.title).toBe("Kept");
+  });
+
+  it("does not list a private group's sign-ups to someone outside it", async () => {
+    const created = await as(organizer).call("POST", "/api/groups", {
+      title: "Council",
+      visibility: "PRIVATE",
+    });
+    const outsider = await createUser(db(), { organizationId: orgId });
+    const res = await as(outsider).call("GET", `/api/groups/${created.body.id}/signups`);
+    expect([403, 404]).toContain(res.status);
+  });
+
   describe("public share page", () => {
     it("404s unless the organizer opened it to the public", async () => {
       const post = await createSignup();

@@ -416,3 +416,77 @@
     animation: none;
   }
 }
+
+/*
+ * The group page's section picker (SectionPicker in pages/GroupDetail.tsx).
+ * Closed, the pill is clipped down to the button's width at its right edge
+ * and invisible; open, the clip runs out to the full pill, so it grows
+ * leftward out of the button. Options arrive from the right, nearest first
+ * (`--i` counts from the right-hand end), and the highlight slides between
+ * them.
+ */
+.section-picker {
+  clip-path: inset(0 0 0 calc(100% - var(--collapsed-w, 8rem)) round 9999px);
+  opacity: 0;
+  pointer-events: none;
+  transition:
+    clip-path 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 140ms ease-out 80ms;
+}
+.section-picker[data-open="true"] {
+  clip-path: inset(0 0 0 0 round 9999px);
+  opacity: 1;
+  pointer-events: auto;
+  transition:
+    clip-path 280ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 100ms ease-out;
+}
+.section-option {
+  opacity: 0;
+  translate: 10px 0;
+  transition:
+    opacity 160ms ease-out,
+    translate 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    color 150ms ease-out;
+}
+.section-picker[data-open="true"] .section-option {
+  opacity: 1;
+  translate: 0 0;
+  transition-delay: calc(var(--i, 0) * 40ms);
+}
+.section-thumb {
+  transition:
+    left 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+}
+.section-trigger {
+  transition:
+    opacity 160ms ease-out,
+    border-color 150ms ease-out;
+}
+.section-chevron {
+  transition: rotate 220ms ease-out;
+}
+@keyframes section-label-in {
+  from {
+    opacity: 0;
+    translate: 0 4px;
+  }
+}
+.section-label {
+  animation: section-label-in 240ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .section-picker,
+  .section-picker[data-open="true"],
+  .section-option,
+  .section-picker[data-open="true"] .section-option,
+  .section-thumb,
+  .section-trigger,
+  .section-chevron {
+    transition: none;
+  }
+  .section-label {
+    animation: none;
+  }
+}

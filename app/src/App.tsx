@@ -95,7 +95,7 @@ export const router = createBrowserRouter([
         typo and this table says exactly which pages exist. `groups/:id` above
         stays Messages -- the URL everything already links to.
       */
-      ...(["messages", "files", "events"] as const).map((tab) => ({
+      ...(["messages", "files", "events", "signups"] as const).map((tab) => ({
         path: `groups/:id/${tab}`,
         element: (
           <GroupGuidelinesGate>

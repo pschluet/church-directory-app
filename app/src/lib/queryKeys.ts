@@ -186,6 +186,7 @@ export const qk = {
   groupLive: (orgId: string | null, id: string) => [...qk.group(orgId, id), "live"] as const,
   groupFiles: (orgId: string | null, id: string) => [...qk.group(orgId, id), "files"] as const,
   groupEvents: (orgId: string | null, id: string) => [...qk.group(orgId, id), "events"] as const,
+  groupSignups: (orgId: string | null, id: string) => [...qk.group(orgId, id), "signups"] as const,
   groupReports: (orgId: string | null, id: string) => [...qk.group(orgId, id), "reports"] as const,
   /** Parish-wide moderation queue, outside any one group's subtree. */
   allGroupReports: (orgId: string | null) => [...qk.org(orgId), "group-reports"] as const,
