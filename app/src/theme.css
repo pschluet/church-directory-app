@@ -419,45 +419,48 @@
 
 /*
  * The group page's section picker (SectionPicker in pages/GroupDetail.tsx).
- * Closed, the pill is clipped down to the button's width at its right edge
- * and invisible; open, the clip runs out to the full pill, so it grows
- * leftward out of the button. Options arrive from the right, nearest first
- * (`--i` counts from the right-hand end), and the highlight slides between
- * them.
+ * Closed, the card is clipped down to the button's own size at its top-right
+ * corner and invisible; open, the clip runs out to the whole card, so the
+ * button unfolds downward into a stacked list. Options arrive from the top,
+ * one after another (`--i` is the option's place), and the highlight slides
+ * between them.
  */
 .section-picker {
-  clip-path: inset(0 0 0 calc(100% - var(--collapsed-w, 8rem)) round 9999px);
+  clip-path: inset(
+    0 0 calc(100% - var(--collapsed-h, 2.5rem)) calc(100% - var(--collapsed-w, 8rem)) round 9999px
+  );
   opacity: 0;
   pointer-events: none;
   transition:
-    clip-path 260ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 140ms ease-out 80ms;
+    clip-path 240ms cubic-bezier(0.4, 0, 0.2, 1),
+    opacity 120ms ease-out 120ms;
 }
 .section-picker[data-open="true"] {
-  clip-path: inset(0 0 0 0 round 9999px);
+  clip-path: inset(0 0 0 0 round 1rem);
   opacity: 1;
   pointer-events: auto;
   transition:
-    clip-path 280ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    opacity 100ms ease-out;
+    clip-path 300ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    opacity 90ms ease-out;
 }
 .section-option {
   opacity: 0;
-  translate: 10px 0;
+  translate: 0 -6px;
   transition:
-    opacity 160ms ease-out,
+    opacity 140ms ease-out,
     translate 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    color 150ms ease-out;
+    color 150ms ease-out,
+    background-color 150ms ease-out;
 }
 .section-picker[data-open="true"] .section-option {
   opacity: 1;
   translate: 0 0;
-  transition-delay: calc(var(--i, 0) * 40ms);
+  transition-delay: calc(60ms + var(--i, 0) * 40ms);
 }
 .section-thumb {
   transition:
-    left 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
-    width 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
+    top 220ms cubic-bezier(0.2, 0.8, 0.2, 1),
+    height 220ms cubic-bezier(0.2, 0.8, 0.2, 1);
 }
 .section-trigger {
   transition:

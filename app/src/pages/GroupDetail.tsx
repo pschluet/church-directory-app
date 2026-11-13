@@ -540,11 +540,12 @@ const PICK_SETTLE_MS = 180;
  * picker. Four tabs would crowd the title row; one button showing where you
  * are, with the rest a tap away, does not.
  *
- * Open, the picker grows leftward out of the button (a clip-path from the
- * button's width to the full pill), over the title rather than pushing
- * anything below it, and its options fade in from the right. Picking one
- * slides the highlight to it, switches the section at once, and folds the
- * pill back into the button, which now names the new section. Escape, a click
+ * Open, the button unfolds downward into a card of every section stacked one
+ * above the other (a clip-path from the button's own size to the full card),
+ * floating over the page rather than pushing anything down, and the options
+ * fade in from the top. Picking one slides the highlight to it, switches the
+ * section at once, and folds the card back up into the button, which now
+ * names the new section. Escape, a click
  * outside, or the current section closes it without moving. See theme.css
  * (`.section-picker`); under reduced motion all of it is instant.
  */
@@ -552,8 +553,8 @@ function SectionPicker({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => vo
   const [open, setOpen] = useState(false);
   /** The highlighted option -- the current tab, or the one just picked while the pill folds. */
   const [chosen, setChosen] = useState<Tab>(tab);
-  const [thumb, setThumb] = useState<{ left: number; width: number } | null>(null);
-  const [collapsedWidth, setCollapsedWidth] = useState(0);
+  const [thumb, setThumb] = useState<{ top: number; height: number } | null>(null);
+  const [collapsed, setCollapsed] = useState({ width: 0, height: 0 });
   const rootRef = useRef<HTMLDivElement>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const optionRefs = useRef<(HTMLButtonElement | null)[]>([]);
@@ -564,12 +565,14 @@ function SectionPicker({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => vo
     if (!open) setChosen(tab);
   }, [open, tab]);
 
-  // The thumb sits under the chosen option; measured, so labels of any width fit.
+  // The thumb sits under the chosen option, and the closed card is clipped to
+  // exactly the button's size -- both measured, so any label fits.
   useLayoutEffect(() => {
     const index = SECTIONS.findIndex((s) => s.tab === chosen);
     const el = optionRefs.current[index];
-    if (el) setThumb({ left: el.offsetLeft, width: el.offsetWidth });
-    if (triggerRef.current) setCollapsedWidth(triggerRef.current.offsetWidth);
+    if (el) setThumb({ top: el.offsetTop, height: el.offsetHeight });
+    const trigger = triggerRef.current;
+    if (trigger) setCollapsed({ width: trigger.offsetWidth, height: trigger.offsetHeight });
   }, [chosen, tab, open]);
 
   const close = useCallback((refocus: boolean) => {
@@ -612,11 +615,13 @@ function SectionPicker({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => vo
   }
 
   function onOptionKeyDown(event: KeyboardEvent<HTMLElement>): void {
-    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight") return;
+    const forward = event.key === "ArrowDown" || event.key === "ArrowRight";
+    const back = event.key === "ArrowUp" || event.key === "ArrowLeft";
+    if (!forward && !back) return;
     event.preventDefault();
     const options = optionRefs.current;
     const at = options.findIndex((el) => el === document.activeElement);
-    const step = event.key === "ArrowRight" ? 1 : -1;
+    const step = forward ? 1 : -1;
     options[(at + step + options.length) % options.length]?.focus();
   }
 
@@ -655,14 +660,20 @@ function SectionPicker({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => vo
         inert={!open}
         aria-hidden={!open}
         onKeyDown={onOptionKeyDown}
-        style={{ "--collapsed-w": `${collapsedWidth}px` } as React.CSSProperties}
-        className="section-picker absolute top-0 right-0 z-30 flex items-center gap-0.5 rounded-full border border-line bg-surface p-[3px] shadow-lg"
+        style={
+          {
+            "--collapsed-w": `${collapsed.width}px`,
+            "--collapsed-h": `${collapsed.height}px`,
+            minWidth: Math.max(collapsed.width, 176),
+          } as React.CSSProperties
+        }
+        className="section-picker absolute top-0 right-0 z-30 flex flex-col gap-0.5 rounded-2xl border border-line bg-surface p-1 shadow-lg"
       >
         {thumb && (
           <span
             aria-hidden="true"
-            className="section-thumb absolute top-[3px] bottom-[3px] rounded-full bg-accent-light/50"
-            style={{ left: thumb.left, width: thumb.width }}
+            className="section-thumb absolute right-1 left-1 rounded-xl bg-accent-light/50"
+            style={{ top: thumb.top, height: thumb.height }}
           />
         )}
         {SECTIONS.map((section, index) => {
@@ -677,15 +688,22 @@ function SectionPicker({ tab, onChange }: { tab: Tab; onChange: (tab: Tab) => vo
               aria-label={section.label}
               aria-current={tab === section.tab ? "page" : undefined}
               onClick={() => pick(section.tab)}
-              style={{ "--i": SECTIONS.length - 1 - index } as React.CSSProperties}
-              className={`section-option relative inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-sm font-bold whitespace-nowrap focus-visible:outline-2 focus-visible:outline-accent ${
-                isChosen ? "text-primary" : "text-ink-muted hover:text-ink"
+              style={{ "--i": index } as React.CSSProperties}
+              className={`section-option relative flex w-full items-center gap-2.5 rounded-xl px-3 py-2 text-left font-bold whitespace-nowrap focus-visible:outline-2 focus-visible:outline-accent ${
+                isChosen ? "text-primary" : "text-ink hover:bg-surface-muted"
               }`}
             >
-              <SectionGlyph section={section} />
-              <span aria-hidden="true" className="hidden min-[400px]:inline">
+              <span className={isChosen ? "text-primary" : "text-ink-muted"}>
+                <SectionGlyph section={section} />
+              </span>
+              <span aria-hidden="true" className="flex-1">
                 {section.label}
               </span>
+              {tab === section.tab && (
+                <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+                  <path d="M16.7 5.3a1 1 0 0 1 0 1.4l-8 8a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.4L8 12.6l7.3-7.3a1 1 0 0 1 1.4 0Z" />
+                </svg>
+              )}
             </button>
           );
         })}
