@@ -83,6 +83,8 @@ interface PendingRow {
   event_end: string | null;
   event_location: string | null;
   poll_question: string | null;
+  signup_title: string | null;
+  signup_description: string | null;
   poll_allows_multiple: boolean | null;
   poll_options: string[] | null;
   image_count: number;
@@ -135,6 +137,8 @@ export async function collectPendingEmails(
             to_char(ge.end_time, 'HH24:MI') as event_end,
             ge.location as event_location,
             gpoll.question as poll_question,
+            gsu.title as signup_title,
+            gsu.description as signup_description,
             gpoll.allows_multiple as poll_allows_multiple,
             (select array_agg(o.label order by o.position)
                from group_poll_options o where o.post_id = gpoll.post_id) as poll_options,
@@ -169,6 +173,7 @@ export async function collectPendingEmails(
        left join group_posts parent on parent.id = gp.parent_post_id
        left join group_events ge on ge.post_id = gp.id
        left join group_polls gpoll on gpoll.post_id = gp.id
+       left join group_signups gsu on gsu.post_id = gp.id
        left join persons gpa on gpa.id = gp.author_person_id
        left join directory_requests dr on dr.id = n.directory_request_id
       where np.email_enabled
@@ -259,6 +264,12 @@ function contentOf(row: PendingRow, now: Date): EmailContent {
       attachments,
     };
   }
+  if (row.post_kind === "SIGNUP" && row.signup_title) {
+    // Plain text: the title, then what the organizer said about it.
+    const text = [row.signup_title, row.signup_description].filter(Boolean).join("\n\n");
+    const { body, truncated } = capBody(text);
+    return { ...NO_CONTENT, body, truncated, attachments };
+  }
   const { body, truncated } = capBody(row.post_body);
   return { ...NO_CONTENT, body, bodyFormat: "rich", truncated, attachments };
 }
@@ -277,9 +288,22 @@ function toItem(row: PendingRow, siteUrl: string, now: Date): NotificationEmailI
   const group = row.group_title ?? "your group";
   const author = row.post_author ?? "Somebody";
   const kind = row.post_kind;
-  const what = kind === "EVENT" ? "an event" : kind === "POLL" ? "a poll" : null;
+  const what =
+    kind === "EVENT"
+      ? "an event"
+      : kind === "POLL"
+        ? "a poll"
+        : kind === "SIGNUP"
+          ? "a sign-up"
+          : null;
   const openAction =
-    kind === "EVENT" ? "Open the event" : kind === "POLL" ? "Vote in the app" : "Open the message";
+    kind === "EVENT"
+      ? "Open the event"
+      : kind === "POLL"
+        ? "Vote in the app"
+        : kind === "SIGNUP"
+          ? "Sign up in the app"
+          : "Open the message";
 
   switch (row.type) {
     case "PRAYER_REQUEST":
@@ -311,7 +335,9 @@ function toItem(row: PendingRow, siteUrl: string, now: Date): NotificationEmailI
             ? `New event in ${group}`
             : kind === "POLL"
               ? `New poll in ${group}`
-              : `New message in ${group}`,
+              : kind === "SIGNUP"
+                ? `New sign-up in ${group}`
+                : `New message in ${group}`,
         action: openAction,
         url,
       };

@@ -43,6 +43,9 @@ export const qk = {
    * Keyed apart from `publicEvent` so the two answers never share an entry.
    */
   eventByToken: (token: string) => ["event-by-token", token] as const,
+  /** A sign-up's public page and its signed-in resolver -- the same split as events. */
+  publicSignup: (token: string) => ["public-signup", token] as const,
+  signupByToken: (token: string) => ["signup-by-token", token] as const,
 
   org: (orgId: string | null) => ["org", orgId] as const,
 
@@ -183,6 +186,7 @@ export const qk = {
   groupLive: (orgId: string | null, id: string) => [...qk.group(orgId, id), "live"] as const,
   groupFiles: (orgId: string | null, id: string) => [...qk.group(orgId, id), "files"] as const,
   groupEvents: (orgId: string | null, id: string) => [...qk.group(orgId, id), "events"] as const,
+  groupSignups: (orgId: string | null, id: string) => [...qk.group(orgId, id), "signups"] as const,
   groupReports: (orgId: string | null, id: string) => [...qk.group(orgId, id), "reports"] as const,
   /** Parish-wide moderation queue, outside any one group's subtree. */
   allGroupReports: (orgId: string | null) => [...qk.org(orgId), "group-reports"] as const,

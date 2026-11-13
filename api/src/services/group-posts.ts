@@ -2,6 +2,7 @@ import { type Queryable, one } from "../db";
 import { groupAttachmentFileUrl, photoUrls } from "../photos";
 import type { GroupAccess } from "./groups";
 import { type ReactionRow, reactionsSubselect, toReactionDtos } from "./reactions";
+import { SIGNUP_COLUMNS, toGroupSignupDto, type SignupColumnsRow } from "./group-signups";
 import {
   fullName,
   type GroupPostAttachmentDto,
@@ -50,7 +51,7 @@ export const GROUP_POST_SELECT = `
          ge.share_token,
          ge.public_rsvp_enabled,
          gpl.question as poll_question,
-         gpl.allows_multiple as poll_allows_multiple,
+         gpl.allows_multiple as poll_allows_multiple,${SIGNUP_COLUMNS},
          (
            select coalesce(
                     json_agg(
@@ -139,6 +140,7 @@ export const GROUP_POST_SELECT = `
     join persons_resolved a on a.id = p.author_person_id
     left join group_events ge on ge.post_id = p.id
     left join group_polls gpl on gpl.post_id = p.id
+    left join group_signups gsu on gsu.post_id = p.id
 `;
 
 interface AttachmentRow {
@@ -165,7 +167,7 @@ interface MentionRow {
   lastName: string | null;
 }
 
-export interface GroupPostRow {
+export interface GroupPostRow extends SignupColumnsRow {
   id: string;
   group_id: string;
   author_person_id: string;
@@ -308,6 +310,15 @@ export function toGroupPostDto(
               })),
             })),
           }
+        : null,
+    // A deleted sign-up is gone, as a deleted poll is.
+    signup:
+      row.kind === "SIGNUP" && row.signup_title !== null && !isDeleted
+        ? toGroupSignupDto(row, {
+            callerPersonId,
+            canManage: isMine || access.canModerate,
+            deleted: isDeleted,
+          })
         : null,
     replyCount: row.reply_count,
     lastReplyAt: row.last_reply_at ? new Date(row.last_reply_at).toISOString() : null,

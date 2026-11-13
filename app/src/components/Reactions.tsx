@@ -100,7 +100,7 @@ function mapCachedReactables(data: unknown, fn: (target: Reactable) => Reactable
   const d = data as Record<string, unknown>;
   if (Array.isArray(d.pages))
     return { ...d, pages: d.pages.map((p) => mapCachedReactables(p, fn)) };
-  for (const key of ["posts", "replies", "events", "prayerRequests"]) {
+  for (const key of ["posts", "replies", "events", "signups", "prayerRequests"]) {
     const list = d[key];
     if (Array.isArray(list) && list.every((p) => p && typeof p === "object" && "reactions" in p)) {
       return { ...d, [key]: (list as Reactable[]).map(fn) };
@@ -201,7 +201,11 @@ export function useGroupReactionToggle(groupId: string): ReactionToggle {
   const { organizationId } = useMe();
   return useReactionToggle({
     mutationKey: ["group-react", groupId],
-    cacheKeys: [qk.groupPosts(organizationId, groupId), qk.groupEvents(organizationId, groupId)],
+    cacheKeys: [
+      qk.groupPosts(organizationId, groupId),
+      qk.groupEvents(organizationId, groupId),
+      qk.groupSignups(organizationId, groupId),
+    ],
     path: (postId, emoji) =>
       `/groups/${groupId}/posts/${postId}/reactions/${encodeURIComponent(emoji)}`,
     onErrorInvalidate: qk.group(organizationId, groupId),

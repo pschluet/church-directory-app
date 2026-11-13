@@ -80,6 +80,7 @@ describe("useGroupLive", () => {
         JSON.stringify(["org", "org-1", "groups", "g1", "posts"]),
         JSON.stringify(["org", "org-1", "groups", "g1", "files"]),
         JSON.stringify(["org", "org-1", "groups", "g1", "events"]),
+        JSON.stringify(["org", "org-1", "groups", "g1", "signups"]),
         JSON.stringify(["notifications"]),
       ])
     );

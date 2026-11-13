@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { HTTPException } from "hono/http-exception";
 import type { AppEnv } from "../auth";
 import { one } from "../db";
-import type { EventTokenTargetDto } from "../types";
+import type { EventTokenTargetDto, SignupTokenTargetDto } from "../types";
 
 /**
  * Resolves an event share token for a signed-in reader, so /e/<token> can send
@@ -33,6 +33,20 @@ routes.get("/by-token/:token", async (c) => {
     [c.req.param("token")]
   );
   if (!row) throw new HTTPException(404, { message: "That event link is not valid" });
+  return c.json(row);
+});
+
+/** The same lookup for a sign-up's /s/<token>. */
+routes.get("/signups/by-token/:token", async (c) => {
+  const row = await one<SignupTokenTargetDto>(
+    c.get("db"),
+    `select p.group_id as "groupId", gsu.post_id as "postId"
+       from group_signups gsu
+       join group_posts p on p.id = gsu.post_id
+      where gsu.share_token = $1`,
+    [c.req.param("token")]
+  );
+  if (!row) throw new HTTPException(404, { message: "That sign-up link is not valid" });
   return c.json(row);
 });
 

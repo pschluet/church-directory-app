@@ -57,6 +57,9 @@ const TABLES = [
   // listing every one here is what matters, not the order they appear in.
   "group_post_reports",
   "group_post_mentions",
+  "group_signup_entries",
+  "group_signup_slots",
+  "group_signups",
   "group_poll_votes",
   "group_poll_options",
   "group_polls",

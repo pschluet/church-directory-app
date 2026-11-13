@@ -140,6 +140,13 @@ function group(overrides: Partial<GroupDto> = {}): GroupDto {
   };
 }
 
+/** Opens the section picker and picks a section, as a reader would. */
+async function openSection(name: string): Promise<void> {
+  await userEvent.click(await screen.findByRole("button", { name: /^Section: / }));
+  const nav = await screen.findByRole("navigation", { name: "Group sections" });
+  await userEvent.click(within(nav).getByRole("button", { name }));
+}
+
 let seq = 0;
 function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
   seq += 1;
@@ -162,6 +169,7 @@ function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
     mentionsEveryone: false,
     event: null,
     poll: null,
+    signup: null,
     replyCount: 0,
     lastReplyAt: null,
     canEdit: false,
@@ -244,6 +252,7 @@ function renderPage(path = "/groups/g1") {
         <Route path="/groups/:id/messages" element={<GroupDetail />} />
         <Route path="/groups/:id/files" element={<GroupDetail />} />
         <Route path="/groups/:id/events" element={<GroupDetail />} />
+        <Route path="/groups/:id/signups" element={<GroupDetail />} />
         <Route path="/groups/:id/threads/:postId" element={<GroupDetail />} />
         <Route path="/groups/:id/events/:postId" element={<EventDetail />} />
       </Routes>
@@ -1325,12 +1334,12 @@ describe("GroupDetail", () => {
       renderPage();
       await screen.findByRole("textbox", { name: "Message" });
 
-      await userEvent.click(screen.getByRole("button", { name: "Files" }));
+      await openSection("Files");
       await waitFor(() => expect(document.body.style.overflow).not.toBe("hidden"));
-      await userEvent.click(screen.getByRole("button", { name: "Events" }));
+      await openSection("Events");
       expect(document.body.style.overflow).not.toBe("hidden");
 
-      await userEvent.click(screen.getByRole("button", { name: "Messages" }));
+      await openSection("Messages");
       await waitFor(() => expect(document.body.style.overflow).toBe("hidden"));
     });
 
@@ -1596,7 +1605,7 @@ describe("GroupDetail", () => {
 
       async function openFiles() {
         renderPage();
-        await userEvent.click(await screen.findByRole("button", { name: "Files" }));
+        await openSection("Files");
       }
 
       it("opens an image from Open in the lightbox", async () => {
@@ -1865,7 +1874,7 @@ describe("GroupDetail", () => {
         return Promise.resolve({ posts: [], nextCursor: null });
       });
       renderPage();
-      await userEvent.click(await screen.findByRole("button", { name: "Events" }));
+      await openSection("Events");
       await screen.findByRole("heading", { name: "Still On" });
 
       expect(screen.getByRole("heading", { name: "Called Off" })).toBeInTheDocument();
@@ -1891,7 +1900,7 @@ describe("GroupDetail", () => {
         return Promise.resolve({ pages: [], posts: [], nextCursor: null });
       });
       renderPage();
-      await userEvent.click(await screen.findByRole("button", { name: "Events" }));
+      await openSection("Events");
       await screen.findByRole("heading", { name: "Soon" });
 
       const titles = screen.getAllByRole("heading", { level: 3 }).map((h) => h.textContent);
@@ -2112,7 +2121,7 @@ describe("GroupDetail", () => {
       expect(text.indexOf("first reply")).toBeLessThan(text.indexOf("second reply"));
       expect(screen.getByRole("textbox", { name: "Reply" })).toBeInTheDocument();
       // No tab icons on a thread; the group links back to the feed.
-      expect(screen.queryByRole("button", { name: "Files" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^Section: / })).not.toBeInTheDocument();
       expect(screen.getByRole("link", { name: "Youth Group" })).toHaveAttribute(
         "href",
         "/groups/g1"
@@ -2330,28 +2339,89 @@ describe("GroupDetail", () => {
   });
 
   describe("the header", () => {
-    it("has three icon buttons beside the title and no text tab row", async () => {
+    it("has one section button beside the title, naming the current section", async () => {
       stub();
       renderPage();
       await screen.findByRole("heading", { name: "Youth Group" });
+      const trigger = screen.getByRole("button", { name: "Section: Messages" });
+      expect(trigger).toHaveAttribute("aria-expanded", "false");
+      // The picker's options are hidden until it opens.
+      expect(screen.queryByRole("navigation", { name: "Group sections" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: "Files" })).not.toBeInTheDocument();
+    });
+
+    it("opens into a picker of every section and folds back to the one picked", async () => {
+      stub();
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: "Section: Messages" }));
+      expect(screen.getByRole("button", { name: "Section: Messages" })).toHaveAttribute(
+        "aria-expanded",
+        "true"
+      );
       const nav = screen.getByRole("navigation", { name: "Group sections" });
-      for (const name of ["Messages", "Files", "Events"]) {
+      for (const name of ["Messages", "Files", "Events", "Sign-ups"]) {
         expect(within(nav).getByRole("button", { name })).toBeInTheDocument();
-        expect(within(nav).getByRole("button", { name })).not.toHaveTextContent(name);
       }
       expect(within(nav).getByRole("button", { name: "Messages" })).toHaveAttribute(
         "aria-current",
         "page"
       );
+      await userEvent.click(within(nav).getByRole("button", { name: "Files" }));
+      expect(await screen.findByText("Nothing shared yet")).toBeInTheDocument();
+      await waitFor(() =>
+        expect(screen.getByRole("button", { name: "Section: Files" })).toHaveAttribute(
+          "aria-expanded",
+          "false"
+        )
+      );
+      expect(screen.queryByRole("navigation", { name: "Group sections" })).not.toBeInTheDocument();
     });
 
-    it("switches section from the icons", async () => {
+    it("closes on Escape without changing section", async () => {
       stub();
       renderPage();
-      await userEvent.click(await screen.findByRole("button", { name: "Files" }));
-      expect(screen.getByRole("button", { name: "Files" })).toHaveAttribute("aria-current", "page");
-      expect(screen.getByRole("button", { name: "Messages" })).not.toHaveAttribute("aria-current");
-      expect(await screen.findByText("Nothing shared yet")).toBeInTheDocument();
+      await userEvent.click(await screen.findByRole("button", { name: "Section: Messages" }));
+      await userEvent.keyboard("{Escape}");
+      expect(screen.getByRole("button", { name: "Section: Messages" })).toHaveAttribute(
+        "aria-expanded",
+        "false"
+      );
+      expect(where()).toBe("/groups/g1");
+    });
+
+    it("lists the group's sign-ups on the Sign-ups tab", async () => {
+      stub();
+      const open = post({
+        id: "su1",
+        kind: "SIGNUP",
+        signup: {
+          title: "Parish potluck",
+          description: null,
+          template: "POTLUCK",
+          recipient: null,
+          importantInfo: null,
+          noteMode: "NONE",
+          notePrompt: null,
+          writeInsEnabled: false,
+          writeInMax: null,
+          writeInCount: 0,
+          publicEnabled: false,
+          shareToken: "T",
+          closesOn: null,
+          closed: false,
+          canManage: false,
+          slots: [],
+        },
+      });
+      const base = apiMock.getMockImplementation()!;
+      apiMock.mockImplementation((path: string, options?: unknown) =>
+        path === "/groups/g1/signups" ? Promise.resolve({ signups: [open] }) : base(path, options)
+      );
+      renderPage();
+      await openSection("Sign-ups");
+      expect(where()).toBe("/groups/g1/signups");
+      expect(await screen.findByRole("heading", { name: /Open/ })).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Parish potluck" })).toBeInTheDocument();
     });
 
     it("has no Leave button in the header; Leave is in group settings and asks first", async () => {
@@ -2430,7 +2500,7 @@ describe("GroupDetail", () => {
     it("shows Join under the Events tab too", async () => {
       stub({ group: group(outsider) });
       renderPage();
-      await userEvent.click(await screen.findByRole("button", { name: "Events" }));
+      await openSection("Events");
       expect(await screen.findByText("You're previewing this group.")).toBeInTheDocument();
     });
 
@@ -3277,6 +3347,7 @@ describe("GroupDetail", () => {
         expect(tabFromPathname("/groups/g1")).toBe("messages");
         expect(tabFromPathname("/groups/g1/files")).toBe("files");
         expect(tabFromPathname("/groups/g1/events")).toBe("events");
+        expect(tabFromPathname("/groups/g1/signups")).toBe("signups");
         expect(tabFromPathname("/groups/g1/bogus")).toBe("messages");
         expect(groupTabPath("g1", "events")).toBe("/groups/g1/events");
       });
@@ -3284,17 +3355,14 @@ describe("GroupDetail", () => {
       it("opens the tab the URL names", async () => {
         stubEvent();
         renderPage("/groups/g1/events");
-        expect(await screen.findByRole("button", { name: "Events" })).toHaveAttribute(
-          "aria-current",
-          "page"
-        );
+        expect(await screen.findByRole("button", { name: "Section: Events" })).toBeInTheDocument();
         expect(await screen.findByRole("heading", { name: /Upcoming/ })).toBeInTheDocument();
       });
 
       it("replaces rather than pushes when switching tabs", async () => {
         stub();
         renderPage();
-        await userEvent.click(await screen.findByRole("button", { name: "Files" }));
+        await openSection("Files");
         expect(where()).toBe("/groups/g1/files");
         expect(screen.getByTestId("where")).toHaveAttribute("data-nav-type", "REPLACE");
       });
