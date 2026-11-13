@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { Route, Routes } from "react-router";
 import type { PublicSignupDto } from "@shared";
@@ -26,7 +26,7 @@ vi.mock("../src/context/AuthContext", () => ({
   }),
 }));
 
-const TOGGLE = "Not a member? Sign up without an account.";
+const TOGGLE = "Not a member? Request to join or sign up without joining.";
 
 function signupDto(overrides: Partial<PublicSignupDto> = {}): PublicSignupDto {
   return {
@@ -61,11 +61,18 @@ function signupDto(overrides: Partial<PublicSignupDto> = {}): PublicSignupDto {
 }
 
 function stub(result: () => Promise<unknown>) {
-  apiMock.mockImplementation((path: string) =>
-    path === "/public/signups/tok123"
-      ? result()
-      : Promise.reject(new Error(`unexpected api call ${path}`))
-  );
+  apiMock.mockImplementation((path: string) => {
+    if (path === "/public/signups/tok123") return result();
+    if (path === "/directory-requests/churches") {
+      return Promise.resolve({
+        churches: [
+          { id: "o1", name: "St. Mary" },
+          { id: "o2", name: "All Saints" },
+        ],
+      });
+    }
+    return Promise.reject(new Error(`unexpected api call ${path}`));
+  });
 }
 
 function renderPage(url = "/s/tok123") {
@@ -102,7 +109,28 @@ describe("PublicSignup: signed out", () => {
 
     await userEvent.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
+    const signUp = screen.getByRole("button", { name: "Sign up without joining" });
+    expect(signUp).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByRole("button", { name: "Request to join" })).toBeInTheDocument();
+    expect(screen.queryByText("Main dish")).toBeNull();
+
+    await userEvent.click(signUp);
+    expect(signUp).toHaveAttribute("aria-pressed", "true");
     expect(screen.getByText("Main dish")).toBeInTheDocument();
+  });
+
+  it("opens the request-to-be-added dialog with this parish chosen", async () => {
+    stub(() => Promise.resolve(signupDto()));
+    renderPage();
+
+    await userEvent.click(await screen.findByRole("button", { name: TOGGLE }));
+    await userEvent.click(screen.getByRole("button", { name: "Request to join" }));
+
+    const dialog = await screen.findByRole("dialog");
+    expect(within(dialog).getByText("Request to be added")).toBeInTheDocument();
+    expect(await within(dialog).findByText("All Saints")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Choose a church…")).toBeNull();
+    expect(screen.queryByText("Main dish")).toBeNull();
   });
 
   it("starts unfolded when the URL carries an edit link", async () => {

@@ -29,6 +29,7 @@ import {
   type EntryInput,
   type SignupView,
 } from "../components/GroupSignup";
+import { RequestAccessModal } from "../components/RequestAccessModal";
 import { SignInForm } from "./Login";
 
 /**
@@ -39,8 +40,10 @@ import { SignInForm } from "./Login";
  *
  * The public page leads with sign-in, like the event page: the sign-up's
  * details, then "Members: sign in to sign up", then a folded "Not a member?"
- * card that holds the slots and the name and email fields. It starts unfolded
- * for a returning stranger -- one whose browser holds edit tokens for this
+ * card with two choices: sign up without joining (the slots and the name and
+ * email fields), or request to join (the sign-in page's "Request to be added",
+ * with this parish chosen). It starts unfolded on the sign-up for a returning
+ * stranger -- one whose browser holds edit tokens for this
  * sign-up, or who followed their "save this link" URL -- so their own entries
  * are where they left them.
  *
@@ -165,9 +168,12 @@ function PublicSignupPage({
   const [signer, setSigner] = useState<Signer>(loadSigner);
   const [saved, setSaved] = useState<{ entryId: string; editToken: string } | null>(null);
   const [copied, setCopied] = useState(false);
+  // A returning stranger lands on the slots, where their own entries are.
   const [reveal, setReveal] = useState(
     () => Object.keys(tokens).length > 0 || params.get("entry") !== null
   );
+  const [signingUp, setSigningUp] = useState(reveal);
+  const [requesting, setRequesting] = useState(false);
 
   // An edit link opened on this device: remember its token like one made here.
   useEffect(() => {
@@ -337,9 +343,32 @@ function PublicSignupPage({
               onClick={() => setReveal((value) => !value)}
               className="w-full text-left font-bold text-primary underline-offset-2 hover:text-accent hover:underline"
             >
-              Not a member? Sign up without an account.
+              Not a member? Request to join or sign up without joining.
             </button>
             {reveal && (
+              <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+                <button
+                  type="button"
+                  aria-pressed={signingUp}
+                  onClick={() => setSigningUp(true)}
+                  className={`flex-1 rounded-lg border px-4 py-3 font-bold transition ${
+                    signingUp
+                      ? "border-primary bg-primary text-white"
+                      : "border-line bg-surface text-ink hover:border-accent"
+                  }`}
+                >
+                  Sign up without joining
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setRequesting(true)}
+                  className="flex-1 rounded-lg border border-line bg-surface px-4 py-3 font-bold text-ink transition hover:border-accent"
+                >
+                  Request to join
+                </button>
+              </div>
+            )}
+            {reveal && signingUp && (
               <div className="mt-4 space-y-4">
                 {editUrl && (
                   <div
@@ -410,6 +439,13 @@ function PublicSignupPage({
           </div>
         )}
       </div>
+
+      {requesting && (
+        <RequestAccessModal
+          initialChurchName={signup.organizationName}
+          onClose={() => setRequesting(false)}
+        />
+      )}
     </LandingFrame>
   );
 }
