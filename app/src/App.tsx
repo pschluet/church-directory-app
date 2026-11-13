@@ -16,6 +16,7 @@ import { PrayerRequests } from "./pages/PrayerRequests";
 import { Groups } from "./pages/Groups";
 import { GroupDetail } from "./pages/GroupDetail";
 import { EventDetail } from "./pages/EventDetail";
+import { SignupDetail } from "./pages/SignupDetail";
 import { PublicEvent } from "./pages/PublicEvent";
 import { PublicSignup } from "./pages/PublicSignup";
 import { Unsubscribe } from "./pages/Unsubscribe";
@@ -120,6 +121,15 @@ export const router = createBrowserRouter([
         element: (
           <GroupGuidelinesGate>
             <EventDetail />
+          </GroupGuidelinesGate>
+        ),
+      },
+      // A sign-up, on a page of its own -- the same as an event's.
+      {
+        path: "groups/:id/signups/:postId",
+        element: (
+          <GroupGuidelinesGate>
+            <SignupDetail />
           </GroupGuidelinesGate>
         ),
       },

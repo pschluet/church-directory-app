@@ -81,7 +81,12 @@ import { downloadEventIcs } from "../lib/ics";
 import { EventQrModal } from "../components/EventQrModal";
 import { PollBlock, PollComposerModal } from "../components/GroupPoll";
 import { ShareButtons } from "../components/ShareButtons";
-import { SignupBlock, SignupComposerModal, SignupIcon } from "../components/GroupSignup";
+import {
+  SignupBlock,
+  SignupComposerModal,
+  SignupIcon,
+  useSignupShare,
+} from "../components/GroupSignup";
 import { parseBody, toPlainText, type Inline, type ListBlock } from "../lib/richText";
 import type { Editor } from "@tiptap/react";
 import {
@@ -103,11 +108,20 @@ import {
 } from "../components/ui";
 import {
   eventDetailPath,
+  feedState,
   flashMessage,
+  groupTabPath,
   messagePath,
+  signupDetailPath,
+  tabFromPathname,
   threadPath,
   useMessageTarget,
+  type FeedState,
+  type Tab,
 } from "../lib/messageLinks";
+
+// Re-exported so the pages and tests that take them from here keep working.
+export { feedState, groupTabPath, tabFromPathname, type FeedState, type Tab };
 
 // The message bar's editor and its Aa row: one lazily loaded chunk, so Tiptap
 // stays out of the main bundle (see RichComposerEditor.tsx).
@@ -122,25 +136,6 @@ const FormatButtons = lazy(() =>
  * rules and services/groups.ts (API) for where the capability flags this page
  * renders off of come from -- nothing here re-derives a permission.
  */
-
-export type Tab = "messages" | "files" | "events" | "signups";
-
-const TABS: readonly Tab[] = ["messages", "files", "events", "signups"];
-
-/**
- * Which tab a group URL is on. `/groups/:id` is Messages -- the canonical
- * group URL that the groups list and every notification already point at --
- * and so is anything this does not recognise.
- */
-export function tabFromPathname(pathname: string): Tab {
-  const segment = pathname.split("/").filter(Boolean)[2];
-  return TABS.find((tab) => tab === segment) ?? "messages";
-}
-
-/** A tab's own URL, so it can be linked, bookmarked, and survive a reload. */
-export function groupTabPath(groupId: string, tab: Tab): string {
-  return `/groups/${groupId}/${tab}`;
-}
 
 interface PostsPage {
   posts: GroupPostDto[];
@@ -1384,7 +1379,10 @@ function ThreadView({
     groupId,
     postId,
     now,
-    Boolean(root) && root?.parentPostId === null && root?.kind !== "EVENT"
+    Boolean(root) &&
+      root?.parentPostId === null &&
+      root?.kind !== "EVENT" &&
+      root?.kind !== "SIGNUP"
   );
 
   usePageScrollLock();
@@ -1471,10 +1469,17 @@ function ThreadView({
   }
   // An event has its own page now. A notification or bookmark from before
   // that still says /threads/; send it on rather than show a thread page.
-  if (root.kind === "EVENT") {
+  // So has a sign-up.
+  if (root.kind === "EVENT" || root.kind === "SIGNUP") {
     return (
       <Navigate
-        to={{ pathname: eventDetailPath(groupId, root.id), search: location.search }}
+        to={{
+          pathname:
+            root.kind === "EVENT"
+              ? eventDetailPath(groupId, root.id)
+              : signupDetailPath(groupId, root.id),
+          search: location.search,
+        }}
         replace
         state={location.state}
       />
@@ -1685,24 +1690,13 @@ function AuthorName({ post }: { post: GroupPostDto }) {
   );
 }
 
-/**
- * The state a tab hands the page it opens: that it came from the feed, so the
- * page's way out can pop this entry rather than push another, and which tab,
- * so a fallback lands back on it.
- */
-export interface FeedState {
-  fromFeed?: boolean;
-  fromTab?: Tab;
-  focusComposer?: boolean;
-}
-
-export function feedState(pathname: string, extra?: Omit<FeedState, "fromFeed" | "fromTab">) {
-  return { fromFeed: true, fromTab: tabFromPathname(pathname), ...extra } satisfies FeedState;
-}
-
-/** An event's page or a message's thread -- wherever replying to this post happens. */
+/** An event's or a sign-up's page, or a message's thread -- wherever replying to this post happens. */
 function discussionPath(groupId: string, post: Pick<GroupPostDto, "id" | "kind">): string {
-  return post.kind === "EVENT" ? eventDetailPath(groupId, post.id) : threadPath(groupId, post.id);
+  return post.kind === "EVENT"
+    ? eventDetailPath(groupId, post.id)
+    : post.kind === "SIGNUP"
+      ? signupDetailPath(groupId, post.id)
+      : threadPath(groupId, post.id);
 }
 
 function ChatBubbleIcon({ className = "h-4 w-4" }: { className?: string }) {
@@ -1814,8 +1808,13 @@ export function ChatRow({
   });
 
   const isDeleted = post.deletedAt !== null;
-  const share = useEventShare(post.event);
-  const canShare = post.kind === "EVENT" && !isDeleted && post.event !== null;
+  const eventShare = useEventShare(post.event);
+  const signupShare = useSignupShare(post.signup);
+  const canShare =
+    !isDeleted &&
+    ((post.kind === "EVENT" && post.event !== null) ||
+      (post.kind === "SIGNUP" && post.signup !== null));
+  const share = post.kind === "SIGNUP" ? signupShare : eventShare;
   const reactionToggle = useGroupReactionToggle(groupId);
   const { react } = reactionToggle;
   /** The emoji picker opened from the hover toolbar, which keeps the toolbar and row lit. */
@@ -1857,17 +1856,18 @@ export function ChatRow({
       drawerOnly: true,
       onSelect: () => copyToClipboard(toPlainText(post.body ?? ""), "Text copied"),
     });
-  // A link to this message, to paste anywhere. Not for an event card: its own
-  // "Copy link" below is the event's page, which is the link worth sharing.
-  if (!isDeleted && post.kind !== "EVENT")
+  // A link to this message, to paste anywhere. Not for an event or a sign-up:
+  // its own "Copy link" below is its share link, which is the one worth sharing.
+  if (!isDeleted && post.kind !== "EVENT" && post.kind !== "SIGNUP")
     actions.push({
       label: "Copy link",
       onSelect: () => copyToClipboard(messageUrl(groupId, post, parentKind), "Link copied"),
     });
-  // Saving and advertising the event. Not for a cancelled one: there is nothing to invite
-  // anybody to, and its public page already says it was cancelled.
+  // Saving and advertising the event or sign-up. Not for a cancelled one: there is nothing
+  // to invite anybody to, and its public page already says it was cancelled.
   if (canShare) {
-    actions.push({ label: "Add to calendar", onSelect: share.addToCalendar });
+    if (post.kind === "EVENT")
+      actions.push({ label: "Add to calendar", onSelect: eventShare.addToCalendar });
     actions.push({ label: "Copy link", onSelect: share.copyLink });
     actions.push({ label: "QR code", onSelect: share.openQr });
     actions.push({ label: "PDF flyer", onSelect: share.printFlyer });
@@ -4062,27 +4062,25 @@ function EventBlock({
         <div className="space-y-3 border-t border-line bg-surface-muted/60 px-4 py-3">
           <RsvpControl event={event} postId={postId} rsvp={rsvp} />
 
-          <button
-            type="button"
-            onClick={() => setShowRsvps(true)}
-            className="flex items-center gap-1.5 text-sm font-bold text-accent hover:underline"
-          >
-            <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
-              {PEOPLE_ICON}
-            </svg>
-            <span>{rsvpSummary(event.rsvpCounts)}</span>
-          </button>
-        </div>
-      )}
-
-      {/*
-        On the Events tab, where there is room, the share actions sit in plain
-        sight: advertising an event is the point of most of them, and an
-        overflow menu is a poor place to hide that.
-      */}
-      {wide && !cancelled && (
-        <div className="border-t border-line px-3 py-2">
-          <ShareButtons share={share} />
+          {/*
+            Who is coming, and beside it the share actions in plain sight -- in
+            the conversation as on the Events tab, laid out as a sign-up card's
+            footer is: advertising an event is the point of most of them, and an
+            overflow menu is a poor place to hide that.
+          */}
+          <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1">
+            <button
+              type="button"
+              onClick={() => setShowRsvps(true)}
+              className="flex items-center gap-1.5 text-sm font-bold text-accent hover:underline"
+            >
+              <svg aria-hidden="true" viewBox="0 0 20 20" className="h-4 w-4 fill-current">
+                {PEOPLE_ICON}
+              </svg>
+              <span>{rsvpSummary(event.rsvpCounts)}</span>
+            </button>
+            <ShareButtons share={share} />
+          </div>
         </div>
       )}
 

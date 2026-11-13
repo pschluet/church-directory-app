@@ -19,6 +19,7 @@ import { localDayIso } from "../src/lib/format";
 import { resetRecentReactions } from "../src/lib/emoji";
 import { GroupDetail, groupTabPath, tabFromPathname } from "../src/pages/GroupDetail";
 import { EventDetail } from "../src/pages/EventDetail";
+import { SignupDetail } from "../src/pages/SignupDetail";
 import type { GroupAttachmentPicker } from "../src/components/useGroupAttachmentPicker";
 import { renderWithProviders, chooseOption, stubDownload } from "./utils";
 import { Toaster } from "../src/components/ui";
@@ -255,6 +256,7 @@ function renderPage(path = "/groups/g1") {
         <Route path="/groups/:id/signups" element={<GroupDetail />} />
         <Route path="/groups/:id/threads/:postId" element={<GroupDetail />} />
         <Route path="/groups/:id/events/:postId" element={<EventDetail />} />
+        <Route path="/groups/:id/signups/:postId" element={<SignupDetail />} />
       </Routes>
       <Where />
     </NavStackProvider>,
@@ -3543,6 +3545,15 @@ describe("GroupDetail", () => {
         expect(screen.queryByRole("menuitem", { name: "Add to calendar" })).toBeNull();
       });
 
+      it("puts them in plain sight in the conversation, as a sign-up's card does", async () => {
+        stubEvent();
+        renderPage();
+        await screen.findByRole("heading", { name: "Parish Picnic" });
+        expect(screen.getByRole("button", { name: "Copy link" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "QR code" })).toBeInTheDocument();
+        expect(screen.getByRole("button", { name: "PDF flyer" })).toBeInTheDocument();
+      });
+
       it("puts them in plain sight on the Events tab", async () => {
         stubEvent();
         renderPage("/groups/g1/events");
@@ -3730,6 +3741,130 @@ describe("GroupDetail", () => {
         const bar = await screen.findByRole("textbox", { name: "Reply" });
         expect(bar).not.toHaveFocus();
       });
+    });
+  });
+
+  describe("the sign-up page", () => {
+    const TOKEN = "01JSIGNUPTOKEN000000000000";
+    const su = (postOverrides: Partial<GroupPostDto> = {}) =>
+      post({
+        id: "su1",
+        kind: "SIGNUP",
+        body: null,
+        ...postOverrides,
+        signup: {
+          title: "Parish potluck",
+          description: "Bring a dish to share",
+          template: "POTLUCK",
+          recipient: null,
+          importantInfo: null,
+          noteMode: "NONE",
+          notePrompt: null,
+          writeInsEnabled: false,
+          writeInMax: null,
+          writeInCount: 0,
+          publicEnabled: false,
+          shareToken: TOKEN,
+          closesOn: null,
+          closed: false,
+          canManage: false,
+          slots: [],
+        },
+      });
+
+    function stubSignup({
+      signup = su(),
+      replies = [] as GroupPostDto[],
+    }: {
+      signup?: GroupPostDto;
+      replies?: GroupPostDto[];
+    } = {}) {
+      apiMock.mockImplementation((path: string) => {
+        if (path === "/groups/g1") return Promise.resolve(group());
+        if (path === "/groups/g1/live") return Promise.resolve({ activityAt: "x", typing: [] });
+        if (path === `/groups/g1/posts/${signup.id}`) return Promise.resolve(signup);
+        if (path === `/groups/g1/posts/${signup.id}/replies`) return Promise.resolve({ replies });
+        if (path === "/groups/g1/signups") return Promise.resolve({ signups: [signup] });
+        if (path === "/groups/g1/posts")
+          return Promise.resolve({ posts: [signup], nextCursor: null });
+        return Promise.resolve(undefined);
+      });
+    }
+
+    it("opens from the card's title in the feed, and leaves by popping history", async () => {
+      stubSignup();
+      renderPage();
+      await userEvent.click(await screen.findByRole("link", { name: "Parish potluck" }));
+      expect(where()).toBe("/groups/g1/signups/su1");
+      expect(
+        await screen.findByRole("heading", { level: 1, name: "Parish potluck" })
+      ).toBeInTheDocument();
+      await userEvent.click(await screen.findByRole("link", { name: "Youth Group" }));
+      await waitFor(() => expect(where()).toBe("/groups/g1"));
+      expect(navType()).toBe("POP");
+    });
+
+    it("opens from the card's title on the Sign-ups tab", async () => {
+      stubSignup();
+      renderPage("/groups/g1/signups");
+      await userEvent.click(await screen.findByRole("link", { name: "Parish potluck" }));
+      expect(where()).toBe("/groups/g1/signups/su1");
+    });
+
+    it("opens from Reply on a sign-up, with the composer focused", async () => {
+      stubSignup();
+      renderPage();
+      await screen.findByRole("link", { name: "Parish potluck" });
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Reply" }));
+      expect(where()).toBe("/groups/g1/signups/su1");
+      const bar = await screen.findByRole("textbox", { name: "Reply" });
+      await waitFor(() => expect(bar).toHaveFocus());
+    });
+
+    it("leaves for the Sign-ups tab by replacing when opened directly", async () => {
+      stubSignup();
+      renderPage("/groups/g1/signups/su1");
+      await userEvent.click(await screen.findByRole("link", { name: "Youth Group" }));
+      await waitFor(() => expect(where()).toBe("/groups/g1/signups"));
+      expect(navType()).toBe("REPLACE");
+    });
+
+    it("sends an old thread link for a sign-up on to its page", async () => {
+      stubSignup();
+      renderPage("/groups/g1/threads/su1");
+      await waitFor(() => expect(where()).toBe("/groups/g1/signups/su1"));
+      expect(
+        await screen.findByRole("heading", { level: 1, name: "Parish potluck" })
+      ).toBeInTheDocument();
+    });
+
+    it("shows the sign-up, its share section and the discussion", async () => {
+      stubSignup({
+        replies: [post({ id: "r1", parentPostId: "su1", body: "I'll bring bread" })],
+      });
+      renderPage("/groups/g1/signups/su1");
+      expect(
+        await screen.findByRole("heading", { level: 1, name: "Parish potluck" })
+      ).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: "Share this sign-up" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "QR code" })).toBeInTheDocument();
+      expect(screen.getByRole("button", { name: "PDF flyer" })).toBeInTheDocument();
+      expect(await screen.findByText("I'll bring bread")).toBeInTheDocument();
+      expect(screen.getByRole("heading", { name: /Discussion · 1 reply/ })).toBeInTheDocument();
+    });
+
+    it("offers the share link, QR code and flyer in the card's menu", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+      stubSignup();
+      renderPage();
+      await screen.findByRole("link", { name: "Parish potluck" });
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      expect(screen.getByRole("menuitem", { name: "QR code" })).toBeInTheDocument();
+      expect(screen.getByRole("menuitem", { name: "PDF flyer" })).toBeInTheDocument();
+      await userEvent.click(screen.getByRole("menuitem", { name: "Copy link" }));
+      expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/s/${TOKEN}`);
     });
   });
 });

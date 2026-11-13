@@ -1,5 +1,6 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { useMutation } from "@tanstack/react-query";
+import { useLocation } from "react-router";
 import {
   GROUP_SIGNUP_DESCRIPTION_MAX,
   GROUP_SIGNUP_INFO_MAX,
@@ -19,6 +20,7 @@ import { useMe } from "../context/MeContext";
 import { api } from "../lib/api";
 import { downloadEventFlyer } from "../lib/eventFlyer";
 import { formatDayLabel, parseIsoDate } from "../lib/format";
+import { feedState, signupDetailPath } from "../lib/messageLinks";
 import {
   datesBetween,
   isGeneralOnly,
@@ -1535,6 +1537,10 @@ export function ImportantInfo({ text }: { text: string }) {
  * A sign-up as a card: what it is and who it is for, the important-info box,
  * then every slot with its entries. Changes are live for everyone watching: an
  * entry moves the group's activity stamp (V39), which open pages poll for.
+ *
+ * The title opens the sign-up's own page, as an event card's header does.
+ * With `page` it *is* that page's hero: the title set large and not a link,
+ * and no share row -- the page has a share section of its own.
  */
 export function SignupBlock({
   signup,
@@ -1543,6 +1549,7 @@ export function SignupBlock({
   canSignUp,
   onChanged,
   wide = false,
+  page = false,
 }: {
   signup: GroupSignupDto;
   groupId: string;
@@ -1551,8 +1558,12 @@ export function SignupBlock({
   canSignUp: boolean;
   onChanged: () => Promise<unknown>;
   wide?: boolean;
+  /** The sign-up's own page, rather than a card in the conversation. */
+  page?: boolean;
 }) {
   const base = `/groups/${groupId}/posts/${postId}/signup/entries`;
+  // Remembered so the sign-up page's way out returns to this tab, by popping this entry.
+  const pageState = feedState(useLocation().pathname);
   const share = useSignupShare(signup);
   const [removing, setRemoving] = useState<EntryView | null>(null);
   const write = useMutation({
@@ -1567,17 +1578,38 @@ export function SignupBlock({
 
   return (
     <div
-      className={`mt-1 w-full ${wide ? "max-w-2xl" : "max-w-xl"} overflow-hidden rounded-2xl border border-line bg-surface shadow-sm`}
+      className={
+        page
+          ? "overflow-hidden rounded-3xl border border-line bg-surface shadow-sm"
+          : `mt-1 w-full ${wide ? "max-w-2xl" : "max-w-xl"} overflow-hidden rounded-2xl border border-line bg-surface shadow-sm`
+      }
     >
-      <div className="space-y-3 p-4">
+      {page && <div className="h-2 bg-gradient-to-r from-primary via-primary-light to-accent" />}
+      <div className={page ? "space-y-4 p-6 sm:p-8" : "space-y-3 p-4"}>
         <div>
           <p className="flex items-center gap-1.5 text-xs font-bold uppercase tracking-wider text-accent">
             <SignupIcon />
             Sign-up{signup.template !== "CUSTOM" && ` · ${spec.name}`}
           </p>
-          <h3 className="mt-1 break-words text-lg font-bold leading-snug text-ink">
-            {signup.title}
-          </h3>
+          {page ? (
+            <h1
+              id="signup-title"
+              className="mt-2 break-words text-3xl font-bold leading-tight tracking-tight text-ink sm:text-4xl"
+            >
+              {signup.title}
+            </h1>
+          ) : (
+            <Link
+              to={signupDetailPath(groupId, postId)}
+              state={pageState}
+              viewTransition
+              className="group/title mt-1 block rounded-md focus-visible:outline-2 focus-visible:outline-accent"
+            >
+              <h3 className="break-words text-lg font-bold leading-snug text-ink group-hover/title:underline">
+                {signup.title}
+              </h3>
+            </Link>
+          )}
           {signup.recipient && (
             <p className="text-sm text-ink-muted">
               For{" "}
@@ -1627,7 +1659,7 @@ export function SignupBlock({
           {count === 0 ? "Nobody yet" : `${count} ${count === 1 ? "entry" : "entries"}`}
           {signup.publicEnabled && " · Public"}
         </span>
-        <ShareButtons share={share} />
+        {!page && <ShareButtons share={share} />}
       </div>
 
       {removing && (
