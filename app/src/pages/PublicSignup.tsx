@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Navigate, useParams, useSearchParams } from "react-router";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import {
-  messagePath,
+  signupDetailPath,
   publicSignupEntryCreateSchema,
   type PublicSignupDto,
   type PublicSignupEntryCreatedDto,
@@ -63,12 +63,7 @@ function SignedInRedirect({ token }: { token: string }) {
 
   if (target.isPending) return <Spinner label="Opening the sign-up" />;
   if (target.data) {
-    return (
-      <Navigate
-        to={messagePath(target.data.groupId, { id: target.data.postId, parentPostId: null })}
-        replace
-      />
-    );
+    return <Navigate to={signupDetailPath(target.data.groupId, target.data.postId)} replace />;
   }
   return (
     <LandingFrame>

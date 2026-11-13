@@ -29,6 +29,7 @@ import {
   ReportModal,
   RsvpControl,
   type FeedState,
+  type Tab,
   RsvpListModal,
   groupTabPath,
   joinState,
@@ -101,7 +102,7 @@ export function EventDetail() {
     );
   }
 
-  const header = <EventPageHeader group={group} groupId={groupId} />;
+  const header = <PostPageHeader group={group} groupId={groupId} />;
 
   if (!canSeeContent || (postQuery.error instanceof ApiError && postQuery.error.status === 403)) {
     return (
@@ -162,16 +163,30 @@ export function EventDetail() {
   );
 }
 
-/** "Event" over the group's name, which leads back to the tab the event was opened from. */
-function EventPageHeader({ group, groupId }: { group: GroupDto; groupId: string }) {
+/**
+ * "Event" (or "Sign-up") over the group's name, which leads back to the tab
+ * the page was opened from.
+ */
+export function PostPageHeader({
+  group,
+  groupId,
+  label = "Event",
+  defaultTab = "events",
+}: {
+  group: GroupDto;
+  groupId: string;
+  label?: string;
+  /** Where the way out leads when no tab is behind the page. */
+  defaultTab?: Tab;
+}) {
   const { canGoBack, goBack } = useNavStack();
   const state = useLocation().state as FeedState | null;
   return (
     <header className="mb-4">
-      <p className="text-xs font-bold uppercase tracking-[0.2em] text-ink-muted">Event</p>
+      <p className="text-xs font-bold uppercase tracking-[0.2em] text-ink-muted">{label}</p>
       <Link
-        // Opened with no tab behind it (a share link, a reload), the Events tab.
-        to={groupTabPath(groupId, state?.fromTab ?? "events")}
+        // Opened with no tab behind it (a share link, a reload), the page's own tab.
+        to={groupTabPath(groupId, state?.fromTab ?? defaultTab)}
         viewTransition
         // As a thread's way out: reached from a tab, leaving is a back rather than
         // a second push; opened directly there is nothing to pop, so it replaces.

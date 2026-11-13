@@ -22,4 +22,10 @@ describe("messagePath", () => {
       "/groups/g1/events/e1?message=r1"
     );
   });
+
+  it("links a reply to a sign-up to the sign-up's page", () => {
+    expect(messagePath("g1", { id: "r1", parentPostId: "s1" }, "SIGNUP")).toBe(
+      "/groups/g1/signups/s1?message=r1"
+    );
+  });
 });

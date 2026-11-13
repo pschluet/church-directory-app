@@ -333,6 +333,33 @@ describe.skipIf(!hasDb)("notification emails", () => {
       });
     });
 
+    it("links a reply to a sign-up to the sign-up's own page", async () => {
+      const group = await as(author).call("POST", "/api/groups", {
+        title: "Potluck Crew",
+        visibility: "PUBLIC",
+      });
+      const groupId = group.body.id as string;
+      await as(author).call("POST", `/api/groups/${groupId}/members`, {
+        personId: member.personId,
+      });
+      await optIn(member);
+      const signup = await as(author).call("POST", `/api/groups/${groupId}/posts`, {
+        kind: "SIGNUP",
+        signup: { title: "Parish Potluck", template: "POTLUCK", slots: [{ label: "Main dish" }] },
+      });
+      expect(signup.status).toBe(201);
+      const reply = await as(author).call("POST", `/api/groups/${groupId}/posts`, {
+        body: "Any nut allergies?",
+        parentPostId: signup.body.id,
+      });
+
+      const items = (await pending())[0]!.items;
+      expect(items.at(-1)).toMatchObject({
+        context: "Mary Smith replied",
+        url: `${SITE}/groups/${groupId}/signups/${signup.body.id}?message=${reply.body.id}`,
+      });
+    });
+
     it("tells a mentioned member they were mentioned", async () => {
       const group = await as(author).call("POST", "/api/groups", {
         title: "Choir",

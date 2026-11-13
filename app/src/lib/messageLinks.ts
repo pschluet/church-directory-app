@@ -17,7 +17,48 @@ import { MESSAGE_PARAM } from "@shared";
 
 // The links themselves live in api/src/notification-links.ts, so the
 // notification email builds exactly the links the bell does.
-export { MESSAGE_PARAM, eventDetailPath, messagePath, threadPath } from "@shared";
+export {
+  MESSAGE_PARAM,
+  eventDetailPath,
+  messagePath,
+  signupDetailPath,
+  threadPath,
+} from "@shared";
+
+/** A group page's tabs, each at its own URL. */
+export type Tab = "messages" | "files" | "events" | "signups";
+
+const TABS: readonly Tab[] = ["messages", "files", "events", "signups"];
+
+/**
+ * Which tab a group URL is on. `/groups/:id` is Messages -- the canonical
+ * group URL that the groups list and every notification already point at --
+ * and so is anything this does not recognise.
+ */
+export function tabFromPathname(pathname: string): Tab {
+  const segment = pathname.split("/").filter(Boolean)[2];
+  return TABS.find((tab) => tab === segment) ?? "messages";
+}
+
+/** A tab's own URL, so it can be linked, bookmarked, and survive a reload. */
+export function groupTabPath(groupId: string, tab: Tab): string {
+  return `/groups/${groupId}/${tab}`;
+}
+
+/**
+ * The state a tab hands the page it opens: that it came from the feed, so the
+ * page's way out can pop this entry rather than push another, and which tab,
+ * so a fallback lands back on it.
+ */
+export interface FeedState {
+  fromFeed?: boolean;
+  fromTab?: Tab;
+  focusComposer?: boolean;
+}
+
+export function feedState(pathname: string, extra?: Omit<FeedState, "fromFeed" | "fromTab">) {
+  return { fromFeed: true, fromTab: tabFromPathname(pathname), ...extra } satisfies FeedState;
+}
 
 /**
  * The message this navigation was asked to show, and the navigation's own key.

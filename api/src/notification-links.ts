@@ -27,8 +27,17 @@ export function eventDetailPath(groupId: string, postId: string): string {
 }
 
 /**
+ * Where a sign-up lives: its own page (SignupDetail.tsx), the sign-up twin of
+ * the event page. Its discussion is there too, so "Reply" on one goes here.
+ */
+export function signupDetailPath(groupId: string, postId: string): string {
+  return `/groups/${groupId}/signups/${postId}`;
+}
+
+/**
  * The link to one message. `parentKind` says what a reply hangs off -- a
- * message's thread or an event's page -- and is ignored for a post of its own.
+ * message's thread, an event's page or a sign-up's page -- and is ignored for
+ * a post of its own.
  */
 export function messagePath(
   groupId: string,
@@ -37,11 +46,13 @@ export function messagePath(
 ): string {
   const query = `?${MESSAGE_PARAM}=${encodeURIComponent(post.id)}`;
   if (!post.parentPostId) return `/groups/${groupId}${query}`;
-  return `${
+  const parent =
     parentKind === "EVENT"
       ? eventDetailPath(groupId, post.parentPostId)
-      : threadPath(groupId, post.parentPostId)
-  }${query}`;
+      : parentKind === "SIGNUP"
+        ? signupDetailPath(groupId, post.parentPostId)
+        : threadPath(groupId, post.parentPostId);
+  return `${parent}${query}`;
 }
 
 /**
