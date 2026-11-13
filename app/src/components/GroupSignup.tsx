@@ -920,7 +920,7 @@ function DateTile({ date, past }: { date: string; past: boolean }) {
   return (
     <div
       aria-hidden="true"
-      className={`w-14 shrink-0 overflow-hidden rounded-lg border border-line bg-surface text-center shadow-sm ${
+      className={`w-14 shrink-0 self-start overflow-hidden rounded-lg border border-line bg-surface text-center shadow-sm ${
         past ? "opacity-50 grayscale" : ""
       }`}
     >
