@@ -21,6 +21,8 @@ export interface DraftSlot {
   capacity: string;
   /** What is already signed up, for an existing slot -- what the editor warns about. */
   taken?: number;
+  /** A template's example for an empty row's name. */
+  placeholder?: string;
 }
 
 export interface SignupTemplateSpec {
@@ -29,6 +31,7 @@ export interface SignupTemplateSpec {
   blurb: string;
   emoji: string;
   title: string;
+  titlePlaceholder: string;
   /** Whether slots are dates (a meal train, flowers) rather than items. */
   dated: boolean;
   noteMode: SignupNoteMode;
@@ -59,6 +62,7 @@ export const SIGNUP_TEMPLATE_SPECS: SignupTemplateSpec[] = [
     blurb: "Dish types and how many of each; people say what they're bringing.",
     emoji: "🍲",
     title: "Potluck",
+    titlePlaceholder: "e.g. Parish potluck",
     dated: false,
     noteMode: "REQUIRED",
     notePrompt: "What are you bringing?",
@@ -75,6 +79,7 @@ export const SIGNUP_TEMPLATE_SPECS: SignupTemplateSpec[] = [
     blurb: "One meal a day for a family: dates, dietary needs, and who's cooking.",
     emoji: "🥘",
     title: "Meals for ",
+    titlePlaceholder: "e.g. Meals for the Smith family",
     dated: true,
     noteMode: "OPTIONAL",
     notePrompt: "What meal are you bringing?",
@@ -86,11 +91,12 @@ export const SIGNUP_TEMPLATE_SPECS: SignupTemplateSpec[] = [
     slots: [],
   },
   {
-    template: "FLOWERS",
-    name: "Flowers",
-    blurb: "A list of dates; people pick one. No notes needed.",
-    emoji: "💐",
-    title: "Altar flowers",
+    template: "DATES",
+    name: "Date sign-up",
+    blurb: "Pick-a-date lists: altar flowers, coffee hour, ushers, readers.",
+    emoji: "📅",
+    title: "",
+    titlePlaceholder: "e.g. Altar flowers",
     dated: true,
     noteMode: "NONE",
     notePrompt: "",
@@ -98,15 +104,17 @@ export const SIGNUP_TEMPLATE_SPECS: SignupTemplateSpec[] = [
     writeInMax: null,
     forSomeone: false,
     infoLabel: "Good to know",
-    infoPlaceholder: "Bring flowers by Saturday afternoon.",
+    infoPlaceholder: "What to bring or do, and when.",
     slots: [],
   },
   {
-    template: "STOCKINGS",
-    name: "Stockings",
-    blurb: "Items and counts, plus a few spots for people's own ideas.",
-    emoji: "🧦",
-    title: "St. Nicholas stockings",
+    template: "DONATIONS",
+    name: "Donation drive",
+    blurb:
+      "Items and how many of each, plus room for people's own ideas: gift stockings, food drive, school supplies.",
+    emoji: "🎁",
+    title: "",
+    titlePlaceholder: "e.g. Christmas stockings",
     dated: false,
     noteMode: "NONE",
     notePrompt: "",
@@ -114,8 +122,11 @@ export const SIGNUP_TEMPLATE_SPECS: SignupTemplateSpec[] = [
     writeInMax: 5,
     forSomeone: false,
     infoLabel: "Good to know",
-    infoPlaceholder: "Drop items in the bin by the hall door by December 1.",
-    slots: [item("Oranges", 30), item("Chocolate coins", 30), item("Candy canes", 30)],
+    infoPlaceholder: "Where and when to drop items off.",
+    slots: [
+      { date: "", label: "", capacity: "10", placeholder: "e.g. Oranges" },
+      { date: "", label: "", capacity: "10", placeholder: "e.g. Candy canes" },
+    ],
   },
   {
     template: "CUSTOM",
@@ -123,6 +134,7 @@ export const SIGNUP_TEMPLATE_SPECS: SignupTemplateSpec[] = [
     blurb: "Start blank: volunteers, rides, setup crew…",
     emoji: "📝",
     title: "",
+    titlePlaceholder: "What are people signing up for?",
     dated: false,
     noteMode: "OPTIONAL",
     notePrompt: "",

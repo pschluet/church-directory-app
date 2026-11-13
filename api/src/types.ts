@@ -1086,13 +1086,7 @@ export const GROUP_POLL_MAX_OPTIONS = 10;
  * Sign-ups (see V39__group_signups.sql). The template is only the starting
  * point the organizer picked -- nothing branches on it but the icon.
  */
-export const SIGNUP_TEMPLATES = [
-  "POTLUCK",
-  "MEAL_TRAIN",
-  "FLOWERS",
-  "STOCKINGS",
-  "CUSTOM",
-] as const;
+export const SIGNUP_TEMPLATES = ["POTLUCK", "MEAL_TRAIN", "DATES", "DONATIONS", "CUSTOM"] as const;
 export const signupTemplateSchema = z.enum(SIGNUP_TEMPLATES);
 export type SignupTemplate = z.infer<typeof signupTemplateSchema>;
 /** Whether a signer is asked for a note ("What are you bringing?"). */

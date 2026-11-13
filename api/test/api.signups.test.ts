@@ -213,7 +213,7 @@ describe.skipIf(!hasDb)("sign-ups", () => {
 
   it("caps write-ins, and a write-in belongs to the entry that made it", async () => {
     const post = await createSignup({
-      title: "St. Nicholas stockings",
+      title: "Christmas stockings",
       noteMode: "NONE",
       writeInsEnabled: true,
       writeInMax: 1,

@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { GroupSignupDto, MeDto } from "@shared";
-import { SignupBlock, SignupComposerModal, signupPayload } from "../src/components/GroupSignup";
+import {
+  SignupBlock,
+  SignupComposerModal,
+  SignupSlots,
+  signupPayload,
+  type SignupView,
+} from "../src/components/GroupSignup";
 import { renderWithProviders } from "./utils";
 
 const apiMock = vi.fn();
@@ -109,7 +115,7 @@ describe("SignupBlock", () => {
     renderBlock(signup());
     await userEvent.click(screen.getByRole("button", { name: "Sign up for Dessert" }));
     expect(screen.queryByLabelText("How many")).not.toBeInTheDocument();
-    const submit = screen.getByRole("button", { name: "Sign up" });
+    const submit = screen.getByRole("button", { name: "Claim spot" });
     expect(submit).toBeDisabled();
     await userEvent.type(screen.getByLabelText("What are you bringing?"), "Pie");
     await userEvent.click(submit);
@@ -127,7 +133,7 @@ describe("SignupBlock", () => {
     renderBlock(signup({ noteMode: "NONE" }));
     await userEvent.click(screen.getByRole("button", { name: "Sign up for Dessert" }));
     expect(screen.queryByLabelText(/bringing/)).not.toBeInTheDocument();
-    await userEvent.click(screen.getByRole("button", { name: "Sign up" }));
+    await userEvent.click(screen.getByRole("button", { name: "Claim spot" }));
     expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts/p1/signup/entries", {
       method: "POST",
       body: { slotId: "dessert", quantity: 1, note: null },
@@ -184,6 +190,121 @@ describe("SignupBlock", () => {
   });
 });
 
+describe("spots", () => {
+  beforeEach(() => {
+    apiMock.mockReset();
+    apiMock.mockResolvedValue({});
+  });
+
+  it("draws one circle per open spot, with only the first one reachable", () => {
+    const value = signup();
+    value.slots[1] = { ...value.slots[1]!, capacity: 3 };
+    renderBlock(value);
+    // Main dish: 3 open of 4; Dessert: 3 open of 3. One named button each.
+    expect(screen.getAllByRole("button", { name: /^Sign up for/ })).toHaveLength(2);
+    expect(screen.getByText("AL")).toBeInTheDocument();
+  });
+
+  it("collapses a large slot into a meter and one open spot", () => {
+    const value = signup();
+    value.slots[0] = { ...value.slots[0]!, capacity: 30, taken: 1 };
+    const { container } = renderWithProviders(
+      <SignupBlock signup={value} groupId="g1" postId="p1" canSignUp onChanged={vi.fn()} />
+    );
+    const mainRow = screen.getByText("Main dish").closest("li")!;
+    expect(within(mainRow).getByText("1 of 30")).toBeInTheDocument();
+    expect(
+      within(mainRow).getAllByRole("button", { hidden: true, name: /Sign up for Main dish/ })
+    ).toHaveLength(1);
+    expect(container.querySelectorAll("li button[tabindex='-1']").length).toBe(0);
+  });
+
+  it("steps the quantity with − and +", async () => {
+    renderBlock(signup({ noteMode: "NONE" }));
+    await userEvent.click(screen.getByRole("button", { name: "Sign up for Main dish" }));
+    await userEvent.click(screen.getByRole("button", { name: "One more" }));
+    await userEvent.click(screen.getByRole("button", { name: "One more" }));
+    expect(screen.getByLabelText("How many")).toHaveValue(3);
+    // Only 3 left: + stops there.
+    expect(screen.getByRole("button", { name: "One more" })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: "Claim 3 spots" }));
+    expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts/p1/signup/entries", {
+      method: "POST",
+      body: { slotId: "main", quantity: 3, note: null },
+    });
+  });
+
+  it("shows a date tile for a dated slot", () => {
+    renderBlock(
+      signup({
+        noteMode: "NONE",
+        slots: [
+          {
+            id: "d1",
+            date: "2026-12-06",
+            label: null,
+            capacity: 1,
+            taken: 0,
+            isWriteIn: false,
+            closed: false,
+            entries: [],
+          },
+        ],
+      })
+    );
+    expect(screen.getByText("6")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Sign up for .*December 6/ })).toBeInTheDocument();
+  });
+
+  it("shows checks, never initials, on the public page", () => {
+    const view: SignupView = {
+      noteMode: "NONE",
+      notePrompt: null,
+      writeInsEnabled: false,
+      writeInMax: null,
+      writeInCount: 0,
+      closed: false,
+      slots: [
+        {
+          id: "s1",
+          date: null,
+          label: "Oranges",
+          capacity: 4,
+          taken: 1,
+          isWriteIn: false,
+          closed: false,
+          entries: [
+            {
+              id: "e1",
+              quantity: 1,
+              note: null,
+              name: null,
+              personId: null,
+              isMine: false,
+              canRemove: false,
+            },
+          ],
+        },
+      ],
+    };
+    renderWithProviders(
+      <SignupSlots
+        view={view}
+        canSignUp
+        linkPeople={false}
+        busy={false}
+        error={null}
+        onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        onRemove={vi.fn()}
+      />
+    );
+    expect(screen.getByTitle("Taken")).toBeInTheDocument();
+    // No line of text for an anonymous entry with nothing to say.
+    expect(screen.queryByText("Taken")).not.toBeInTheDocument();
+  });
+});
+
 describe("SignupComposerModal", () => {
   beforeEach(() => {
     apiMock.mockReset();
@@ -193,25 +314,31 @@ describe("SignupComposerModal", () => {
   it("starts from a template and posts its slots", async () => {
     const onPosted = vi.fn().mockResolvedValue(undefined);
     renderWithProviders(<SignupComposerModal groupId="g1" onClose={vi.fn()} onPosted={onPosted} />);
-    await userEvent.click(screen.getByRole("button", { name: /Stockings/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Donation drive/ }));
     const dialog = screen.getByRole("dialog");
-    expect(within(dialog).getByLabelText("Slot 1 name")).toHaveValue("Oranges");
+    expect(within(dialog).getByLabelText("Title")).toHaveAttribute(
+      "placeholder",
+      "e.g. Christmas stockings"
+    );
+    expect(within(dialog).getByLabelText("Slot 1 name")).toHaveAttribute(
+      "placeholder",
+      "e.g. Oranges"
+    );
+    await userEvent.type(within(dialog).getByLabelText("Title"), "Food drive");
+    await userEvent.type(within(dialog).getByLabelText("Slot 1 name"), "Canned soup");
     await userEvent.click(within(dialog).getByRole("button", { name: "Post sign-up" }));
     expect(apiMock).toHaveBeenCalledWith("/groups/g1/posts", {
       method: "POST",
       body: expect.objectContaining({
         kind: "SIGNUP",
         signup: expect.objectContaining({
-          title: "St. Nicholas stockings",
-          template: "STOCKINGS",
+          title: "Food drive",
+          template: "DONATIONS",
           noteMode: "NONE",
           writeInsEnabled: true,
           writeInMax: 5,
-          slots: [
-            { date: null, label: "Oranges", capacity: 30 },
-            { date: null, label: "Chocolate coins", capacity: 30 },
-            { date: null, label: "Candy canes", capacity: 30 },
-          ],
+          // The second row was left empty, so it is dropped.
+          slots: [{ date: null, label: "Canned soup", capacity: 10 }],
         }),
       }),
     });

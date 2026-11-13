@@ -18,7 +18,7 @@ import {
 import { useMe } from "../context/MeContext";
 import { api } from "../lib/api";
 import { downloadEventFlyer } from "../lib/eventFlyer";
-import { formatDayLabel } from "../lib/format";
+import { formatDayLabel, parseIsoDate } from "../lib/format";
 import {
   datesBetween,
   isGeneralOnly,
@@ -224,7 +224,7 @@ function SlotRow({
         className={inputClass}
         value={slot.label}
         maxLength={GROUP_SIGNUP_SLOT_LABEL_MAX}
-        placeholder={dated ? "Name (optional)" : "e.g. Dessert"}
+        placeholder={slot.placeholder ?? (dated ? "Name (optional)" : "e.g. Dessert")}
         onChange={(e) => onChange({ ...slot, label: e.target.value })}
       />
       <input
@@ -480,7 +480,7 @@ export function SignupComposerModal({
             className={inputClass}
             value={draft.title}
             maxLength={GROUP_SIGNUP_TITLE_MAX}
-            placeholder="What are people signing up for?"
+            placeholder={spec.titlePlaceholder}
             onChange={(e) => set({ title: e.target.value })}
             autoFocus={!editing}
           />
@@ -793,19 +793,206 @@ type Editing =
   | { kind: "entry"; entryId: string }
   | null;
 
+/** A slot draws one circle per spot up to this many; past it, a meter and one "+". */
+const SPOT_LIMIT = 12;
+
+/** Soft tints from the theme, picked by hashing the person, so each keeps a colour. */
+const AVATAR_TONES = [
+  "bg-primary/15 text-primary-dark",
+  "bg-accent-light/70 text-ink",
+  "bg-accent/25 text-ink",
+  "bg-primary-light/25 text-primary-dark",
+  "bg-ink-muted/15 text-ink",
+] as const;
+
+function avatarTone(key: string): string {
+  let hash = 0;
+  for (const ch of key) hash = (hash * 31 + ch.charCodeAt(0)) | 0;
+  return AVATAR_TONES[Math.abs(hash) % AVATAR_TONES.length]!;
+}
+
+function nameInitials(name: string): string {
+  const words = name.trim().split(/\s+/);
+  return [words[0]?.[0], words.length > 1 ? words[words.length - 1]?.[0] : undefined]
+    .filter(Boolean)
+    .join("")
+    .toUpperCase();
+}
+
+function CheckIcon({ className = "h-4 w-4" }: { className?: string }) {
+  return (
+    <svg aria-hidden="true" viewBox="0 0 20 20" className={`${className} fill-current`}>
+      <path d="M16.7 5.3a1 1 0 0 1 0 1.4l-8 8a1 1 0 0 1-1.4 0l-4-4a1 1 0 1 1 1.4-1.4L8 12.6l7.3-7.3a1 1 0 0 1 1.4 0Z" />
+    </svg>
+  );
+}
+
+const SPOT = "relative inline-flex size-9 shrink-0 items-center justify-center rounded-full";
+
 /**
- * The little form under a slot. Only the fields that apply: a name for a
- * write-in, a quantity when there is room for more than one, a note when the
+ * A taken spot: the person's initials in their colour, or -- on the public
+ * page, which names nobody -- a soft check. Your own is ringed, and tapping it
+ * opens your entry to change.
+ */
+function TakenSpot({ entry, onOpen }: { entry: EntryView; onOpen: (() => void) | null }) {
+  const label = entry.name ?? (entry.isMine ? "You" : "Taken");
+  const face = entry.name ? (
+    <span className="text-xs font-bold">{nameInitials(entry.name)}</span>
+  ) : (
+    <CheckIcon />
+  );
+  const tone = entry.name ? avatarTone(entry.personId ?? entry.id) : "bg-accent/20 text-accent";
+  const ring = entry.isMine ? "ring-2 ring-primary ring-offset-2 ring-offset-surface" : "";
+  const badge = entry.quantity > 1 && (
+    <span className="absolute -right-2.5 -bottom-1.5 rounded-full border border-surface bg-ink px-1 text-[10px] font-bold leading-4 text-white tabular-nums">
+      ×{entry.quantity}
+    </span>
+  );
+  const className = `${SPOT} spot-in ${tone} ${ring}`;
+  return onOpen ? (
+    <button
+      type="button"
+      title={`${label} -- tap to change`}
+      aria-label={`Change your sign-up${entry.note ? `: ${entry.note}` : ""}`}
+      onClick={onOpen}
+      className={`${className} transition hover:scale-105`}
+    >
+      {face}
+      {badge}
+    </button>
+  ) : (
+    <span title={entry.note ? `${label} -- ${entry.note}` : label} className={className}>
+      {face}
+      {badge}
+    </span>
+  );
+}
+
+/**
+ * An open spot: a dashed circle with a "+" that fills on hover. Only the first
+ * of a run is reachable by keyboard and named for a screen reader -- the rest
+ * repeat it, and a list of identical buttons says nothing more.
+ */
+function OpenSpot({
+  label,
+  first,
+  onClaim,
+  text,
+}: {
+  label: string;
+  first: boolean;
+  onClaim: (() => void) | null;
+  text?: string;
+}) {
+  const circle = (
+    <span
+      aria-hidden="true"
+      className={`${SPOT} border-2 border-dashed transition ${
+        onClaim
+          ? "border-accent/70 text-accent group-hover:scale-110 group-hover:border-solid group-hover:border-accent group-hover:bg-accent-light/40 group-focus-visible:scale-110 group-focus-visible:bg-accent-light/40"
+          : "border-line text-transparent"
+      }`}
+    >
+      <PlusIcon />
+    </span>
+  );
+  if (!onClaim) return circle;
+  return (
+    <button
+      type="button"
+      aria-label={first ? label : undefined}
+      aria-hidden={first ? undefined : true}
+      tabIndex={first ? undefined : -1}
+      onClick={onClaim}
+      className="group inline-flex items-center gap-2 rounded-full focus:outline-none"
+    >
+      {circle}
+      {text && <span className="pr-2 text-sm font-bold text-accent">{text}</span>}
+    </button>
+  );
+}
+
+/** A tear-off calendar page for a dated slot. */
+function DateTile({ date, past }: { date: string; past: boolean }) {
+  const day = parseIsoDate(date);
+  return (
+    <div
+      aria-hidden="true"
+      className={`w-14 shrink-0 overflow-hidden rounded-lg border border-line bg-surface text-center shadow-sm ${
+        past ? "opacity-50 grayscale" : ""
+      }`}
+    >
+      <div className="bg-primary py-0.5 text-[10px] font-bold uppercase tracking-widest text-white">
+        {day.toLocaleDateString(undefined, { weekday: "short" })}
+      </div>
+      <div className="pt-0.5 text-2xl font-bold leading-none text-ink">{day.getDate()}</div>
+      <div className="pb-1 text-[10px] font-bold uppercase tracking-wider text-ink-muted">
+        {day.toLocaleDateString(undefined, { month: "short" })}
+      </div>
+    </div>
+  );
+}
+
+/** − n + for how many: big targets, and the number can still be typed. */
+function Stepper({
+  value,
+  max,
+  onChange,
+}: {
+  value: string;
+  max: number;
+  onChange: (value: string) => void;
+}) {
+  const n = Math.floor(Number(value)) || 0;
+  const step =
+    "inline-flex size-9 items-center justify-center text-lg font-bold text-ink transition hover:bg-surface-muted disabled:opacity-40";
+  return (
+    <div className="inline-flex items-center overflow-hidden rounded-full border border-line bg-surface">
+      <button
+        type="button"
+        aria-label="One fewer"
+        className={step}
+        disabled={n <= 1}
+        onClick={() => onChange(String(Math.max(1, n - 1)))}
+      >
+        −
+      </button>
+      <input
+        type="number"
+        min={1}
+        max={max}
+        aria-label="How many"
+        className="w-12 border-x border-line bg-transparent py-1.5 text-center font-bold tabular-nums text-ink focus:outline-none [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <button
+        type="button"
+        aria-label="One more"
+        className={step}
+        disabled={n >= max}
+        onClick={() => onChange(String(Math.min(max, n + 1)))}
+      >
+        +
+      </button>
+    </div>
+  );
+}
+
+/**
+ * The claim form, as a ticket: a stub naming the slot and what is left, a
+ * torn edge, then only the fields that apply -- what you are bringing for a
+ * write-in, a count when there is room for more than one, a note when the
  * organizer asked for one. `extra` is the public page's name and email.
  */
-function EntryForm({
+function ClaimTicket({
   view,
   slot,
   entry,
   writeIn,
   busy,
   extra,
-  submitLabel,
+  heading,
   onSubmit,
   onCancel,
 }: {
@@ -815,7 +1002,7 @@ function EntryForm({
   writeIn: boolean;
   busy: boolean;
   extra?: ReactNode;
-  submitLabel: string;
+  heading: string;
   onSubmit: (input: { writeIn?: string; quantity: number; note: string | null }) => void;
   onCancel: () => void;
 }) {
@@ -836,6 +1023,14 @@ function EntryForm({
     (!writeIn || label.trim() !== "") &&
     (!askQuantity || (qty >= 1 && (room === null || qty <= room))) &&
     (!askNote || !noteRequired || note.trim() !== "");
+  const count = askQuantity && qty > 1 ? qty : 1;
+  const submitLabel = entry
+    ? "Save"
+    : writeIn
+      ? "Add it"
+      : count > 1
+        ? `Claim ${count} spots`
+        : "Claim spot";
 
   function submit(event: FormEvent) {
     event.preventDefault();
@@ -850,60 +1045,58 @@ function EntryForm({
   return (
     <form
       onSubmit={submit}
-      className="mt-2 space-y-3 rounded-xl border border-accent/40 bg-accent-light/10 p-3"
+      className="mt-3 rounded-xl border border-accent/40 bg-accent-light/15 px-3 shadow-sm"
     >
-      {extra}
-      {writeIn && (
-        <Field label="What are you bringing?">
-          <input
-            className={inputClass}
-            value={label}
-            maxLength={GROUP_SIGNUP_SLOT_LABEL_MAX}
-            placeholder="Be specific, e.g. Chocolate gold coins"
-            onChange={(e) => setLabel(e.target.value)}
-            autoFocus={!extra}
-          />
-        </Field>
-      )}
-      {(askQuantity || askNote) && (
-        <div className={`grid gap-2 ${askQuantity && askNote ? "grid-cols-[5rem_1fr]" : ""}`}>
-          {askQuantity && (
-            <Field label="How many">
-              <input
-                type="number"
-                min={1}
-                max={room ?? GROUP_SIGNUP_MAX_CAPACITY}
-                className={`${inputClass} px-2 text-center`}
-                value={quantity}
-                onChange={(e) => setQuantity(e.target.value)}
-              />
-            </Field>
-          )}
-          {askNote && (
-            <Field label={`${view.notePrompt || "Note"}${noteRequired ? "" : " (optional)"}`}>
-              <input
-                className={inputClass}
-                value={note}
-                maxLength={GROUP_SIGNUP_NOTE_MAX}
-                onChange={(e) => setNote(e.target.value)}
-                autoFocus={!extra && !writeIn}
-              />
-            </Field>
-          )}
-        </div>
-      )}
-      {room !== null && askQuantity && (
-        <p className="text-sm text-ink-muted">
-          {room} {room === 1 ? "spot" : "spots"} left
+      <div className="flex items-baseline justify-between gap-3 py-2">
+        <p className="min-w-0 break-words text-sm font-bold uppercase tracking-wide text-accent">
+          {heading}
         </p>
-      )}
-      <div className="flex flex-wrap gap-2">
-        <Button type="submit" disabled={!valid || busy}>
-          {busy ? "Saving…" : submitLabel}
-        </Button>
-        <Button variant="ghost" onClick={onCancel} disabled={busy}>
-          Cancel
-        </Button>
+        {room !== null && (
+          <p className="shrink-0 text-sm text-ink-muted">
+            {room} {room === 1 ? "spot" : "spots"} left
+          </p>
+        )}
+      </div>
+      <div className="ticket-tear space-y-3 pt-3 pb-3">
+        {extra}
+        {writeIn && (
+          <Field label="What are you bringing?">
+            <input
+              className={inputClass}
+              value={label}
+              maxLength={GROUP_SIGNUP_SLOT_LABEL_MAX}
+              placeholder="Be specific, e.g. Wool socks, size M"
+              onChange={(e) => setLabel(e.target.value)}
+              autoFocus={!extra}
+            />
+          </Field>
+        )}
+        {askNote && (
+          <Field label={`${view.notePrompt || "Note"}${noteRequired ? "" : " (optional)"}`}>
+            <input
+              className={inputClass}
+              value={note}
+              maxLength={GROUP_SIGNUP_NOTE_MAX}
+              onChange={(e) => setNote(e.target.value)}
+              autoFocus={!extra && !writeIn}
+            />
+          </Field>
+        )}
+        <div className="flex flex-wrap items-center gap-3">
+          {askQuantity && (
+            <Stepper
+              value={quantity}
+              max={room ?? GROUP_SIGNUP_MAX_CAPACITY}
+              onChange={setQuantity}
+            />
+          )}
+          <Button type="submit" disabled={!valid || busy} className="!rounded-full">
+            {busy ? "Saving…" : submitLabel}
+          </Button>
+          <Button variant="ghost" onClick={onCancel} disabled={busy}>
+            Cancel
+          </Button>
+        </div>
       </div>
     </form>
   );
@@ -926,6 +1119,7 @@ function ProgressBar({ taken, capacity }: { taken: number; capacity: number }) {
   );
 }
 
+/** One line of "who's bringing what", with Change and Remove where allowed. */
 function EntryLine({
   entry,
   linkPeople,
@@ -952,32 +1146,35 @@ function EntryLine({
     ) : (
       <span className="font-bold text-ink">{entry.name}</span>
     )
-  ) : (
-    <span className="font-bold text-ink">{entry.isMine ? "You" : "Taken"}</span>
-  );
+  ) : entry.isMine ? (
+    <span className="font-bold text-ink">You</span>
+  ) : null;
+  const small =
+    "inline-flex items-center rounded-md px-1 text-sm font-bold hover:underline disabled:opacity-50";
   return (
-    <li
-      className={`flex flex-wrap items-baseline gap-x-2 gap-y-0.5 rounded-lg px-2 py-1 ${
-        entry.isMine ? "bg-primary/10" : ""
-      }`}
-    >
-      <span className="min-w-0 break-words">
+    <li className="flex flex-wrap items-baseline gap-x-2 text-sm">
+      <span className="min-w-0 break-words text-ink">
         {who}
         {entry.isMine && entry.name && <span className="text-ink-muted"> (you)</span>}
-        {entry.note && <span className="text-ink"> — {entry.note}</span>}
+        {entry.note && (who ? <> — {entry.note}</> : entry.note)}
         {entry.quantity > 1 && <span className="text-ink-muted"> ×{entry.quantity}</span>}
-        {entry.email && <span className="text-sm text-ink-muted"> · {entry.email}</span>}
+        {entry.email && <span className="text-ink-muted"> · {entry.email}</span>}
       </span>
       <span className="ml-auto flex gap-1">
         {entry.isMine && canChange && (
-          <button type="button" className={linkButton} onClick={onChange} disabled={busy}>
+          <button
+            type="button"
+            className={`${small} text-accent`}
+            onClick={onChange}
+            disabled={busy}
+          >
             Change
           </button>
         )}
         {entry.canRemove && (entry.isMine ? canChange : true) && (
           <button
             type="button"
-            className="inline-flex items-center rounded-md px-1 py-1 text-sm font-bold text-ink-muted hover:text-primary hover:underline"
+            className={`${small} text-ink-muted hover:text-primary`}
             onClick={onRemove}
             disabled={busy}
           >
@@ -990,9 +1187,13 @@ function EntryLine({
 }
 
 /**
- * Every slot with its entries, and the forms to sign up, change or remove.
+ * Every slot with its spots, and the ticket to claim one, change or remove.
  * Presentational: the caller says what a sign-up, change and removal do, so
  * the group card and the public page share it.
+ *
+ * A slot reads as a row of spots: people's initials where it is taken, dashed
+ * "+" circles where it is open -- tap one to claim it. Dated slots carry a
+ * tear-off calendar page, so a meal train reads like a calendar.
  */
 export function SignupSlots({
   view,
@@ -1027,102 +1228,148 @@ export function SignupSlots({
   const writeInsLeft = view.writeInMax === null ? null : view.writeInMax - view.writeInCount;
   const canWriteIn = canSignUp && !view.closed && view.writeInsEnabled && writeInsLeft !== 0;
 
-  // A finished request closes its form; a failed one leaves it open with the error.
+  // A finished request closes its ticket; a failed one leaves it open with the error.
   const run = (promise: Promise<unknown>) =>
     void promise.then(() => setEditing(null)).catch(() => undefined);
 
   function slotRow(slot: SlotView): ReactNode {
     const left = spotsLeft(slot);
     const mine = slot.entries.find((e) => e.isMine);
-    const title = general ? "Who's bringing what" : slotTitle(slot);
-    const open = canSignUp && !slot.closed && !mine && left !== 0 && !slot.isWriteIn;
-    const formOpen = editing?.kind === "slot" && editing.slotId === slot.id;
+    const fullTitle = general ? "Who's bringing what" : slotTitle(slot);
+    // With a date tile, the tile says the date; the heading is just the name.
+    const heading = slot.date ? slot.label : fullTitle;
+    const claimable = canSignUp && !slot.closed && !mine && left !== 0 && !slot.isWriteIn;
+    const claimOpen = editing?.kind === "slot" && editing.slotId === slot.id;
+    const claim = claimable ? () => setEditing({ kind: "slot", slotId: slot.id }) : null;
+    const claimLabel = `Sign up${fullTitle ? ` for ${fullTitle}` : ""}`;
     const editingEntry =
       editing?.kind === "entry" ? slot.entries.find((e) => e.id === editing.entryId) : undefined;
+    const perSpot = slot.capacity !== null && slot.capacity <= SPOT_LIMIT && !slot.isWriteIn;
+    const openCount = perSpot
+      ? (left ?? 0)
+      : claimable || (!slot.isWriteIn && left !== 0 && !slot.closed)
+        ? 1
+        : 0;
+    // Lines only where they add something: a name, a note, or your own buttons.
+    const lines = slot.entries.filter((e) => e.name || e.note || e.isMine || e.canRemove);
+    // A one-person slot (a meal-train day, a flower Sunday) says who beside the
+    // avatar rather than on a line of its own, so the row stays one tile tall.
+    const inline = slot.entries.length === 1 && lines.length === 1 && openCount === 0;
+    const lineFor = (entry: EntryView) =>
+      editingEntry?.id === entry.id ? null : (
+        <EntryLine
+          key={entry.id}
+          entry={entry}
+          linkPeople={linkPeople}
+          canChange={!slot.closed}
+          busy={busy}
+          onChange={() => setEditing({ kind: "entry", entryId: entry.id })}
+          onRemove={() => onRemove(entry)}
+        />
+      );
+
     return (
-      <li key={slot.id} className={`space-y-1.5 py-3 ${slot.closed ? "opacity-70" : ""}`}>
-        <div className="flex items-center justify-between gap-3">
-          <p className="min-w-0 break-words font-bold text-ink">
-            {title}
-            {slot.isWriteIn && (
-              <span className="ml-2 align-middle text-xs font-bold uppercase tracking-wide text-accent">
-                Own item
+      <li key={slot.id} className={`flex gap-3 py-3 ${slot.closed ? "opacity-70" : ""}`}>
+        {slot.date && <DateTile date={slot.date} past={slot.closed} />}
+        <div className="min-w-0 flex-1 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            {heading ? (
+              <p className="min-w-0 break-words font-bold text-ink">
+                {heading}
+                {slot.isWriteIn && (
+                  <span className="ml-2 align-middle text-xs font-bold uppercase tracking-wide text-accent">
+                    Own item
+                  </span>
+                )}
+              </p>
+            ) : (
+              <span />
+            )}
+            <p className="shrink-0 text-sm tabular-nums text-ink-muted">
+              {slot.isWriteIn ? null : left === 0 ? (
+                <span className="inline-flex items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-xs font-bold text-accent">
+                  <CheckIcon className="h-3.5 w-3.5" />
+                  Full
+                </span>
+              ) : slot.capacity === null ? (
+                slot.taken > 0 ? (
+                  `${slot.taken} signed up`
+                ) : (
+                  ""
+                )
+              ) : (
+                `${slot.taken} of ${slot.capacity}`
+              )}
+            </p>
+          </div>
+          {slot.capacity !== null && !perSpot && !slot.isWriteIn && (
+            <ProgressBar taken={slot.taken} capacity={slot.capacity} />
+          )}
+          <div className="flex flex-wrap items-center gap-2">
+            {slot.entries.map((entry) => (
+              <TakenSpot
+                key={entry.id}
+                entry={entry}
+                onOpen={
+                  entry.isMine && !slot.closed
+                    ? () => setEditing({ kind: "entry", entryId: entry.id })
+                    : null
+                }
+              />
+            ))}
+            {!claimOpen &&
+              Array.from({ length: openCount }, (_, i) => (
+                <OpenSpot
+                  // Open spots are interchangeable; their place is their identity.
+                  key={`open-${i}`}
+                  label={claimLabel}
+                  first={i === 0}
+                  onClaim={claim}
+                  text={
+                    claim && i === openCount - 1 && openCount <= 2
+                      ? slot.capacity === null
+                        ? "Join"
+                        : slot.entries.length === 0
+                          ? "Take it"
+                          : undefined
+                      : undefined
+                  }
+                />
+              ))}
+            {slot.closed && slot.entries.length === 0 && (
+              <span className="text-sm text-ink-muted">
+                {view.closed ? "Closed" : "Date has passed"}
               </span>
             )}
-          </p>
-          <div className="flex shrink-0 items-center gap-3">
-            <p className="shrink-0 text-sm tabular-nums text-ink-muted">
-              {slot.isWriteIn
-                ? `×${slot.capacity ?? 1}`
-                : slot.capacity === null
-                  ? slot.taken > 0
-                    ? `${slot.taken} signed up`
-                    : ""
-                  : left === 0
-                    ? "Full"
-                    : `${slot.taken} of ${slot.capacity}`}
-            </p>
-            {open && !formOpen && (
-              <Button
-                variant="secondary"
-                className="!px-3 !py-1 text-sm"
-                onClick={() => setEditing({ kind: "slot", slotId: slot.id })}
-                aria-label={`Sign up${title ? ` for ${title}` : ""}`}
-              >
-                Sign up
-              </Button>
-            )}
+            {inline && <ul className="min-w-0 flex-1">{lineFor(lines[0]!)}</ul>}
           </div>
+          {!inline && lines.length > 0 && <ul className="space-y-0.5">{lines.map(lineFor)}</ul>}
+          {editingEntry && (
+            <ClaimTicket
+              view={view}
+              slot={slot}
+              entry={editingEntry}
+              writeIn={slot.isWriteIn}
+              busy={busy}
+              heading={`Your sign-up · ${fullTitle ?? "Change"}`}
+              onCancel={() => setEditing(null)}
+              onSubmit={(input) => run(onUpdate(editingEntry.id, input))}
+            />
+          )}
+          {claimable && claimOpen && (
+            <ClaimTicket
+              view={view}
+              slot={slot}
+              entry={null}
+              writeIn={false}
+              busy={busy}
+              extra={formExtra}
+              heading={fullTitle ?? "Sign up"}
+              onCancel={() => setEditing(null)}
+              onSubmit={(input) => run(onCreate({ ...input, slotId: slot.id }))}
+            />
+          )}
         </div>
-        {slot.capacity !== null && !slot.isWriteIn && slot.capacity > 1 && (
-          <ProgressBar taken={slot.taken} capacity={slot.capacity} />
-        )}
-        {slot.entries.length > 0 && (
-          <ul className="space-y-0.5">
-            {slot.entries.map((entry) =>
-              editingEntry?.id === entry.id ? (
-                <li key={entry.id}>
-                  <EntryForm
-                    view={view}
-                    slot={slot}
-                    entry={entry}
-                    writeIn={slot.isWriteIn}
-                    busy={busy}
-                    submitLabel="Save"
-                    onCancel={() => setEditing(null)}
-                    onSubmit={(input) => run(onUpdate(entry.id, input))}
-                  />
-                </li>
-              ) : (
-                <EntryLine
-                  key={entry.id}
-                  entry={entry}
-                  linkPeople={linkPeople}
-                  canChange={!slot.closed}
-                  busy={busy}
-                  onChange={() => setEditing({ kind: "entry", entryId: entry.id })}
-                  onRemove={() => onRemove(entry)}
-                />
-              )
-            )}
-          </ul>
-        )}
-        {slot.closed && slot.entries.length === 0 && (
-          <p className="text-sm text-ink-muted">{view.closed ? "Closed" : "Date has passed"}</p>
-        )}
-        {open && formOpen && (
-          <EntryForm
-            view={view}
-            slot={slot}
-            entry={null}
-            writeIn={false}
-            busy={busy}
-            extra={formExtra}
-            submitLabel="Sign up"
-            onCancel={() => setEditing(null)}
-            onSubmit={(input) => run(onCreate({ ...input, slotId: slot.id }))}
-          />
-        )}
       </li>
     );
   }
@@ -1141,29 +1388,34 @@ export function SignupSlots({
         {writeIns.map(slotRow)}
       </ul>
       {view.writeInsEnabled && !view.closed && (
-        <div className="border-t border-line pt-3">
+        <div className="pt-2">
           {editing?.kind === "writeIn" ? (
-            <EntryForm
+            <ClaimTicket
               view={view}
               slot={null}
               entry={null}
               writeIn
               busy={busy}
               extra={formExtra}
-              submitLabel="Add it"
+              heading="Bring something else"
               onCancel={() => setEditing(null)}
               onSubmit={(input) => run(onCreate(input))}
             />
           ) : canWriteIn ? (
             <button
               type="button"
-              className={linkButton}
               onClick={() => setEditing({ kind: "writeIn" })}
+              className="group flex w-full items-center gap-3 rounded-xl border-2 border-dashed border-accent/40 px-3 py-2 text-left transition hover:border-accent hover:bg-accent-light/20"
             >
-              <PlusIcon />
-              Add your own item
+              <span
+                aria-hidden="true"
+                className={`${SPOT} border-2 border-dashed border-accent/70 text-accent transition group-hover:scale-110 group-hover:bg-accent-light/40`}
+              >
+                <PlusIcon />
+              </span>
+              <span className="font-bold text-accent">Add your own item</span>
               {writeInsLeft !== null && (
-                <span className="font-normal text-ink-muted">({writeInsLeft} left)</span>
+                <span className="ml-auto text-sm text-ink-muted">{writeInsLeft} left</span>
               )}
             </button>
           ) : (

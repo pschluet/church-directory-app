@@ -1,7 +1,7 @@
 -- Sign-ups: a fourth kind of group post, beside MESSAGE, EVENT and POLL.
 --
--- One shape covers potlucks, meal trains, flower rotations, St. Nicholas
--- stockings and whatever comes next: a sign-up is a list of slots, and people
+-- One shape covers potlucks, meal trains, pick-a-date lists, donation
+-- drives and whatever comes next: a sign-up is a list of slots, and people
 -- put entries in slots.
 --
 --   * A slot has an optional date, an optional label and an optional capacity
@@ -58,7 +58,7 @@ create table group_signups (
 
   constraint group_signups_title_not_blank check (btrim(title) <> ''),
   constraint group_signups_template_valid
-    check (template in ('POTLUCK', 'MEAL_TRAIN', 'FLOWERS', 'STOCKINGS', 'CUSTOM')),
+    check (template in ('POTLUCK', 'MEAL_TRAIN', 'DATES', 'DONATIONS', 'CUSTOM')),
   constraint group_signups_note_mode_valid check (note_mode in ('NONE', 'OPTIONAL', 'REQUIRED')),
   constraint group_signups_write_in_max_positive check (write_in_max is null or write_in_max > 0)
 );

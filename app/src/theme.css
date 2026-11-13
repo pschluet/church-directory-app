@@ -370,3 +370,49 @@
     animation: message-flash-still 2000ms ease-out;
   }
 }
+
+/*
+ * Sign-ups (components/GroupSignup.tsx). A spot someone has taken pops into
+ * place, and the claim form is a ticket: a stub above a torn, perforated line
+ * with a half-circle notch bitten out of each side.
+ */
+@keyframes spot-in {
+  from {
+    opacity: 0;
+    scale: 0.4;
+  }
+  70% {
+    scale: 1.12;
+  }
+}
+.spot-in {
+  animation: spot-in 320ms ease-out;
+}
+.ticket-tear {
+  position: relative;
+  border-top: 2px dashed var(--color-line);
+}
+.ticket-tear::before,
+.ticket-tear::after {
+  content: "";
+  position: absolute;
+  top: -10px;
+  width: 18px;
+  height: 18px;
+  border-radius: 9999px;
+  background: var(--color-surface);
+  border: 1px solid var(--color-line);
+}
+.ticket-tear::before {
+  left: -22px;
+  clip-path: inset(0 0 0 50%);
+}
+.ticket-tear::after {
+  right: -22px;
+  clip-path: inset(0 50% 0 0);
+}
+@media (prefers-reduced-motion: reduce) {
+  .spot-in {
+    animation: none;
+  }
+}
