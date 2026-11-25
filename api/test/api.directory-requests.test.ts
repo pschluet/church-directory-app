@@ -140,6 +140,17 @@ describe.skipIf(!hasDb)("directory requests", () => {
       expect((await inbox(otherAdmin)).unreadCount).toBe(0);
     });
 
+    it("is read by an administrator who has seen the request", async () => {
+      await anonymous().call("POST", "/api/directory-requests", request());
+      const [pending] = await pendingRequests();
+      const res = await as(admin).call("POST", "/api/notifications/seen", {
+        directoryRequestIds: [pending!.id],
+      });
+      expect(res.body).toEqual({ cleared: 1 });
+      expect((await inbox(admin)).unreadCount).toBe(0);
+      expect((await inbox(secondAdmin)).unreadCount).toBe(1);
+    });
+
     it("skips an administrator who switched it off", async () => {
       const off = await as(admin).call("PUT", "/api/notifications/preferences", {
         directoryRequests: false,

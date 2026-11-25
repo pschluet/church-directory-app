@@ -600,6 +600,58 @@ describe.skipIf(!hasDb)("notifications", () => {
     });
   });
 
+  describe("marking read once seen on the page", () => {
+    const seen = (u: CreatedUser, prayerRequestIds: string[]) =>
+      as(u).call("POST", "/api/notifications/seen", { prayerRequestIds });
+
+    it("reads only the requests seen", async () => {
+      const first = await post("First");
+      await post("Second");
+
+      const res = await seen(member, [first]);
+      expect(res.status).toBe(200);
+      expect(res.body).toEqual({ cleared: 1 });
+
+      const { body } = await inbox(member);
+      expect(body.unreadCount).toBe(1);
+      expect(body.notifications.find((n: { title: string }) => n.title === "First").read).toBe(
+        true
+      );
+      // Everybody else's stay unread.
+      expect((await inbox(other)).body.unreadCount).toBe(2);
+    });
+
+    it("reads a reviewer's approval notice when the request is seen in the queue", async () => {
+      const { body } = await as(author).call("POST", "/api/prayer-requests", {
+        title: "Pending",
+        body: "Please pray.",
+      });
+      expect((await inbox(reviewer)).body.unreadCount).toBe(1);
+      expect((await seen(reviewer, [body.id])).body).toEqual({ cleared: 1 });
+      expect((await inbox(reviewer)).body.unreadCount).toBe(0);
+      // Seeing it is not deciding it: the admin who has not looked still has theirs.
+      expect((await inbox(admin)).body.unreadCount).toBe(1);
+    });
+
+    it("cannot read somebody else's, and says so no differently", async () => {
+      const id = await post();
+      expect((await seen(outsider, [id])).body).toEqual({ cleared: 0 });
+      expect((await inbox(member)).body.unreadCount).toBe(1);
+    });
+
+    it("is not audited", async () => {
+      const id = await post();
+      const count = async () =>
+        Number(
+          (await db().query<{ count: string }>("select count(*)::text as count from audit_log"))
+            .rows[0]?.count
+        );
+      const before = await count();
+      await seen(member, [id]);
+      expect(await count()).toBe(before);
+    });
+  });
+
   describe("notifications that no longer lead anywhere", () => {
     it("drops one whose request has aged out of the window", async () => {
       const id = await post();

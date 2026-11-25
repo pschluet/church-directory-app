@@ -1,11 +1,12 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../auth";
 import { audit } from "../audit";
-import { loadInbox, markAllRead, markPostRead, markRead } from "../services/notifications";
+import { loadInbox, markAllRead, markRead, markSeenRead } from "../services/notifications";
 import { HTTPException } from "hono/http-exception";
 import {
   groupNotificationPrefUpdateSchema,
   notificationPreferencesSchema,
+  notificationsSeenSchema,
   uuidSchema,
   type GroupNotificationExceptionDto,
   type GroupNotificationPref,
@@ -48,14 +49,16 @@ routes.post("/read", async (c) => {
 });
 
 /**
- * Everything about one post, as the member opens it from a push notification
- * (the SPA sees `?from=push`). Not audited, like the routes around it. A post
- * the caller has no notifications for clears nothing, so it reveals nothing.
+ * Whatever the member just had on screen -- a message, a prayer request, a
+ * join-request banner, a directory request -- as the page reports it (see
+ * useMarkReadWhenSeen in the SPA). Not audited, like the routes around it.
+ * Items the caller has no notifications for clear nothing, so it reveals
+ * nothing.
  */
-routes.post("/posts/:postId/read", async (c) => {
+routes.post("/seen", async (c) => {
   const caller = c.get("caller");
-  const postId = uuidSchema.parse(c.req.param("postId"));
-  const cleared = await markPostRead(c.get("db"), caller.appUserId, postId);
+  const seen = notificationsSeenSchema.parse(await c.req.json());
+  const cleared = await markSeenRead(c.get("db"), caller.appUserId, seen);
   return c.json({ cleared });
 });
 

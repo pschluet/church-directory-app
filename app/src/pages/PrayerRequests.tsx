@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   PRAYER_REQUEST_BODY_MAX,
@@ -39,6 +39,7 @@ import {
   inputClass,
   useNow,
 } from "../components/ui";
+import { useMarkReadWhenSeen } from "../components/useMarkReadWhenSeen";
 
 /**
  * The prayer requests page.
@@ -221,7 +222,7 @@ export function PrayerRequests() {
           </p>
           <ul className="space-y-3">
             {queue.map((request) => (
-              <li key={request.id} className="rounded-md border border-line bg-surface p-3">
+              <ReviewItem key={request.id} request={request}>
                 <RequestBody request={request} />
                 <div className="mt-3 flex flex-col gap-2 sm:flex-row">
                   <Button
@@ -238,7 +239,7 @@ export function PrayerRequests() {
                     Decline
                   </Button>
                 </div>
-              </li>
+              </ReviewItem>
             ))}
           </ul>
         </section>
@@ -395,6 +396,16 @@ function RequestBody({ request }: { request: PrayerRequestDto }) {
   );
 }
 
+/** One request in a reviewer's queue; seeing it reads its approval notice. */
+function ReviewItem({ request, children }: { request: PrayerRequestDto; children: ReactNode }) {
+  const seenRef = useMarkReadWhenSeen({ prayerRequestId: request.id });
+  return (
+    <li ref={seenRef} className="rounded-md border border-line bg-surface p-3">
+      {children}
+    </li>
+  );
+}
+
 function RequestCard({
   request,
   now,
@@ -406,9 +417,14 @@ function RequestCard({
 }) {
   const reactionToggle = usePrayerRequestReactionToggle();
   const [reactionsOpen, setReactionsOpen] = useState(false);
+  // Seeing the card is what reads its notification -- see useMarkReadWhenSeen.
+  const seenRef = useMarkReadWhenSeen({ prayerRequestId: request.id });
 
   return (
-    <li className="flex items-start gap-3 rounded-lg border border-line bg-surface p-4">
+    <li
+      ref={seenRef}
+      className="flex items-start gap-3 rounded-lg border border-line bg-surface p-4"
+    >
       <AuthorAvatar request={request} />
 
       {/* min-w-0 so a long title still truncates inside this column rather than

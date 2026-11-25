@@ -64,6 +64,7 @@ import { useNavStack } from "../components/NavStack";
 import { TYPING_SIGNAL_INTERVAL_MS, typingLabel, useGroupLive } from "../components/useGroupLive";
 import { useFillViewport } from "../components/useFillViewport";
 import { useInfiniteScroll } from "../components/useInfiniteScroll";
+import { useMarkReadWhenSeen } from "../components/useMarkReadWhenSeen";
 import { DocumentViewer } from "../components/DocumentViewer";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import { PersonPicker, type PickedPerson } from "../components/PersonPicker";
@@ -882,9 +883,12 @@ function JoinRequestsBanner({
       api(`/groups/${groupId}/join-requests/${requestId}/${decision}`, { method: "POST" }),
     onSuccess: () => void onDecided(),
   });
+  // The group's join-request notification is one per group, so the banner as a
+  // whole is what reads it.
+  const seenRef = useMarkReadWhenSeen({ joinRequestGroupId: groupId });
 
   return (
-    <section className="mb-6 rounded-lg border border-accent/40 bg-accent/5 p-4">
+    <section ref={seenRef} className="mb-6 rounded-lg border border-accent/40 bg-accent/5 p-4">
       <h2 className="mb-2 font-bold text-ink">
         {requests.length === 1 ? "One request is" : `${requests.length} requests are`} waiting
       </h2>
@@ -1797,6 +1801,8 @@ export function ChatRow({
 }) {
   const navigate = useNavigate();
   const { pathname } = useLocation();
+  // Seeing the message is what reads its notifications -- see useMarkReadWhenSeen.
+  const seenRef = useMarkReadWhenSeen({ groupPostId: post.id });
   const [editing, setEditing] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const isRoot = variant === "root";
@@ -1960,6 +1966,7 @@ export function ChatRow({
 
   return (
     <li
+      ref={seenRef}
       data-post-id={post.id}
       onPointerDown={startPress}
       onPointerMove={movePress}

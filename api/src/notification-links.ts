@@ -15,10 +15,10 @@ export const MESSAGE_PARAM = "message";
 
 /**
  * Set on the message links a push notification or a notification email opens
- * -- "push" or "email" -- so the page it lands on marks that message's
- * notifications read, which is what clicking the same entry in the bell does.
- * Neither can do it themselves: the service worker has no auth context, and an
- * email is just a link. Bell links never carry it; the bell marks read itself.
+ * -- "push" or "email" -- to say where the member came from. Nothing reads it
+ * to mark anything read any more: the message is scrolled into view on
+ * landing, and being seen is what reads it (useMarkReadWhenSeen in the SPA),
+ * however the member got there.
  */
 export const ARRIVAL_PARAM = "from";
 export const ARRIVAL_SOURCES = ["push", "email"] as const;
@@ -108,3 +108,55 @@ export const NOTIFICATION_LABELS: Record<NotificationType, string> = {
   GROUP_POST_REPORT: "A post was reported",
   DIRECTORY_REQUEST: "Asked to be added to the directory",
 };
+
+/**
+ * An item that can be on screen and, by being seen, read its notifications --
+ * a message, a prayer request, the join-requests banner of a group (whose
+ * notification is per group, not per request), or a directory request.
+ */
+export type SeenTarget =
+  | { groupPostId: string }
+  | { prayerRequestId: string }
+  | { directoryRequestId: string }
+  | { joinRequestGroupId: string };
+
+const POST_TYPES: readonly NotificationType[] = [
+  "GROUP_POST",
+  "GROUP_MENTION",
+  "GROUP_EVENT",
+  "GROUP_POST_REPORT",
+];
+
+/**
+ * Whether seeing `target` reads `notification`. The client's copy of
+ * `markSeenRead` in services/notifications.ts, used for the optimistic update
+ * and to skip items with nothing to clear; the two must agree.
+ */
+export function notificationMatchesTarget(
+  notification: Pick<
+    NotificationDto,
+    "type" | "groupId" | "groupPostId" | "prayerRequestId" | "directoryRequestId"
+  >,
+  target: SeenTarget
+): boolean {
+  if ("groupPostId" in target) {
+    return (
+      POST_TYPES.includes(notification.type) && notification.groupPostId === target.groupPostId
+    );
+  }
+  if ("prayerRequestId" in target) {
+    return (
+      (notification.type === "PRAYER_REQUEST" || notification.type === "PRAYER_REQUEST_REVIEW") &&
+      notification.prayerRequestId === target.prayerRequestId
+    );
+  }
+  if ("directoryRequestId" in target) {
+    return (
+      notification.type === "DIRECTORY_REQUEST" &&
+      notification.directoryRequestId === target.directoryRequestId
+    );
+  }
+  return (
+    notification.type === "GROUP_JOIN_REQUEST" && notification.groupId === target.joinRequestGroupId
+  );
+}

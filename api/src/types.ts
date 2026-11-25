@@ -891,6 +891,26 @@ export interface InboxDto {
   notifications: NotificationDto[];
 }
 
+/**
+ * The items a member has just had on screen, for `POST /notifications/seen`:
+ * every unread notification about any of them is marked read. Keyed by what
+ * the notification is about rather than by notification id, so the ones past
+ * the bell's page are cleared too. See `notificationMatchesTarget` for which
+ * types each key clears.
+ */
+const seenIds = z.array(uuidSchema).max(100).optional();
+export const notificationsSeenSchema = z
+  .object({
+    groupPostIds: seenIds,
+    prayerRequestIds: seenIds,
+    directoryRequestIds: seenIds,
+    joinRequestGroupIds: seenIds,
+  })
+  .refine((seen) => Object.values(seen).some((ids) => ids && ids.length > 0), {
+    message: "Name at least one item",
+  });
+export type NotificationsSeen = z.infer<typeof notificationsSeenSchema>;
+
 export const GROUP_NOTIFICATION_PREFS = ["ALL", "MENTIONS", "NONE"] as const;
 export const groupNotificationPrefSchema = z.enum(GROUP_NOTIFICATION_PREFS);
 export type GroupNotificationPref = z.infer<typeof groupNotificationPrefSchema>;

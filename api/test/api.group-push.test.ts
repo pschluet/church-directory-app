@@ -144,14 +144,14 @@ describe.skipIf(!hasDb)("group push notifications", () => {
       const a = await createGroup("Choir");
       const b = await createGroup("Youth");
       const first = await post(a, { body: "One" });
-      await as(member).call("POST", `/api/notifications/posts/${first}/read`);
+      await as(member).call("POST", "/api/notifications/seen", { groupPostIds: [first] });
       await post(b, { body: "Two" });
       expect(lastFor(member)?.body).toBe("1 new message in Youth");
     });
   });
 
-  describe("marking read from a push", () => {
-    it("clears only the caller's notifications for that post", async () => {
+  describe("marking read once a message has been seen", () => {
+    it("clears only the caller's notifications for the posts seen", async () => {
       const groupId = await createGroup("Choir");
       const third = await createUser(db(), { organizationId: orgId, firstName: "Tess" });
       await as(creator).call("POST", `/api/groups/${groupId}/members`, {
@@ -160,7 +160,9 @@ describe.skipIf(!hasDb)("group push notifications", () => {
       const one = await post(groupId, { body: "One" });
       await post(groupId, { body: "Two" });
 
-      const res = await as(member).call("POST", `/api/notifications/posts/${one}/read`);
+      const res = await as(member).call("POST", "/api/notifications/seen", {
+        groupPostIds: [one],
+      });
       expect(res.status).toBe(200);
       expect(res.body).toEqual({ cleared: 1 });
 
@@ -168,22 +170,53 @@ describe.skipIf(!hasDb)("group push notifications", () => {
       expect((await as(third).call("GET", "/api/notifications")).body.unreadCount).toBe(2);
 
       // Again, or for a post they were never told about: nothing to clear.
-      expect((await as(member).call("POST", `/api/notifications/posts/${one}/read`)).body).toEqual({
-        cleared: 0,
+      const again = await as(member).call("POST", "/api/notifications/seen", {
+        groupPostIds: [one, "00000000-0000-0000-0000-000000000000"],
       });
-      expect(
-        (
-          await as(member).call(
-            "POST",
-            "/api/notifications/posts/00000000-0000-0000-0000-000000000000/read"
-          )
-        ).body
-      ).toEqual({ cleared: 0 });
+      expect(again.body).toEqual({ cleared: 0 });
     });
 
-    it("rejects a malformed id", async () => {
-      const res = await as(member).call("POST", "/api/notifications/posts/nope/read");
-      expect(res.status).toBe(400);
+    it("clears several posts at once", async () => {
+      const groupId = await createGroup("Choir");
+      const one = await post(groupId, { body: "One" });
+      const two = await post(groupId, { body: "Two" });
+      await post(groupId, { body: "Three" });
+
+      const res = await as(member).call("POST", "/api/notifications/seen", {
+        groupPostIds: [one, two],
+      });
+      expect(res.body).toEqual({ cleared: 2 });
+      expect((await as(member).call("GET", "/api/notifications")).body.unreadCount).toBe(1);
+    });
+
+    it("does not clear a group's join request by seeing one of its posts", async () => {
+      const groupId = await createGroup("Choir");
+      const one = await post(groupId, { body: "One" });
+      await db().query(
+        `insert into notifications (app_user_id, organization_id, type, group_id)
+         select app_user_id, organization_id, 'GROUP_JOIN_REQUEST', group_id
+           from notifications where group_post_id = $1 and app_user_id = $2`,
+        [one, member.appUserId]
+      );
+
+      await as(member).call("POST", "/api/notifications/seen", { groupPostIds: [one] });
+      const inbox = (await as(member).call("GET", "/api/notifications")).body;
+      expect(inbox.unreadCount).toBe(1);
+      expect(inbox.notifications.find((n: { read: boolean }) => !n.read).type).toBe(
+        "GROUP_JOIN_REQUEST"
+      );
+
+      const banner = await as(member).call("POST", "/api/notifications/seen", {
+        joinRequestGroupIds: [groupId],
+      });
+      expect(banner.body).toEqual({ cleared: 1 });
+    });
+
+    it("rejects a malformed id, or naming nothing", async () => {
+      for (const body of [{ groupPostIds: ["nope"] }, {}, { groupPostIds: [] }]) {
+        const res = await as(member).call("POST", "/api/notifications/seen", body);
+        expect(res.status).toBe(400);
+      }
     });
   });
 });

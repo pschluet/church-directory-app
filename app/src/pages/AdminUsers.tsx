@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from "react";
+import { useId, useMemo, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
@@ -36,6 +36,7 @@ import {
 import { Link } from "../components/nav";
 import { SearchField } from "../components/SearchField";
 import { formatPostedAt } from "../lib/format";
+import { useMarkReadWhenSeen } from "../components/useMarkReadWhenSeen";
 
 /**
  * Accounts.
@@ -672,10 +673,7 @@ function DirectoryRequestsSection({
       {expanded && (
         <ul id={listId} className="space-y-3 px-4 pb-4">
           {requests.map((request) => (
-            <li
-              key={request.id}
-              className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
-            >
+            <DirectoryRequestItem key={request.id} requestId={request.id}>
               <div className="min-w-0">
                 <p className="truncate font-bold text-ink">
                   {request.firstName} {request.lastName}
@@ -699,11 +697,24 @@ function DirectoryRequestsSection({
                   Decline
                 </Button>
               </span>
-            </li>
+            </DirectoryRequestItem>
           ))}
         </ul>
       )}
     </section>
+  );
+}
+
+/** One directory request; seeing it reads its notification -- see useMarkReadWhenSeen. */
+function DirectoryRequestItem({ requestId, children }: { requestId: string; children: ReactNode }) {
+  const seenRef = useMarkReadWhenSeen({ directoryRequestId: requestId });
+  return (
+    <li
+      ref={seenRef}
+      className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+    >
+      {children}
+    </li>
   );
 }
 
