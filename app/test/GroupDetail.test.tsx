@@ -9,6 +9,7 @@ import type {
   GroupMemberDto,
   GroupPostAttachmentDto,
   GroupPostDto,
+  GroupSummaryDto,
   MeDto,
   PublicEventRsvpDto,
 } from "@shared";
@@ -168,6 +169,7 @@ function post(overrides: Partial<GroupPostDto> = {}): GroupPostDto {
     reactions: [],
     mentions: [],
     mentionsEveryone: false,
+    groupMentions: [],
     event: null,
     poll: null,
     signup: null,
@@ -206,6 +208,8 @@ interface Stub {
   typing?: string[];
   /** Newest-first pages, as the API returns them. */
   pages?: { posts: GroupPostDto[]; nextCursor: { createdAt: string; id: string } | null }[];
+  /** The groups list, for the composer's # list. */
+  groups?: GroupSummaryDto[];
 }
 
 function stub({
@@ -214,8 +218,10 @@ function stub({
   typing = [],
   thread,
   files = [],
+  groups = [],
 }: Stub = {}) {
   apiMock.mockImplementation((path: string, options?: { query?: Record<string, string> }) => {
+    if (path === "/groups") return Promise.resolve({ groups });
     if (path === "/groups/g1") return Promise.resolve(g);
     if (path === "/groups/g1/live")
       return Promise.resolve({ activityAt: "2026-10-10T10:00:00.000Z", typing });
@@ -235,6 +241,27 @@ function stub({
     return Promise.resolve({});
   });
 }
+
+function summary(overrides: Partial<GroupSummaryDto>): GroupSummaryDto {
+  return {
+    id: "g2",
+    title: "Choir",
+    description: null,
+    visibility: "PUBLIC",
+    memberCount: 3,
+    archivedAt: null,
+    myRole: null,
+    unreadCount: 0,
+    hasUpdates: false,
+    pendingJoinRequestId: null,
+    pinned: false,
+    parishWide: false,
+    ...overrides,
+  };
+}
+
+const CHOIR_ID = "0b9a3f2e-4c1d-4e8f-9a7b-1c2d3e4f5a6b";
+const SECRET_ID = "7d6c5b4a-3f2e-4d1c-8b0a-9f8e7d6c5b4a";
 
 function Where() {
   const type = useNavigationType();
@@ -514,6 +541,115 @@ describe("GroupDetail", () => {
     const everyone = await screen.findByText("@everyone");
     expect(everyone).toHaveClass("text-accent");
     expect(everyone.closest("a")).toBeNull();
+  });
+
+  describe("# group mentions", () => {
+    const withPost = (overrides: Partial<GroupPostDto>) =>
+      stub({ pages: [{ posts: [post(overrides)], nextCursor: null }] });
+
+    it("shows a group the reader may see as a gold link to it", async () => {
+      withPost({
+        body: `Ask <#${CHOIR_ID}> about it`,
+        groupMentions: [{ groupId: CHOIR_ID, title: "Choir", linkable: true }],
+      });
+      renderPage();
+      const chip = await screen.findByRole("link", { name: "#Choir" });
+      expect(chip).toHaveClass("text-accent");
+      expect(chip).toHaveAttribute("href", `/groups/${CHOIR_ID}`);
+    });
+
+    it("says only 'secret group' for one the reader may not know, and links nowhere", async () => {
+      withPost({
+        body: `Ask <#${SECRET_ID}>`,
+        groupMentions: [{ groupId: SECRET_ID, title: null, linkable: false }],
+      });
+      renderPage();
+      const chip = await screen.findByText("#secret group");
+      expect(chip).toHaveClass("text-accent");
+      expect(chip.closest("a")).toBeNull();
+      expect(screen.queryByText(SECRET_ID, { exact: false })).not.toBeInTheDocument();
+    });
+
+    it("names a deleted group, without a link", async () => {
+      withPost({
+        body: `Ask <#${CHOIR_ID}>`,
+        groupMentions: [{ groupId: CHOIR_ID, title: "Choir", linkable: false }],
+      });
+      renderPage();
+      const chip = await screen.findByText("#Choir");
+      expect(chip.closest("a")).toBeNull();
+    });
+
+    it("offers the groups the writer can open after #, and sends the pick as its id", async () => {
+      stub({
+        groups: [
+          summary({ id: CHOIR_ID, title: "Choir", visibility: "PUBLIC" }),
+          summary({ id: SECRET_ID, title: "Prayer Team", visibility: "SECRET", myRole: "MEMBER" }),
+          // Private and not the writer's: they cannot open it, so it is not offered.
+          summary({ id: "g-council", title: "Parish Council", visibility: "PRIVATE" }),
+          // Archived: not offered either.
+          summary({
+            id: "g-old",
+            title: "Old Committee",
+            myRole: "MEMBER",
+            archivedAt: "2026-01-01T00:00:00.000Z",
+          }),
+        ],
+      });
+      renderPage();
+      const bar = await screen.findByRole("textbox", { name: "Message" });
+
+      await typeInBar(bar, "ask #");
+      expect(await screen.findByRole("button", { name: "#Choir" })).toBeVisible();
+      expect(screen.getByRole("button", { name: /#Prayer Team/ })).toBeVisible();
+      expect(screen.queryByRole("button", { name: /Parish Council/ })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /Old Committee/ })).not.toBeInTheDocument();
+
+      await typeInBar(bar, "pray");
+      expect(screen.queryByRole("button", { name: "#Choir" })).not.toBeInTheDocument();
+      await userEvent.keyboard("{Enter}");
+      expect(barText(bar)).toBe("ask #Prayer Team ");
+
+      await userEvent.keyboard("{Enter}");
+      await waitFor(() =>
+        expect(apiMock).toHaveBeenCalledWith(
+          "/groups/g1/posts",
+          expect.objectContaining({
+            method: "POST",
+            body: expect.objectContaining({ body: `ask <#${SECRET_ID}> ` }),
+          })
+        )
+      );
+    });
+
+    it("keeps a mention's name in the box when its message is edited", async () => {
+      withPost({
+        id: "p-mine",
+        body: `Ask <#${CHOIR_ID}>`,
+        canEdit: true,
+        groupMentions: [{ groupId: CHOIR_ID, title: "Choir", linkable: true }],
+      });
+      renderPage();
+      await screen.findByRole("link", { name: "#Choir" });
+      await userEvent.click(screen.getByRole("button", { name: "Actions for this post" }));
+      await userEvent.click(screen.getByRole("menuitem", { name: "Edit" }));
+      const bar = await screen.findByRole("textbox", { name: "Edit message" });
+      await waitFor(() => expect(barText(bar)).toBe("Ask #Choir"));
+    });
+  });
+
+  describe("the group's link", () => {
+    it("copies it from the group's settings, with the same Copy link button as an event's", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+      stub();
+      renderPage();
+      await userEvent.click(await screen.findByRole("button", { name: /3 members/ }));
+      const dialog = await screen.findByRole("dialog");
+      await userEvent.click(within(dialog).getByRole("button", { name: "Copy link" }));
+      expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/groups/g1`);
+      expect(await within(dialog).findByRole("button", { name: "Copied" })).toBeInTheDocument();
+    });
   });
 
   describe("the message bar", () => {

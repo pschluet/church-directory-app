@@ -17,17 +17,29 @@
  * the composer shows and what everyone else sees cannot drift apart.
  */
 
-import { parseBody, type Inline, type ListBlock } from "@shared";
+import {
+  groupMentionToken,
+  parseBody,
+  type GroupLabel,
+  type Inline,
+  type ListBlock,
+} from "@shared";
 
 // The parser and plain-text form live in api/src/rich-text.ts, so a notification
 // email quotes a message exactly as the app shows it. Re-exported here so every
 // existing import of this module keeps working.
 export {
+  GROUP_MENTION_TOKEN,
+  SECRET_GROUP_LABEL,
+  groupMentionIds,
+  groupMentionText,
+  groupMentionToken,
   isSafeHref,
   parseBody,
   parseInline,
   toPlainText,
   type Block,
+  type GroupLabel,
   type Inline,
   type ListBlock,
 } from "@shared";
@@ -45,46 +57,67 @@ export type DocNode = {
 
 const MARK_OF = { bold: "bold", italic: "italic", underline: "underline", strike: "strike" };
 
-function inlineToDoc(nodes: Inline[], marks: DocNode["marks"] = []): DocNode[] {
+function inlineToDoc(
+  nodes: Inline[],
+  groupLabel: GroupLabel | undefined,
+  marks: DocNode["marks"] = []
+): DocNode[] {
   return nodes.flatMap((node): DocNode[] => {
     if (node.kind === "text") {
       return node.text
         ? [{ type: "text", text: node.text, ...(marks.length ? { marks } : {}) }]
         : [];
     }
+    if (node.kind === "groupMention") {
+      return [
+        {
+          type: "groupMention",
+          attrs: { groupId: node.groupId, label: groupLabel?.(node.groupId) ?? null },
+          ...(marks.length ? { marks } : {}),
+        },
+      ];
+    }
     const mark =
       node.kind === "link"
         ? { type: "link", attrs: { href: node.href } }
         : { type: MARK_OF[node.kind] };
-    return inlineToDoc(node.children, [...marks, mark]);
+    return inlineToDoc(node.children, groupLabel, [...marks, mark]);
   });
 }
 
-function linesToParagraph(lines: Inline[][]): DocNode {
+function linesToParagraph(lines: Inline[][], groupLabel?: GroupLabel): DocNode {
   const content = lines.flatMap((line, k) => [
     ...(k > 0 ? [{ type: "hardBreak" }] : []),
-    ...inlineToDoc(line),
+    ...inlineToDoc(line, groupLabel),
   ]);
   return content.length ? { type: "paragraph", content } : { type: "paragraph" };
 }
 
-function listToDoc(list: ListBlock): DocNode {
+function listToDoc(list: ListBlock, groupLabel?: GroupLabel): DocNode {
   return {
     type: list.ordered ? "orderedList" : "bulletList",
     ...(list.ordered ? { attrs: { start: list.start } } : {}),
     content: list.items.map((item) => ({
       type: "listItem",
-      content: [linesToParagraph(item.lines), ...item.children.map(listToDoc)],
+      content: [
+        linesToParagraph(item.lines, groupLabel),
+        ...item.children.map((child) => listToDoc(child, groupLabel)),
+      ],
     })),
   };
 }
 
-/** A stored body as the editor's document, for editing a message. */
-export function bodyToDoc(body: string): DocNode {
+/**
+ * A stored body as the editor's document, for editing a message. `groupLabel`
+ * names the groups it # mentions, so the box shows "#Name" rather than an id.
+ */
+export function bodyToDoc(body: string, groupLabel?: GroupLabel): DocNode {
   return {
     type: "doc",
     content: parseBody(body).map((block) =>
-      block.kind === "line" ? linesToParagraph([block.content]) : listToDoc(block)
+      block.kind === "line"
+        ? linesToParagraph([block.content], groupLabel)
+        : listToDoc(block, groupLabel)
     ),
   };
 }
@@ -119,7 +152,10 @@ function closeSyntax(mark: OpenMark): string {
  * a formatted run) could pair up with something.
  */
 function escapeText(text: string): string {
-  return text.replace(/[\\_[\]]/g, "\\$&").replace(/([*+~])(?=\1|$)|^([*+~])/g, "\\$&");
+  return text
+    .replace(/[\\_[\]]/g, "\\$&")
+    .replace(/([*+~])(?=\1|$)|^([*+~])/g, "\\$&")
+    .replace(/<(?=#)/g, "\\<");
 }
 
 function marksOf(node: DocNode): OpenMark[] {
@@ -131,7 +167,8 @@ function marksOf(node: DocNode): OpenMark[] {
     );
 }
 
-type Run = { text: string; marks: OpenMark[] } | { text: "\n"; marks: null };
+/** `raw`: written as is, not escaped -- a # group mention's token. */
+type Run = { text: string; marks: OpenMark[]; raw?: boolean } | { text: "\n"; marks: null };
 
 /**
  * The paragraph as runs of text and their marks, with the spaces at the edges
@@ -142,7 +179,9 @@ function toRuns(content: DocNode[]): Run[] {
   const runs: Run[] = [];
   for (const node of content) {
     if (node.type === "hardBreak") runs.push({ text: "\n", marks: null });
-    else if (node.type === "text" && node.text) {
+    else if (node.type === "groupMention" && typeof node.attrs?.groupId === "string") {
+      runs.push({ text: groupMentionToken(node.attrs.groupId), marks: marksOf(node), raw: true });
+    } else if (node.type === "text" && node.text) {
       const marks = marksOf(node);
       const [, lead = "", core = "", trail = ""] = /^(\s*)(.*?)(\s*)$/s.exec(node.text) ?? [];
       if (lead) runs.push({ text: lead, marks: [] });
@@ -195,7 +234,7 @@ function serializeInline(content: DocNode[] = []): string {
     closeFrom(k);
     for (const mark of run.marks.slice(k)) out += openSyntax(mark);
     open = run.marks;
-    out += escapeText(run.text);
+    out += run.raw ? run.text : escapeText(run.text);
   }
   closeFrom(0);
   return out;

@@ -40,6 +40,11 @@ export function tabFromPathname(pathname: string): Tab {
   return TABS.find((tab) => tab === segment) ?? "messages";
 }
 
+/** The full address of a group's page, for the clipboard. */
+export function groupUrl(groupId: string): string {
+  return new URL(`/groups/${groupId}`, window.location.origin).href;
+}
+
 /** A tab's own URL, so it can be linked, bookmarked, and survive a reload. */
 export function groupTabPath(groupId: string, tab: Tab): string {
   return `/groups/${groupId}/${tab}`;

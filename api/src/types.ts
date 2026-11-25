@@ -1797,6 +1797,18 @@ export interface GroupPostMentionDto {
 }
 
 /**
+ * A group a post # mentions, as the caller may see it (see
+ * services/group-mentions.ts). `title` is null when the caller may not know
+ * the group's name -- it reads "#secret group". `linkable` is false for that,
+ * and for a group that has since been deleted.
+ */
+export interface GroupMentionDto {
+  groupId: string;
+  title: string | null;
+  linkable: boolean;
+}
+
+/**
  * Somebody who reacted. A group post's reactors carry no photo -- the group page
  * already has its member list to find one in -- while a prayer request's do,
  * since that page has no list of people to look them up from.
@@ -1835,6 +1847,8 @@ export interface GroupPostDto {
   mentions: GroupPostMentionDto[];
   /** Whether the post says "@everyone"; false for a deleted post. */
   mentionsEveryone: boolean;
+  /** The groups the body # mentions, resolved for the caller; empty for a deleted post. */
+  groupMentions: GroupMentionDto[];
   /** In the order each emoji was first used; empty for a deleted post. */
   reactions: ReactionDto[];
   event: GroupEventDto | null;

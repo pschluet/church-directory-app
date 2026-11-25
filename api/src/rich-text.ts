@@ -10,6 +10,7 @@
  * The syntax, one line per line of the message:
  *
  *   **bold**   _italic_   ++underline++   ~~strike~~   [text](https://…)
+ *   <#group-id>  a # mention of a group (see GROUP_MENTION_TOKEN)
  *   - a bulleted item      1. a numbered item      (indent 2+ spaces to nest)
  *
  * A backslash before punctuation makes it literal, which is how the composer
@@ -20,7 +21,8 @@
 export type Inline =
   | { kind: "text"; text: string }
   | { kind: "bold" | "italic" | "underline" | "strike"; children: Inline[] }
-  | { kind: "link"; href: string; children: Inline[] };
+  | { kind: "link"; href: string; children: Inline[] }
+  | { kind: "groupMention"; groupId: string };
 
 export type ListBlock = {
   kind: "list";
@@ -30,6 +32,46 @@ export type ListBlock = {
 };
 
 export type Block = { kind: "line"; content: Inline[] } | ListBlock;
+
+// ---------------------------------------------------------------------------
+// # group mentions
+// ---------------------------------------------------------------------------
+
+/**
+ * A # mention of a group is stored as `<#group-id>`, never as the group's name:
+ * the body goes to every reader, and a Secret group's name must not. Each
+ * reader's copy of the post carries the names it may see (`groupMentions` on
+ * GroupPostDto, resolved per caller by services/group-mentions.ts).
+ *
+ * The composer escapes a typed "<" before "#", so typed text never makes one.
+ */
+export const GROUP_MENTION_TOKEN =
+  /<#([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})>/gi;
+
+/** The token for a group, as the composer writes it. */
+export function groupMentionToken(groupId: string): string {
+  return `<#${groupId}>`;
+}
+
+/** What a group mention says when the reader may not see the group's name. */
+export const SECRET_GROUP_LABEL = "secret group";
+
+/** Turns a group id into the words a reader sees, without the "#". */
+export type GroupLabel = (groupId: string) => string | null | undefined;
+
+/** The ids of every group mentioned in `body`, each once. */
+export function groupMentionIds(body: string): string[] {
+  const ids = new Set<string>();
+  for (const line of body.split(/\r?\n/)) collectIds(parseInline(line), ids);
+  return [...ids];
+}
+
+function collectIds(nodes: Inline[], into: Set<string>): void {
+  for (const node of nodes) {
+    if (node.kind === "groupMention") into.add(node.groupId);
+    else if (node.kind !== "text") collectIds(node.children, into);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Parsing
@@ -108,6 +150,18 @@ function parseRange(s: string, start: number, end: number): Inline[] {
         flush();
         out.push({ kind: "italic", children: parseRange(s, i + 1, close) });
         i = close + 1;
+        continue;
+      }
+    }
+
+    if (c === "<" && s[i + 1] === "#") {
+      const token = new RegExp(GROUP_MENTION_TOKEN.source, "iy");
+      token.lastIndex = i;
+      const match = token.exec(s);
+      if (match && i + match[0].length <= end) {
+        flush();
+        out.push({ kind: "groupMention", groupId: match[1]!.toLowerCase() });
+        i += match[0].length;
         continue;
       }
     }
@@ -210,19 +264,30 @@ export function parseBody(body: string): Block[] {
 // Plain text
 // ---------------------------------------------------------------------------
 
-function inlineText(nodes: Inline[]): string {
-  return nodes.map((n) => (n.kind === "text" ? n.text : inlineText(n.children))).join("");
+/** A group mention as words: "#Name", or "#secret group" when the name is unknown. */
+export function groupMentionText(groupId: string, groupLabel?: GroupLabel): string {
+  return `#${groupLabel?.(groupId) || SECRET_GROUP_LABEL}`;
 }
 
-function listText(list: ListBlock, depth: number): string[] {
+function inlineText(nodes: Inline[], groupLabel?: GroupLabel): string {
+  return nodes
+    .map((n) => {
+      if (n.kind === "text") return n.text;
+      if (n.kind === "groupMention") return groupMentionText(n.groupId, groupLabel);
+      return inlineText(n.children, groupLabel);
+    })
+    .join("");
+}
+
+function listText(list: ListBlock, depth: number, groupLabel?: GroupLabel): string[] {
   return list.items.flatMap((item, k) => {
     const marker = list.ordered ? `${list.start + k}.` : "•";
     const pad = "  ".repeat(depth);
     const [head = [], ...rest] = item.lines;
     return [
-      `${pad}${marker} ${inlineText(head)}`,
-      ...rest.map((l) => `${pad}  ${inlineText(l)}`),
-      ...item.children.flatMap((child) => listText(child, depth + 1)),
+      `${pad}${marker} ${inlineText(head, groupLabel)}`,
+      ...rest.map((l) => `${pad}  ${inlineText(l, groupLabel)}`),
+      ...item.children.flatMap((child) => listText(child, depth + 1, groupLabel)),
     ];
   });
 }
@@ -230,11 +295,16 @@ function listText(list: ListBlock, depth: number): string[] {
 /**
  * The message as someone would read it aloud: formatting gone, list items
  * bulleted or numbered. For previews, copying, @ mention matching, and
- * deciding whether a message has any words at all.
+ * deciding whether a message has any words at all. A # group mention reads as
+ * "#Name" when `groupLabel` knows the name, else "#secret group".
  */
-export function toPlainText(body: string): string {
+export function toPlainText(body: string, groupLabel?: GroupLabel): string {
   return parseBody(body)
-    .flatMap((block) => (block.kind === "line" ? [inlineText(block.content)] : listText(block, 0)))
+    .flatMap((block) =>
+      block.kind === "line"
+        ? [inlineText(block.content, groupLabel)]
+        : listText(block, 0, groupLabel)
+    )
     .join("\n");
 }
 

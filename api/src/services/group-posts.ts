@@ -1,6 +1,7 @@
 import { type Queryable, one } from "../db";
 import { groupAttachmentFileUrl, photoUrls } from "../photos";
 import type { GroupAccess } from "./groups";
+import { groupMentionsSubselect, toGroupMentionDtos } from "./group-mentions";
 import { type ReactionRow, reactionsSubselect, toReactionDtos } from "./reactions";
 import { SIGNUP_COLUMNS, toGroupSignupDto, type SignupColumnsRow } from "./group-signups";
 import {
@@ -8,6 +9,7 @@ import {
   type GroupPostAttachmentDto,
   type GroupPostDto,
   type GroupPostKind,
+  type GroupMentionDto,
   type GroupRsvpResponse,
 } from "../types";
 
@@ -123,6 +125,7 @@ export const GROUP_POST_SELECT = `
              join persons_resolved mp on mp.app_user_id = m.app_user_id
             where m.post_id = p.id
          ) as mentions,
+         ${groupMentionsSubselect("p.body", "(select pg.organization_id from groups pg where pg.id = p.group_id)", "$1")} as group_mentions,
          ${reactionsSubselect("group_post_reactions", "post_id", "p.id")} as reactions,
          (select count(*) filter (where r.response = 'YES')::int
             from group_event_rsvps r where r.post_id = p.id) as rsvp_yes,
@@ -198,6 +201,7 @@ export interface GroupPostRow extends SignupColumnsRow {
   last_reply_at: Date | string | null;
   attachments: AttachmentRow[];
   mentions: MentionRow[];
+  group_mentions: GroupMentionDto[] | null;
   reactions: ReactionRow[];
   rsvp_yes: number;
   rsvp_no: number;
@@ -267,6 +271,7 @@ export function toGroupPostDto(
           name: fullName({ firstName: m.firstName, lastName: m.lastName }),
         })),
     mentionsEveryone: !isDeleted && row.mentions_everyone,
+    groupMentions: isDeleted ? [] : toGroupMentionDtos(row.group_mentions),
     // A tombstone keeps no reactions, as it keeps no attachments.
     reactions: isDeleted ? [] : toReactionDtos(row.reactions, callerPersonId),
     event:

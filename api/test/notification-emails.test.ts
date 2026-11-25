@@ -382,6 +382,50 @@ describe.skipIf(!hasDb)("notification emails", () => {
       });
     });
 
+    it("names a # mentioned Secret group only for a recipient who is in it", async () => {
+      const home = await as(author).call("POST", "/api/groups", {
+        title: "Parish Hall",
+        visibility: "PUBLIC",
+      });
+      const homeId = home.body.id as string;
+      const secret = await as(author).call("POST", "/api/groups", {
+        title: "Prayer Team",
+        visibility: "SECRET",
+      });
+      const secretId = secret.body.id as string;
+      for (const u of [member, other]) {
+        await as(author).call("POST", `/api/groups/${homeId}/members`, { personId: u.personId });
+        await optIn(u);
+      }
+      // `other` is in the Secret group too; `member` is not.
+      await as(author).call("POST", `/api/groups/${secretId}/members`, {
+        personId: other.personId,
+      });
+      await as(author).call("POST", `/api/groups/${homeId}/posts`, {
+        body: `Ask <#${secretId}> to pray`,
+      });
+
+      const emails = await pending();
+      const itemFor = (u: CreatedUser) =>
+        emails.find((e) => e.appUserId === u.appUserId)!.items.at(-1)!;
+      expect(itemFor(member).groupLabels).toEqual({});
+      expect(itemFor(other).groupLabels).toEqual({ [secretId]: "Prayer Team" });
+
+      const render = (u: CreatedUser) =>
+        renderNotificationEmail({
+          organizationName: "All Saints",
+          items: [itemFor(u)],
+          unsubscribeUrl: `${SITE}/unsubscribe`,
+          oneClickUnsubscribeUrl: `${SITE}/unsubscribe/one-click`,
+          settingsUrl: `${SITE}/settings`,
+        });
+      const hidden = render(member);
+      expect(hidden.text).toContain("Ask #secret group to pray");
+      expect(hidden.html).toContain("#secret group");
+      expect(hidden.html).not.toContain("Prayer Team");
+      expect(render(other).text).toContain("Ask #Prayer Team to pray");
+    });
+
     it("keeps a long text whole, and cuts only past the safety limit", () => {
       const long = "word ".repeat(400).trim();
       expect(capBody(long)).toEqual({ body: long, truncated: false });

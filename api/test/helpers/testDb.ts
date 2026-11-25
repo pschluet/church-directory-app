@@ -73,6 +73,7 @@ const TABLES = [
   "group_typing",
   "group_members",
   "groups",
+  "deleted_groups",
   "persons",
   "families",
   "app_users",

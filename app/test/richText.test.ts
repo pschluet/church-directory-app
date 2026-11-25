@@ -169,3 +169,51 @@ describe("docToBody spacing", () => {
     expect(docToBody(doc)).toBe("**a _b_**");
   });
 });
+
+describe("# group mentions", () => {
+  const ID = "0b9a3f2e-4c1d-4e8f-9a7b-1c2d3e4f5a6b";
+  const mention = (label: string | null, marks?: string[]): DocNode => ({
+    type: "groupMention",
+    attrs: { groupId: ID, label },
+    ...(marks ? { marks: marks.map((type) => ({ type })) } : {}),
+  });
+
+  it("reads a token as a mention of that group, and anything else as text", () => {
+    expect(parseInline(`Ask <#${ID}> now`)).toEqual([
+      { kind: "text", text: "Ask " },
+      { kind: "groupMention", groupId: ID },
+      { kind: "text", text: " now" },
+    ]);
+    expect(parseInline("<#not-a-group>")).toEqual([{ kind: "text", text: "<#not-a-group>" }]);
+    expect(parseInline(`\\<#${ID}>`)).toEqual([{ kind: "text", text: `<#${ID}>` }]);
+  });
+
+  it("saves a mention as its id, never its name, inside any formatting", () => {
+    const doc: DocNode = {
+      type: "doc",
+      content: [
+        para(text("Ask "), mention("Choir"), text(" now")),
+        para(mention("Choir", ["bold"])),
+      ],
+    };
+    expect(docToBody(doc)).toBe(`Ask <#${ID}> now\n**<#${ID}>**`);
+  });
+
+  it("loads a mention back into the box with the name it is given", () => {
+    const doc = bodyToDoc(`Ask <#${ID}>`, (id) => (id === ID ? "Choir" : null));
+    expect(doc.content?.[0]?.content?.[1]).toEqual(mention("Choir"));
+    expect(docToBody(doc)).toBe(`Ask <#${ID}>`);
+  });
+
+  it("keeps typed text from ever becoming a mention", () => {
+    const typed = `<#${ID}>`;
+    const body = docToBody({ type: "doc", content: [para(text(typed))] });
+    expect(body).toBe(`\\<#${ID}>`);
+    expect(parseInline(body)).toEqual([{ kind: "text", text: typed }]);
+  });
+
+  it("reads as the name in plain text, or as a secret group without one", () => {
+    expect(toPlainText(`Ask <#${ID}>`, () => "Choir")).toBe("Ask #Choir");
+    expect(toPlainText(`Ask <#${ID}>`)).toBe("Ask #secret group");
+  });
+});

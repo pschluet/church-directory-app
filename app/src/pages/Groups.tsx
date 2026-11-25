@@ -32,6 +32,10 @@ import {
 } from "../components/ui";
 import { GroupGuidelinesInfo } from "../components/GroupGuidelinesInfo";
 import { PeopleIcon } from "../components/PeopleIcon";
+import { useGroupsList } from "../components/useGroupsList";
+import { useLongPress } from "../components/useLongPress";
+import { copyWithToast } from "../lib/clipboard";
+import { groupUrl } from "../lib/messageLinks";
 
 /**
  * Every group the caller may know about: Public and Private ones parish-wide,
@@ -46,10 +50,7 @@ export function Groups() {
   const [params, setParams] = useSearchParams();
   const query = params.get("q") ?? "";
 
-  const groupsQuery = useQuery({
-    queryKey: qk.groups(organizationId),
-    queryFn: ({ signal }) => api<{ groups: GroupSummaryDto[] }>("/groups", { signal }),
-  });
+  const groupsQuery = useGroupsList();
 
   // Every open report parish-wide, so an admin learns about a reported post
   // even in a group they are not a member of. `enabled` keeps this off the
@@ -284,6 +285,10 @@ function GroupRow({
   onTogglePin: (args: { groupId: string; pinned: boolean }) => void;
 }) {
   const unread = group.hasUpdates;
+  // Holding the name copies the group's link, to paste anywhere.
+  const { pressing, handlers } = useLongPress(() =>
+    copyWithToast(groupUrl(group.id), "Link copied")
+  );
   return (
     <Link
       to={`/groups/${group.id}`}
@@ -294,9 +299,11 @@ function GroupRow({
       {/* Truncated rather than wrapped, so a long name never takes a second line.
           Bold is the only "something new" marker, like an inbox; the sr-only text says it aloud. */}
       <h3
-        className={`min-w-0 flex-1 truncate text-ink transition group-hover:text-accent ${
-          unread ? "font-bold" : "font-normal"
-        }`}
+        {...handlers}
+        // No selection or link callout on a touch screen: holding here copies the link.
+        className={`min-w-0 flex-1 truncate transition group-hover:text-accent [@media(hover:none)]:select-none [@media(hover:none)]:[-webkit-touch-callout:none] ${
+          pressing ? "text-accent" : "text-ink"
+        } ${unread ? "font-bold" : "font-normal"}`}
       >
         <Highlight text={group.title} ranges={highlightRanges(group.title, terms)} />
         {unread && <span className="sr-only">, new activity</span>}

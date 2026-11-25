@@ -2,6 +2,7 @@ import type { Queryable } from "../db";
 import { sendNotificationEmail, type NotificationEmailItem } from "../email";
 import type { EmailContent, EmailEvent } from "../email-content";
 import {
+  type GroupMentionDto,
   NOTIFICATION_LABELS,
   formatEventDay,
   formatEventTimes,
@@ -9,6 +10,7 @@ import {
   type GroupPostKind,
   type NotificationType,
 } from "../types";
+import { groupLabelsOf, groupMentionsSubselect, toGroupMentionDtos } from "./group-mentions";
 import { NOTIFICATION_VISIBLE } from "./notifications";
 
 /**
@@ -74,6 +76,8 @@ interface PendingRow {
   group_title: string | null;
   post_kind: GroupPostKind | null;
   post_body: string | null;
+  /** The groups `post_body` # mentions, as this recipient may see them. */
+  post_group_mentions: GroupMentionDto[] | null;
   post_author: string | null;
   post_deleted: boolean | null;
   event_title: string | null;
@@ -128,6 +132,7 @@ export async function collectPendingEmails(
             g.title as group_title,
             gp.kind as post_kind,
             gp.body as post_body,
+            ${groupMentionsSubselect("gp.body", "n.organization_id", "n.app_user_id")} as post_group_mentions,
             nullif(btrim(concat_ws(' ', gpa.first_name, gpa.last_name)), '') as post_author,
             gp.deleted_at is not null as post_deleted,
             ge.title as event_title,
@@ -271,7 +276,14 @@ function contentOf(row: PendingRow, now: Date): EmailContent {
     return { ...NO_CONTENT, body, truncated, attachments };
   }
   const { body, truncated } = capBody(row.post_body);
-  return { ...NO_CONTENT, body, bodyFormat: "rich", truncated, attachments };
+  return {
+    ...NO_CONTENT,
+    body,
+    bodyFormat: "rich",
+    truncated,
+    attachments,
+    groupLabels: groupLabelsOf(toGroupMentionDtos(row.post_group_mentions)),
+  };
 }
 
 function toItem(row: PendingRow, siteUrl: string, now: Date): NotificationEmailItem {
