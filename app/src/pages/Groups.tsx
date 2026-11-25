@@ -285,23 +285,25 @@ function GroupRow({
   onTogglePin: (args: { groupId: string; pinned: boolean }) => void;
 }) {
   const unread = group.hasUpdates;
-  // Holding the name copies the group's link, to paste anywhere.
+  // Holding the row copies the group's link, to paste anywhere.
   const { pressing, handlers } = useLongPress(() =>
     copyWithToast(groupUrl(group.id), "Link copied")
   );
   return (
     <Link
       to={`/groups/${group.id}`}
-      className="group flex min-h-11 items-center gap-3 px-1 py-1.5 transition hover:bg-surface-muted"
+      {...handlers}
+      // On a touch screen: no text selection, and no callout. iOS decides
+      // whether to open its own link preview from the link being pressed --
+      // not from the text inside it -- so this has to sit on the link itself.
+      className="group flex min-h-11 items-center gap-3 px-1 py-1.5 transition hover:bg-surface-muted [@media(hover:none)]:select-none [@media(hover:none)]:[-webkit-touch-callout:none]"
     >
       <VisibilityIcon visibility={group.visibility} />
 
       {/* Truncated rather than wrapped, so a long name never takes a second line.
           Bold is the only "something new" marker, like an inbox; the sr-only text says it aloud. */}
       <h3
-        {...handlers}
-        // No selection or link callout on a touch screen: holding here copies the link.
-        className={`min-w-0 flex-1 truncate transition group-hover:text-accent [@media(hover:none)]:select-none [@media(hover:none)]:[-webkit-touch-callout:none] ${
+        className={`min-w-0 flex-1 truncate transition group-hover:text-accent ${
           pressing ? "text-accent" : "text-ink"
         } ${unread ? "font-bold" : "font-normal"}`}
       >
