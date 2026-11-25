@@ -23,6 +23,7 @@ import {
   useThreadReplies,
 } from "./GroupDetail";
 import { PostPageHeader } from "./EventDetail";
+import { useMarkReadWhenSeen } from "../components/useMarkReadWhenSeen";
 
 /**
  * One sign-up, on a page of its own -- the sign-up twin of EventDetail.tsx.
@@ -176,6 +177,8 @@ function SignupPage({
   const [editingReply, setEditingReply] = useState<GroupPostDto | null>(null);
 
   const share = useSignupShare(signup);
+  // Seeing the sign-up itself is what reads its notifications -- see useMarkReadWhenSeen.
+  const seenRef = useMarkReadWhenSeen({ groupPostId: post.id });
 
   const remove = useMutation({
     mutationFn: () => api(`/groups/${groupId}/posts/${post.id}`, { method: "DELETE" }),
@@ -208,7 +211,7 @@ function SignupPage({
           This sign-up has been deleted.
         </div>
       ) : (
-        <section aria-labelledby="signup-title" className="space-y-0">
+        <section ref={seenRef} aria-labelledby="signup-title" className="space-y-0">
           <SignupBlock
             signup={signup}
             groupId={groupId}

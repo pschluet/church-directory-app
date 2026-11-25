@@ -1,6 +1,11 @@
 import type { Queryable } from "../db";
 import { PRAYER_REQUEST_WINDOW } from "./prayer-requests";
-import { rolesAtLeast, type NotificationDto, type NotificationType } from "../types";
+import {
+  rolesAtLeast,
+  type NotificationDto,
+  type NotificationType,
+  type NotificationsSeen,
+} from "../types";
 
 /**
  * The notification inbox behind the bell.
@@ -168,21 +173,38 @@ export async function markRead(
 }
 
 /**
- * Every unread notification about one post, because the member opened it from
- * a push notification -- the lock-screen twin of clicking it in the bell.
- * Scoped to the caller like `markRead`, so on a phone shared between two
- * accounts it clears only whoever is signed in. Returns how many were cleared.
+ * Every unread notification about any of these items, because the member just
+ * had them on screen -- the scrolled-past twin of clicking each in the bell.
+ *
+ * Keyed by item, not notification id, so it also clears what is past the
+ * bell's page. The types per key must agree with `notificationMatchesTarget`
+ * in notification-links.ts, which is the client's optimistic copy of this.
+ *
+ * Scoped to the caller like `markRead`, so naming somebody else's post clears
+ * nothing of theirs and reveals nothing. Returns how many were cleared.
  */
-export async function markPostRead(
+export async function markSeenRead(
   q: Queryable,
   appUserId: string,
-  groupPostId: string
+  seen: NotificationsSeen
 ): Promise<number> {
   const { rows } = await q.query<{ id: string }>(
     `update notifications set read_at = now()
-      where app_user_id = $1 and group_post_id = $2 and read_at is null
+      where app_user_id = $1 and read_at is null
+        and (   (type in ('GROUP_POST', 'GROUP_MENTION', 'GROUP_EVENT', 'GROUP_POST_REPORT')
+                 and group_post_id = any($2::uuid[]))
+             or (type in ('PRAYER_REQUEST', 'PRAYER_REQUEST_REVIEW')
+                 and prayer_request_id = any($3::uuid[]))
+             or (type = 'DIRECTORY_REQUEST' and directory_request_id = any($4::uuid[]))
+             or (type = 'GROUP_JOIN_REQUEST' and group_id = any($5::uuid[])))
       returning id`,
-    [appUserId, groupPostId]
+    [
+      appUserId,
+      seen.groupPostIds ?? [],
+      seen.prayerRequestIds ?? [],
+      seen.directoryRequestIds ?? [],
+      seen.joinRequestGroupIds ?? [],
+    ]
   );
   return rows.length;
 }

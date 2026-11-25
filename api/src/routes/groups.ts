@@ -2222,7 +2222,8 @@ routes.post("/:id/reports/:reportId/:decision{dismiss|delete}", async (c) => {
  *
  * With a `postId` the tap lands on that message, scrolled to and lit, exactly
  * where the bell entry for it goes (`messagePath`, shared with the bell and the
- * email), plus `from=push` so the page marks it read the way a bell click does.
+ * email), plus `from=push`. Landing on it shows it, and being seen is what
+ * marks it read (useMarkReadWhenSeen in the SPA).
  */
 async function pushGroupActivity(
   db: Queryable,

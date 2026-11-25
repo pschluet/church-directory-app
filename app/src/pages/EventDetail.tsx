@@ -40,6 +40,7 @@ import {
   useGroupPageActions,
   useThreadReplies,
 } from "./GroupDetail";
+import { useMarkReadWhenSeen } from "../components/useMarkReadWhenSeen";
 
 /**
  * One event, on a page of its own -- where the share link sends a signed-in
@@ -237,6 +238,8 @@ function EventPage({
   const [editingReply, setEditingReply] = useState<GroupPostDto | null>(null);
 
   const share = useEventShare(event, cancelled);
+  // Seeing the event itself is what reads its notifications -- see useMarkReadWhenSeen.
+  const seenRef = useMarkReadWhenSeen({ groupPostId: post.id });
 
   const cancel = useMutation({
     mutationFn: () => api(`/groups/${groupId}/posts/${post.id}`, { method: "DELETE" }),
@@ -276,6 +279,7 @@ function EventPage({
 
       {/* The hero: the date as a calendar page, the title set large, then when and where. */}
       <article
+        ref={seenRef}
         aria-labelledby="event-title"
         className={`overflow-hidden rounded-3xl border border-line bg-surface shadow-sm ${
           cancelled ? "opacity-80" : ""
