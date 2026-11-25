@@ -4608,7 +4608,8 @@ function MembersModal({
 
   return (
     <Modal title={group.title} onClose={onClose} wide={group.canModerate}>
-      <div className="space-y-6">
+      {/* Pulled up under the group's name: the first section is a short line. */}
+      <div className="-mt-2 space-y-6">
         {/* Not on the group's own page: it only took room from the messages. */}
         {group.description && (
           <div>
