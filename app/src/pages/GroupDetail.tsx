@@ -4609,17 +4609,6 @@ function MembersModal({
   return (
     <Modal title={group.title} onClose={onClose} wide={group.canModerate}>
       <div className="space-y-6">
-        {/* The group's own address, to paste anywhere: whoever opens it sees
-            what their own access allows. */}
-        <div className="-mx-2">
-          <CopyLinkButton
-            copied={copied}
-            onClick={() => {
-              void navigator.clipboard?.writeText(groupUrl(groupId)).then(() => setCopied(true));
-            }}
-          />
-        </div>
-
         {/* Not on the group's own page: it only took room from the messages. */}
         {group.description && (
           <div>
@@ -4674,6 +4663,18 @@ function MembersModal({
             onChanged={onChanged}
           />
         )}
+
+        {/* The group's own address, to paste anywhere: whoever opens it sees
+            what their own access allows. The same button as on an event's page. */}
+        <div className="border-t border-line pt-4">
+          <CopyLinkButton
+            size="lg"
+            copied={copied}
+            onClick={() => {
+              void navigator.clipboard?.writeText(groupUrl(groupId)).then(() => setCopied(true));
+            }}
+          />
+        </div>
 
         {group.canLeave && (
           <div className="border-t border-line pt-4">
