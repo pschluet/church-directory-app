@@ -66,7 +66,8 @@ import {
   fanOutGroupPost,
   fanOutGroupPostReport,
 } from "../services/group-notifications";
-import { unreadNotificationCounts } from "../services/notifications";
+import { unreadGroupMessageCounts } from "../services/notifications";
+import { messagePath, PUSH_ARRIVAL_PARAM, PUSH_ARRIVAL_VALUE } from "../notification-links";
 import { sendToUsers, type PushPayload } from "../services/push";
 import {
   groupCreateSchema,
@@ -89,6 +90,7 @@ import {
   fullName,
   uuidSchema,
   type GroupDto,
+  type GroupPostKind,
   type GroupFileDto,
   type GroupJoinRequestDto,
   type GroupLiveDto,
@@ -1346,7 +1348,14 @@ routes.post("/:id/posts", async (c) => {
     return created.id;
   });
 
-  await pushGroupActivity(db, [...notifiedPost, ...notifiedMention], group.title, id, "post");
+  await pushGroupActivity(
+    db,
+    [...notifiedPost, ...notifiedMention],
+    group.title,
+    id,
+    "post",
+    postId
+  );
 
   const row = await loadGroupPostRow(db, caller.appUserId, postId, id);
   return c.json(toGroupPostDto(row!, access, caller.personId), 201);
@@ -1546,7 +1555,7 @@ routes.patch("/:id/posts/:postId", async (c) => {
 
   await purgeAttachmentFiles(removedAttachments);
 
-  await pushGroupActivity(db, notifiedMention, group.title, id, "post");
+  await pushGroupActivity(db, notifiedMention, group.title, id, "post", postId);
 
   if (payload.event && row.kind === "EVENT") {
     const notified = await fanOutGroupEventChange(db, {
@@ -1555,7 +1564,7 @@ routes.patch("/:id/posts/:postId", async (c) => {
       organizationId,
       actingAppUserId: caller.appUserId,
     });
-    await pushGroupActivity(db, notified, group.title, id, "event-change");
+    await pushGroupActivity(db, notified, group.title, id, "event-change", postId);
   }
 
   const updated = await loadGroupPostRow(db, caller.appUserId, postId, id);
@@ -2075,7 +2084,7 @@ routes.post("/:id/posts/:postId/report", async (c) => {
     organizationId,
     reporterAppUserId: caller.appUserId,
   });
-  await pushGroupActivity(db, notified, group.title, id, "report");
+  await pushGroupActivity(db, notified, group.title, id, "report", postId);
 
   return c.body(null, 204);
 });
@@ -2199,48 +2208,84 @@ routes.post("/:id/reports/:reportId/:decision{dismiss|delete}", async (c) => {
 // ---------------------------------------------------------------------------
 
 /**
- * One tag per group ("group-{id}") so a group's own notification replaces its
- * own previous one without displacing Prayer Requests' or another group's --
- * the same reasoning PUSH_KINDS gives in routes/prayer-requests.ts. The body
- * is a count and the group's title, never the message -- a Secret group's text
- * must not reach a lock screen.
+ * The push for group activity. The body is a count and the group's title, never
+ * the message -- a Secret group's text must not reach a lock screen.
+ *
+ * Messages (`post`, which covers new posts and new mentions) share one tag,
+ * "group-messages", so there is a single lock-screen notification for them and
+ * each new one replaces it: its text and its link are always about the newest
+ * message, and it says how many are unread in that group and, when other
+ * groups have some too, in all of them. The other kinds keep one tag per group
+ * ("group-{id}"), so a group's own notice replaces its own previous one without
+ * displacing Prayer Requests' -- the reasoning PUSH_KINDS gives in
+ * routes/prayer-requests.ts.
+ *
+ * With a `postId` the tap lands on that message, scrolled to and lit, exactly
+ * where the bell entry for it goes (`messagePath`, shared with the bell and the
+ * email), plus `from=push` so the page marks it read the way a bell click does.
  */
 async function pushGroupActivity(
   db: Queryable,
   notified: string[],
   groupTitle: string,
   groupId: string,
-  kind: "post" | "join-request" | "report" | "event-change"
+  kind: "post" | "join-request" | "report" | "event-change",
+  postId: string | null = null
 ): Promise<void> {
   if (notified.length === 0) return;
-  const type =
-    kind === "post"
-      ? "GROUP_POST"
-      : kind === "join-request"
-        ? "GROUP_JOIN_REQUEST"
-        : kind === "report"
-          ? "GROUP_POST_REPORT"
-          : "GROUP_EVENT";
-  const counts = await unreadNotificationCounts(db, notified, type);
-  const BODY: Record<typeof kind, (count: number) => string> = {
-    post: (count) => `${count} new message${count === 1 ? "" : "s"} in ${groupTitle}`,
-    "join-request": () => `Someone wants to join ${groupTitle}`,
-    report: () => `A post in ${groupTitle} was reported`,
-    "event-change": () => `An event in ${groupTitle} changed`,
+
+  let url = `/groups/${groupId}`;
+  if (postId) {
+    const post = await one<{ parent_post_id: string | null; parent_kind: GroupPostKind | null }>(
+      db,
+      `select gp.parent_post_id, parent.kind as parent_kind
+         from group_posts gp
+         left join group_posts parent on parent.id = gp.parent_post_id
+        where gp.id = $1`,
+      [postId]
+    );
+    url = `${messagePath(
+      groupId,
+      { id: postId, parentPostId: post?.parent_post_id ?? null },
+      post?.parent_kind
+    )}&${PUSH_ARRIVAL_PARAM}=${PUSH_ARRIVAL_VALUE}`;
+  }
+
+  if (kind === "post") {
+    const counts = await unreadGroupMessageCounts(db, notified, groupId);
+    const payloads = new Map<string, PushPayload>(
+      notified.map((appUserId) => {
+        const counted = counts.get(appUserId);
+        // At least the message this push is about, even if it was read in the
+        // moment between the insert and the count.
+        const inGroup = Math.max(1, counted?.inGroup ?? 0);
+        const total = Math.max(inGroup, counted?.total ?? 0);
+        const here = `${inGroup} new message${inGroup === 1 ? "" : "s"} in ${groupTitle}`;
+        return [
+          appUserId,
+          {
+            title: "Groups",
+            body: total > inGroup ? `${here} · ${total} unread total` : here,
+            url,
+            tag: "group-messages",
+          },
+        ];
+      })
+    );
+    await sendToUsers(db, payloads);
+    return;
+  }
+
+  const BODY: Record<Exclude<typeof kind, "post">, string> = {
+    "join-request": `Someone wants to join ${groupTitle}`,
+    report: `A post in ${groupTitle} was reported`,
+    "event-change": `An event in ${groupTitle} changed`,
   };
   const payloads = new Map<string, PushPayload>(
-    notified.map((appUserId) => {
-      const count = counts.get(appUserId) ?? 1;
-      return [
-        appUserId,
-        {
-          title: "Groups",
-          body: BODY[kind](count),
-          url: `/groups/${groupId}`,
-          tag: `group-${groupId}`,
-        },
-      ];
-    })
+    notified.map((appUserId) => [
+      appUserId,
+      { title: "Groups", body: BODY[kind], url, tag: `group-${groupId}` },
+    ])
   );
   await sendToUsers(db, payloads);
 }

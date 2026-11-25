@@ -13,6 +13,15 @@ import type { GroupPostKind, NotificationDto, NotificationType } from "./types";
 /** The query parameter that names the message a link is about. */
 export const MESSAGE_PARAM = "message";
 
+/**
+ * Set (to "push") on the links a push notification opens, and only there, so
+ * the page it lands on knows it came from the lock screen and marks that
+ * message's notifications read -- what clicking the same entry in the bell
+ * does. The service worker cannot do it itself: it has no auth context.
+ */
+export const PUSH_ARRIVAL_PARAM = "from";
+export const PUSH_ARRIVAL_VALUE = "push";
+
 /** Where a message's thread lives. */
 export function threadPath(groupId: string, postId: string): string {
   return `/groups/${groupId}/threads/${postId}`;
