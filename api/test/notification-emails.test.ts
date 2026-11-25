@@ -324,12 +324,12 @@ describe.skipIf(!hasDb)("notification emails", () => {
         body: "**Pizza** on _Friday_ -- [details](https://example.com)",
         bodyFormat: "rich",
         subject: "New message in Youth Group",
-        url: `${SITE}/groups/${groupId}?message=${root.body.id}`,
+        url: `${SITE}/groups/${groupId}?message=${root.body.id}&from=email`,
       });
       // A reply lands on its thread, exactly as the bell entry would.
       expect(items[1]).toMatchObject({
         context: "Mary Smith replied",
-        url: `${SITE}/groups/${groupId}/threads/${root.body.id}?message=${reply.body.id}`,
+        url: `${SITE}/groups/${groupId}/threads/${root.body.id}?message=${reply.body.id}&from=email`,
       });
     });
 
@@ -356,7 +356,7 @@ describe.skipIf(!hasDb)("notification emails", () => {
       const items = (await pending())[0]!.items;
       expect(items.at(-1)).toMatchObject({
         context: "Mary Smith replied",
-        url: `${SITE}/groups/${groupId}/signups/${signup.body.id}?message=${reply.body.id}`,
+        url: `${SITE}/groups/${groupId}/signups/${signup.body.id}?message=${reply.body.id}&from=email`,
       });
     });
 

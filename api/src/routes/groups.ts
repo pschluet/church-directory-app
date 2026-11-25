@@ -67,7 +67,7 @@ import {
   fanOutGroupPostReport,
 } from "../services/group-notifications";
 import { unreadGroupMessageCounts } from "../services/notifications";
-import { messagePath, PUSH_ARRIVAL_PARAM, PUSH_ARRIVAL_VALUE } from "../notification-links";
+import { messagePath, withArrival } from "../notification-links";
 import { sendToUsers, type PushPayload } from "../services/push";
 import {
   groupCreateSchema,
@@ -2244,11 +2244,14 @@ async function pushGroupActivity(
         where gp.id = $1`,
       [postId]
     );
-    url = `${messagePath(
-      groupId,
-      { id: postId, parentPostId: post?.parent_post_id ?? null },
-      post?.parent_kind
-    )}&${PUSH_ARRIVAL_PARAM}=${PUSH_ARRIVAL_VALUE}`;
+    url = withArrival(
+      messagePath(
+        groupId,
+        { id: postId, parentPostId: post?.parent_post_id ?? null },
+        post?.parent_kind
+      ),
+      "push"
+    );
   }
 
   if (kind === "post") {

@@ -7,6 +7,7 @@ import {
   formatEventDay,
   formatEventTimes,
   notificationPath,
+  withArrival,
   type GroupPostKind,
   type NotificationType,
 } from "../types";
@@ -287,15 +288,15 @@ function contentOf(row: PendingRow, now: Date): EmailContent {
 }
 
 function toItem(row: PendingRow, siteUrl: string, now: Date): NotificationEmailItem {
-  const url =
-    siteUrl +
-    notificationPath({
-      type: row.type,
-      groupId: row.group_id,
-      groupPostId: row.group_post_id,
-      groupPostParentId: row.group_post_parent_id,
-      groupPostParentKind: row.group_post_parent_kind,
-    });
+  const path = notificationPath({
+    type: row.type,
+    groupId: row.group_id,
+    groupPostId: row.group_post_id,
+    groupPostParentId: row.group_post_parent_id,
+    groupPostParentKind: row.group_post_parent_kind,
+  });
+  // Only a link to one message is tagged: that is what the page can mark read.
+  const url = siteUrl + (row.group_post_id ? withArrival(path, "email") : path);
   const label = NOTIFICATION_LABELS[row.type];
   const group = row.group_title ?? "your group";
   const author = row.post_author ?? "Somebody";

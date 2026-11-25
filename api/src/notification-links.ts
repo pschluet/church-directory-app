@@ -14,13 +14,20 @@ import type { GroupPostKind, NotificationDto, NotificationType } from "./types";
 export const MESSAGE_PARAM = "message";
 
 /**
- * Set (to "push") on the links a push notification opens, and only there, so
- * the page it lands on knows it came from the lock screen and marks that
- * message's notifications read -- what clicking the same entry in the bell
- * does. The service worker cannot do it itself: it has no auth context.
+ * Set on the message links a push notification or a notification email opens
+ * -- "push" or "email" -- so the page it lands on marks that message's
+ * notifications read, which is what clicking the same entry in the bell does.
+ * Neither can do it themselves: the service worker has no auth context, and an
+ * email is just a link. Bell links never carry it; the bell marks read itself.
  */
-export const PUSH_ARRIVAL_PARAM = "from";
-export const PUSH_ARRIVAL_VALUE = "push";
+export const ARRIVAL_PARAM = "from";
+export const ARRIVAL_SOURCES = ["push", "email"] as const;
+export type ArrivalSource = (typeof ARRIVAL_SOURCES)[number];
+
+/** A notification link, tagged with where it was opened from. */
+export function withArrival(path: string, source: ArrivalSource): string {
+  return `${path}${path.includes("?") ? "&" : "?"}${ARRIVAL_PARAM}=${source}`;
+}
 
 /** Where a message's thread lives. */
 export function threadPath(groupId: string, postId: string): string {
