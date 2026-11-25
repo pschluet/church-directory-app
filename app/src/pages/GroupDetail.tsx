@@ -4608,18 +4608,8 @@ function MembersModal({
 
   return (
     <Modal title={group.title} onClose={onClose} wide={group.canModerate}>
-      <div className="space-y-6">
-        {/* The group's own address, to paste anywhere: whoever opens it sees
-            what their own access allows. */}
-        <div className="-mx-2">
-          <CopyLinkButton
-            copied={copied}
-            onClick={() => {
-              void navigator.clipboard?.writeText(groupUrl(groupId)).then(() => setCopied(true));
-            }}
-          />
-        </div>
-
+      {/* Pulled up under the group's name: the first section is a short line. */}
+      <div className="-mt-2 space-y-6">
         {/* Not on the group's own page: it only took room from the messages. */}
         {group.description && (
           <div>
@@ -4628,8 +4618,11 @@ function MembersModal({
           </div>
         )}
 
-        <div>
-          <p className="mb-1 font-bold text-ink">Admins</p>
+        {/* Half the usual gap below (space-y sets it as this block's bottom
+            margin): one short line, and the Members row under it already
+            stands taller for its Add someone button. */}
+        <div className="mb-3">
+          <p className="mb-0.5 font-bold text-ink">Admins</p>
           <p className="text-sm text-ink-muted">{admins.map((a) => a.name).join(", ") || "None"}</p>
         </div>
 
@@ -4674,6 +4667,18 @@ function MembersModal({
             onChanged={onChanged}
           />
         )}
+
+        {/* The group's own address, to paste anywhere: whoever opens it sees
+            what their own access allows. The same button as on an event's page. */}
+        <div className="border-t border-line pt-4">
+          <CopyLinkButton
+            size="lg"
+            copied={copied}
+            onClick={() => {
+              void navigator.clipboard?.writeText(groupUrl(groupId)).then(() => setCopied(true));
+            }}
+          />
+        </div>
 
         {group.canLeave && (
           <div className="border-t border-line pt-4">

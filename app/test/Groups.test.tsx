@@ -211,7 +211,7 @@ describe("Groups", () => {
       const writeText = vi.fn().mockResolvedValue(undefined);
       Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
       renderList();
-      const title = await screen.findByRole("heading", { name: "Youth Group" });
+      const title = await screen.findByRole("link", { name: /^Youth Group/ });
 
       fireEvent.pointerDown(title, { pointerType: "touch", clientX: 5, clientY: 5 });
       expect(await screen.findByText("Link copied")).toBeInTheDocument();
@@ -223,11 +223,17 @@ describe("Groups", () => {
       expect(screen.queryByText("Group page")).not.toBeInTheDocument();
     });
 
+    it("turns off iOS's own link preview on the link itself, where iOS looks for it", async () => {
+      renderList();
+      const row = await screen.findByRole("link", { name: /^Youth Group/ });
+      expect(row.className).toContain("[-webkit-touch-callout:none]");
+    });
+
     it("still opens the group on a quick tap", async () => {
       const writeText = vi.fn().mockResolvedValue(undefined);
       Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
       renderList();
-      const title = await screen.findByRole("heading", { name: "Youth Group" });
+      const title = await screen.findByRole("link", { name: /^Youth Group/ });
 
       fireEvent.pointerDown(title, { pointerType: "touch", clientX: 5, clientY: 5 });
       fireEvent.pointerUp(title, { pointerType: "touch" });
@@ -241,7 +247,7 @@ describe("Groups", () => {
       const writeText = vi.fn().mockResolvedValue(undefined);
       Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
       renderList();
-      const title = await screen.findByRole("heading", { name: "Youth Group" });
+      const title = await screen.findByRole("link", { name: /^Youth Group/ });
 
       fireEvent.pointerDown(title, { pointerType: "touch", clientX: 5, clientY: 5 });
       fireEvent.pointerMove(title, { pointerType: "touch", clientX: 5, clientY: 40 });

@@ -646,7 +646,13 @@ describe("GroupDetail", () => {
       renderPage();
       await userEvent.click(await screen.findByRole("button", { name: /3 members/ }));
       const dialog = await screen.findByRole("dialog");
-      await userEvent.click(within(dialog).getByRole("button", { name: "Copy link" }));
+      const copy = within(dialog).getByRole("button", { name: "Copy link" });
+      // Near the bottom: after the member list, just above leaving the group.
+      const members = within(dialog).getByText("Members");
+      const leave = within(dialog).getByRole("button", { name: "Leave group" });
+      expect(members.compareDocumentPosition(copy) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(copy.compareDocumentPosition(leave) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      await userEvent.click(copy);
       expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/groups/g1`);
       expect(await within(dialog).findByRole("button", { name: "Copied" })).toBeInTheDocument();
     });
