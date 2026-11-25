@@ -4617,8 +4617,11 @@ function MembersModal({
           </div>
         )}
 
-        <div>
-          <p className="mb-1 font-bold text-ink">Admins</p>
+        {/* Half the usual gap below (space-y sets it as this block's bottom
+            margin): one short line, and the Members row under it already
+            stands taller for its Add someone button. */}
+        <div className="mb-3">
+          <p className="mb-0.5 font-bold text-ink">Admins</p>
           <p className="text-sm text-ink-muted">{admins.map((a) => a.name).join(", ") || "None"}</p>
         </div>
 
