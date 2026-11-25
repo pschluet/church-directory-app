@@ -13,6 +13,22 @@ import type { GroupPostKind, NotificationDto, NotificationType } from "./types";
 /** The query parameter that names the message a link is about. */
 export const MESSAGE_PARAM = "message";
 
+/**
+ * Set on the message links a push notification or a notification email opens
+ * -- "push" or "email" -- so the page it lands on marks that message's
+ * notifications read, which is what clicking the same entry in the bell does.
+ * Neither can do it themselves: the service worker has no auth context, and an
+ * email is just a link. Bell links never carry it; the bell marks read itself.
+ */
+export const ARRIVAL_PARAM = "from";
+export const ARRIVAL_SOURCES = ["push", "email"] as const;
+export type ArrivalSource = (typeof ARRIVAL_SOURCES)[number];
+
+/** A notification link, tagged with where it was opened from. */
+export function withArrival(path: string, source: ArrivalSource): string {
+  return `${path}${path.includes("?") ? "&" : "?"}${ARRIVAL_PARAM}=${source}`;
+}
+
 /** Where a message's thread lives. */
 export function threadPath(groupId: string, postId: string): string {
   return `/groups/${groupId}/threads/${postId}`;

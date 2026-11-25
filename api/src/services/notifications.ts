@@ -167,6 +167,26 @@ export async function markRead(
   return rows.length > 0;
 }
 
+/**
+ * Every unread notification about one post, because the member opened it from
+ * a push notification -- the lock-screen twin of clicking it in the bell.
+ * Scoped to the caller like `markRead`, so on a phone shared between two
+ * accounts it clears only whoever is signed in. Returns how many were cleared.
+ */
+export async function markPostRead(
+  q: Queryable,
+  appUserId: string,
+  groupPostId: string
+): Promise<number> {
+  const { rows } = await q.query<{ id: string }>(
+    `update notifications set read_at = now()
+      where app_user_id = $1 and group_post_id = $2 and read_at is null
+      returning id`,
+    [appUserId, groupPostId]
+  );
+  return rows.length;
+}
+
 /** Everything unread, in one statement. Returns how many were cleared. */
 export async function markAllRead(q: Queryable, appUserId: string): Promise<number> {
   const { rows } = await q.query<{ id: string }>(
@@ -238,6 +258,50 @@ export async function unreadNotificationCounts(
   );
 
   return new Map(rows.map((row) => [row.app_user_id, Number(row.count)]));
+}
+
+/**
+ * How many unread group *messages* each of these people has -- in this group,
+ * and across every group.
+ *
+ * What a message push reads out: "3 new messages in Choir · 8 unread total".
+ * A message is a GROUP_POST or a GROUP_MENTION -- the two are one per post per
+ * person (see group-notifications.ts), so adding them never counts a post
+ * twice, and leaving mentions out would tell somebody who was only mentioned
+ * about everybody else's posts instead.
+ *
+ * Same visibility rule as the bell, so the push and the badge agree.
+ */
+export async function unreadGroupMessageCounts(
+  q: Queryable,
+  appUserIds: string[],
+  groupId: string
+): Promise<Map<string, { inGroup: number; total: number }>> {
+  if (appUserIds.length === 0) return new Map();
+
+  const { rows } = await q.query<{ app_user_id: string; in_group: string; total: string }>(
+    `select n.app_user_id,
+            (count(*) filter (where n.group_id = $2))::text as in_group,
+            count(*)::text as total
+       from notifications n
+       left join prayer_requests pr on pr.id = n.prayer_request_id
+       left join groups g on g.id = n.group_id
+       left join group_posts gp on gp.id = n.group_post_id
+       left join directory_requests dr on dr.id = n.directory_request_id
+      where n.app_user_id = any($1::uuid[])
+        and n.type in ('GROUP_POST', 'GROUP_MENTION')
+        and n.read_at is null
+        and ${NOTIFICATION_VISIBLE}
+      group by n.app_user_id`,
+    [appUserIds, groupId]
+  );
+
+  return new Map(
+    rows.map((row) => [
+      row.app_user_id,
+      { inGroup: Number(row.in_group), total: Number(row.total) },
+    ])
+  );
 }
 
 /**

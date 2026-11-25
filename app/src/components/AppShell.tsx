@@ -11,6 +11,7 @@ import { SettingsLink } from "./SettingsLink";
 import { usePushRegistration } from "./usePushRegistration";
 import { useRealtimeRefresh } from "./useRealtimeRefresh";
 import { useAppBadge } from "./useAppBadge";
+import { useMarkReadOnArrival } from "./useMarkReadOnArrival";
 import { Select, Toaster } from "./ui";
 
 /**
@@ -52,6 +53,8 @@ export function AppShell() {
   usePushRegistration();
   // The home-screen icon's number, which follows the bell's.
   useAppBadge();
+  // Opening a message from a push or an email reads it, as a bell click does.
+  useMarkReadOnArrival();
   const { signOut, email } = useAuth();
   const goHome = useGoHomeClick();
   const [drawerOpen, setDrawerOpen] = useState(false);

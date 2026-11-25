@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import type { AppEnv } from "../auth";
 import { audit } from "../audit";
-import { loadInbox, markAllRead, markRead } from "../services/notifications";
+import { loadInbox, markAllRead, markPostRead, markRead } from "../services/notifications";
 import { HTTPException } from "hono/http-exception";
 import {
   groupNotificationPrefUpdateSchema,
@@ -44,6 +44,18 @@ routes.get("/", async (c) => {
 routes.post("/read", async (c) => {
   const caller = c.get("caller");
   const cleared = await markAllRead(c.get("db"), caller.appUserId);
+  return c.json({ cleared });
+});
+
+/**
+ * Everything about one post, as the member opens it from a push notification
+ * (the SPA sees `?from=push`). Not audited, like the routes around it. A post
+ * the caller has no notifications for clears nothing, so it reveals nothing.
+ */
+routes.post("/posts/:postId/read", async (c) => {
+  const caller = c.get("caller");
+  const postId = uuidSchema.parse(c.req.param("postId"));
+  const cleared = await markPostRead(c.get("db"), caller.appUserId, postId);
   return c.json({ cleared });
 });
 
