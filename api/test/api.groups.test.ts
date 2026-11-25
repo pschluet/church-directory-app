@@ -1493,6 +1493,124 @@ describe.skipIf(!hasDb)("groups", () => {
     });
   });
 
+  describe("# group mentions", () => {
+    type Mention = { groupId: string; title: string | null; linkable: boolean };
+
+    async function titled(
+      user: CreatedUser,
+      title: string,
+      visibility: "PUBLIC" | "PRIVATE" | "SECRET"
+    ): Promise<string> {
+      const res = await as(user).call("POST", "/api/groups", { title, visibility });
+      expect(res.status).toBe(201);
+      return res.body.id as string;
+    }
+
+    /** A message in a Public group, so everyone can read it, mentioning `ids`. */
+    async function mentionIn(ids: string[]): Promise<{ homeId: string; postId: string }> {
+      const homeId = await titled(creator, "Parish Hall", "PUBLIC");
+      const res = await as(creator).call("POST", `/api/groups/${homeId}/posts`, {
+        body: `See ${ids.map((id) => `<#${id}>`).join(" and ")}`,
+      });
+      expect(res.status).toBe(201);
+      return { homeId, postId: res.body.id as string };
+    }
+
+    async function mentionsSeenBy(user: CreatedUser, homeId: string): Promise<Mention[]> {
+      const res = await as(user).call("GET", `/api/groups/${homeId}/posts`);
+      expect(res.status).toBe(200);
+      return res.body.posts[0].groupMentions as Mention[];
+    }
+
+    const byId = (mentions: Mention[], id: string) => mentions.find((m) => m.groupId === id);
+
+    it("names a Public or Private group, with a link, for anyone in the parish", async () => {
+      const choir = await titled(creator, "Choir", "PUBLIC");
+      const council = await titled(creator, "Parish Council", "PRIVATE");
+      const { homeId } = await mentionIn([choir, council]);
+
+      const seen = await mentionsSeenBy(outsider, homeId);
+      expect(byId(seen, choir)).toEqual({ groupId: choir, title: "Choir", linkable: true });
+      expect(byId(seen, council)).toEqual({
+        groupId: council,
+        title: "Parish Council",
+        linkable: true,
+      });
+    });
+
+    it("names a Secret group only for its members and parish admins", async () => {
+      const secret = await titled(creator, "Prayer Team", "SECRET");
+      const { homeId } = await mentionIn([secret]);
+
+      expect(byId(await mentionsSeenBy(outsider, homeId), secret)).toEqual({
+        groupId: secret,
+        title: null,
+        linkable: false,
+      });
+      expect(byId(await mentionsSeenBy(creator, homeId), secret)).toMatchObject({
+        title: "Prayer Team",
+        linkable: true,
+      });
+      expect(byId(await mentionsSeenBy(parishAdmin, homeId), secret)).toMatchObject({
+        title: "Prayer Team",
+        linkable: true,
+      });
+    });
+
+    it("keeps linking to an archived group", async () => {
+      const choir = await titled(creator, "Choir", "PUBLIC");
+      const { homeId } = await mentionIn([choir]);
+      await as(creator).call("POST", `/api/groups/${choir}/archive`);
+
+      expect(byId(await mentionsSeenBy(outsider, homeId), choir)).toMatchObject({
+        title: "Choir",
+        linkable: true,
+      });
+    });
+
+    it("still names a deleted group for whoever could see it, with no link", async () => {
+      const secret = await titled(creator, "Prayer Team", "SECRET");
+      const choir = await titled(creator, "Choir", "PUBLIC");
+      const { homeId } = await mentionIn([secret, choir]);
+      expect((await as(parishAdmin).call("DELETE", `/api/groups/${secret}`)).status).toBe(204);
+      expect((await as(parishAdmin).call("DELETE", `/api/groups/${choir}`)).status).toBe(204);
+
+      // A former member of the Secret group, and anyone at all for the Public one.
+      const formerMember = await mentionsSeenBy(creator, homeId);
+      expect(byId(formerMember, secret)).toEqual({
+        groupId: secret,
+        title: "Prayer Team",
+        linkable: false,
+      });
+      const stranger = await mentionsSeenBy(outsider, homeId);
+      expect(byId(stranger, secret)).toEqual({ groupId: secret, title: null, linkable: false });
+      expect(byId(stranger, choir)).toEqual({ groupId: choir, title: "Choir", linkable: false });
+    });
+
+    it("names no group from another parish, nor an id that is not a group", async () => {
+      const otherOrg = await createOrganization(db(), "St Elsewhere", "st-elsewhere");
+      const stranger = await createUser(db(), { organizationId: otherOrg });
+      const theirs = await titled(stranger, "Their Choir", "PUBLIC");
+      const nothing = "00000000-0000-4000-8000-000000000000";
+      const { homeId } = await mentionIn([theirs, nothing]);
+
+      const seen = await mentionsSeenBy(parishAdmin, homeId);
+      expect(byId(seen, theirs)).toEqual({ groupId: theirs, title: null, linkable: false });
+      expect(byId(seen, nothing)).toEqual({ groupId: nothing, title: null, linkable: false });
+    });
+
+    it("lists each mentioned group once, and none for a deleted message", async () => {
+      const choir = await titled(creator, "Choir", "PUBLIC");
+      const { homeId, postId } = await mentionIn([choir, choir]);
+      expect(await mentionsSeenBy(member, homeId)).toHaveLength(1);
+
+      await as(creator).call("DELETE", `/api/groups/${homeId}/posts/${postId}`);
+      const res = await as(member).call("GET", `/api/groups/${homeId}/posts`);
+      const post = res.body.posts.find((p: { id: string }) => p.id === postId);
+      expect(post?.groupMentions ?? []).toEqual([]);
+    });
+  });
+
   describe("live updates", () => {
     async function joined(): Promise<string> {
       const groupId = await createGroup(creator, "PUBLIC");

@@ -1,8 +1,10 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { screen } from "@testing-library/react";
+import { fireEvent, screen } from "@testing-library/react";
+import { Route, Routes } from "react-router";
 import userEvent from "@testing-library/user-event";
 import type { GroupSummaryDto, MeDto } from "@shared";
 import { Groups } from "../src/pages/Groups";
+import { Toaster } from "../src/components/ui";
 import { renderWithProviders } from "./utils";
 
 const apiMock = vi.fn();
@@ -188,6 +190,63 @@ describe("Groups", () => {
       await openCreate();
       await screen.findByRole("textbox", { name: "Title" });
       expect(screen.queryByRole("checkbox", { name: /Parish wide/ })).not.toBeInTheDocument();
+    });
+  });
+
+  describe("holding a group's name", () => {
+    function renderList() {
+      renderWithProviders(
+        <>
+          <Routes>
+            <Route path="/groups" element={<Groups />} />
+            <Route path="/groups/:id" element={<p>Group page</p>} />
+          </Routes>
+          <Toaster />
+        </>,
+        { initialEntries: ["/groups"] }
+      );
+    }
+
+    it("copies the group's link and says so, without opening the group", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+      renderList();
+      const title = await screen.findByRole("heading", { name: "Youth Group" });
+
+      fireEvent.pointerDown(title, { pointerType: "touch", clientX: 5, clientY: 5 });
+      expect(await screen.findByText("Link copied")).toBeInTheDocument();
+      expect(writeText).toHaveBeenCalledWith(`${window.location.origin}/groups/g1`);
+
+      // The lift that ends the hold is not also a tap on the group.
+      fireEvent.pointerUp(title, { pointerType: "touch" });
+      fireEvent.click(title);
+      expect(screen.queryByText("Group page")).not.toBeInTheDocument();
+    });
+
+    it("still opens the group on a quick tap", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+      renderList();
+      const title = await screen.findByRole("heading", { name: "Youth Group" });
+
+      fireEvent.pointerDown(title, { pointerType: "touch", clientX: 5, clientY: 5 });
+      fireEvent.pointerUp(title, { pointerType: "touch" });
+      fireEvent.click(title);
+      expect(await screen.findByText("Group page")).toBeInTheDocument();
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(writeText).not.toHaveBeenCalled();
+    });
+
+    it("does not copy when the finger moves off into a scroll", async () => {
+      const writeText = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, "clipboard", { value: { writeText }, configurable: true });
+      renderList();
+      const title = await screen.findByRole("heading", { name: "Youth Group" });
+
+      fireEvent.pointerDown(title, { pointerType: "touch", clientX: 5, clientY: 5 });
+      fireEvent.pointerMove(title, { pointerType: "touch", clientX: 5, clientY: 40 });
+      await new Promise((resolve) => setTimeout(resolve, 600));
+      expect(writeText).not.toHaveBeenCalled();
     });
   });
 });

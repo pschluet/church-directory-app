@@ -1,4 +1,12 @@
-import { isSafeHref, parseBody, splitLinks, type Inline, type ListBlock } from "./rich-text";
+import {
+  groupMentionText,
+  isSafeHref,
+  parseBody,
+  splitLinks,
+  type GroupLabel,
+  type Inline,
+  type ListBlock,
+} from "./rich-text";
 
 /**
  * What a notification email shows of a post, as HTML and as plain text.
@@ -47,6 +55,11 @@ export interface EmailContent {
   attachments: EmailAttachments;
   /** The body was longer than the email carries; the rest is in the app. */
   truncated: boolean;
+  /**
+   * The names of the groups the body # mentions that this recipient may see,
+   * by group id. Any other mention reads "#secret group".
+   */
+  groupLabels?: Record<string, string>;
 }
 
 const INK = "#333333";
@@ -84,11 +97,14 @@ function linkifyHtml(text: string): string {
  * Inline nodes as HTML. `inLink` is the same guard GroupDetail's renderer has:
  * a bare address inside a link's own text must not become a second, nested link.
  */
-function inlineHtml(nodes: Inline[], inLink = false): string {
+function inlineHtml(nodes: Inline[], groupLabel?: GroupLabel, inLink = false): string {
   return nodes
     .map((node) => {
       if (node.kind === "text") return inLink ? escapeHtml(node.text) : linkifyHtml(node.text);
-      const inner = inlineHtml(node.children, inLink || node.kind === "link");
+      if (node.kind === "groupMention") {
+        return `<strong style="color:${ACCENT};">${escapeHtml(groupMentionText(node.groupId, groupLabel))}</strong>`;
+      }
+      const inner = inlineHtml(node.children, groupLabel, inLink || node.kind === "link");
       switch (node.kind) {
         case "bold":
           return `<strong>${inner}</strong>`;
@@ -108,20 +124,20 @@ function inlineHtml(nodes: Inline[], inLink = false): string {
     .join("");
 }
 
-function listHtml(list: ListBlock): string {
+function listHtml(list: ListBlock, groupLabel?: GroupLabel): string {
   const tag = list.ordered ? "ol" : "ul";
   const start = list.ordered && list.start !== 1 ? ` start="${list.start}"` : "";
   const items = list.items
     .map(
       (item) =>
-        `<li style="margin:0 0 4px;">${item.lines.map((line) => inlineHtml(line)).join("<br>")}${item.children.map(listHtml).join("")}</li>`
+        `<li style="margin:0 0 4px;">${item.lines.map((line) => inlineHtml(line, groupLabel)).join("<br>")}${item.children.map((child) => listHtml(child, groupLabel)).join("")}</li>`
     )
     .join("");
   return `<${tag}${start} style="margin:4px 0;padding-left:24px;">${items}</${tag}>`;
 }
 
 /** A message or prayer request as HTML: paragraphs, lists, formatting, links. */
-export function bodyHtml(body: string, format: "rich" | "plain"): string {
+export function bodyHtml(body: string, format: "rich" | "plain", groupLabel?: GroupLabel): string {
   if (format === "plain") return linkifyHtml(body).replace(/\r?\n/g, "<br>");
 
   // Consecutive lines are one paragraph with line breaks, the way the app
@@ -135,11 +151,11 @@ export function bodyHtml(body: string, format: "rich" | "plain"): string {
   for (const block of parseBody(body)) {
     if (block.kind === "list") {
       flush();
-      out.push(listHtml(block));
+      out.push(listHtml(block, groupLabel));
     } else if (block.content.length === 0) {
       flush();
     } else {
-      lines.push(inlineHtml(block.content));
+      lines.push(inlineHtml(block.content, groupLabel));
     }
   }
   flush();
@@ -155,40 +171,50 @@ export function bodyHtml(body: string, format: "rich" | "plain"): string {
  * the address in brackets -- the plain-text part has no other way to say where
  * a link goes. A link whose words *are* the address is said once.
  */
-function inlineText(nodes: Inline[]): string {
+function inlineText(nodes: Inline[], groupLabel?: GroupLabel): string {
   return nodes
     .map((node) => {
       if (node.kind === "text") return node.text;
-      const inner = inlineText(node.children);
+      if (node.kind === "groupMention") return groupMentionText(node.groupId, groupLabel);
+      const inner = inlineText(node.children, groupLabel);
       if (node.kind !== "link") return inner;
       return inner.trim() === node.href ? node.href : `${inner} (${node.href})`;
     })
     .join("");
 }
 
-function listText(list: ListBlock, depth: number): string[] {
+function listText(list: ListBlock, depth: number, groupLabel?: GroupLabel): string[] {
   return list.items.flatMap((item, k) => {
     const marker = list.ordered ? `${list.start + k}.` : "•";
     const pad = "  ".repeat(depth);
     const [head = [], ...rest] = item.lines;
     return [
-      `${pad}${marker} ${inlineText(head)}`,
-      ...rest.map((l) => `${pad}  ${inlineText(l)}`),
-      ...item.children.flatMap((child) => listText(child, depth + 1)),
+      `${pad}${marker} ${inlineText(head, groupLabel)}`,
+      ...rest.map((l) => `${pad}  ${inlineText(l, groupLabel)}`),
+      ...item.children.flatMap((child) => listText(child, depth + 1, groupLabel)),
     ];
   });
 }
 
-export function bodyText(body: string, format: "rich" | "plain"): string {
+export function bodyText(body: string, format: "rich" | "plain", groupLabel?: GroupLabel): string {
   if (format === "plain") return body;
   return parseBody(body)
-    .flatMap((block) => (block.kind === "line" ? [inlineText(block.content)] : listText(block, 0)))
+    .flatMap((block) =>
+      block.kind === "line"
+        ? [inlineText(block.content, groupLabel)]
+        : listText(block, 0, groupLabel)
+    )
     .join("\n");
 }
 
 // ---------------------------------------------------------------------------
 // The whole item's content
 // ---------------------------------------------------------------------------
+
+function labelsOf(content: EmailContent): GroupLabel {
+  const labels = content.groupLabels ?? {};
+  return (groupId) => labels[groupId];
+}
 
 function pluralPhotos(n: number): string {
   return `${n} photo${n === 1 ? "" : "s"}`;
@@ -237,7 +263,7 @@ export function contentHtml(content: EmailContent): string {
 
   if (content.body) {
     parts.push(
-      `<div style="margin:12px 0 0;font-size:15px;line-height:1.5;color:${INK};">${bodyHtml(content.body, content.bodyFormat)}</div>`
+      `<div style="margin:12px 0 0;font-size:15px;line-height:1.5;color:${INK};">${bodyHtml(content.body, content.bodyFormat, labelsOf(content))}</div>`
     );
   }
 
@@ -285,7 +311,7 @@ export function contentText(content: EmailContent): string[] {
     lines.push("", `Poll: ${p.question} (${p.allowsMultiple ? "pick one or more" : "pick one"})`);
     for (const option of p.options) lines.push(`  ${p.allowsMultiple ? "[ ]" : "( )"} ${option}`);
   }
-  if (content.body) lines.push("", bodyText(content.body, content.bodyFormat));
+  if (content.body) lines.push("", bodyText(content.body, content.bodyFormat, labelsOf(content)));
   if (content.truncated) lines.push("… Read the rest in the app.");
   const { images, files } = content.attachments;
   if (images > 0) lines.push("", `[${pluralPhotos(images)} -- open the app to see them]`);

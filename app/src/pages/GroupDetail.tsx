@@ -32,6 +32,7 @@ import {
   type GroupFileDto,
   type GroupJoinRequestDto,
   type GroupMemberDto,
+  type GroupMentionDto,
   type GroupMemberRole,
   type GroupNotificationPref,
   type GroupPostDto,
@@ -66,6 +67,8 @@ import { useInfiniteScroll } from "../components/useInfiniteScroll";
 import { DocumentViewer } from "../components/DocumentViewer";
 import { PhotoLightbox } from "../components/PhotoLightbox";
 import { PersonPicker, type PickedPerson } from "../components/PersonPicker";
+import { useMentionableGroups } from "../components/useGroupsList";
+import { copyWithToast } from "../lib/clipboard";
 import { useGroupAttachmentPicker } from "../components/useGroupAttachmentPicker";
 import {
   AddReactionButton,
@@ -80,14 +83,21 @@ import { downloadEventFlyer } from "../lib/eventFlyer";
 import { downloadEventIcs } from "../lib/ics";
 import { EventQrModal } from "../components/EventQrModal";
 import { PollBlock, PollComposerModal } from "../components/GroupPoll";
-import { ShareButtons } from "../components/ShareButtons";
+import { CopyLinkButton, ShareButtons } from "../components/ShareButtons";
 import {
   SignupBlock,
   SignupComposerModal,
   SignupIcon,
   useSignupShare,
 } from "../components/GroupSignup";
-import { parseBody, toPlainText, type Inline, type ListBlock } from "../lib/richText";
+import {
+  groupMentionText,
+  parseBody,
+  toPlainText,
+  type GroupLabel,
+  type Inline,
+  type ListBlock,
+} from "../lib/richText";
 import type { Editor } from "@tiptap/react";
 import {
   Badge,
@@ -102,7 +112,6 @@ import {
   Select,
   Spinner,
   inputClass,
-  showToast,
   useNow,
   usePageScrollLock,
 } from "../components/ui";
@@ -111,6 +120,7 @@ import {
   feedState,
   flashMessage,
   groupTabPath,
+  groupUrl,
   messagePath,
   signupDetailPath,
   tabFromPathname,
@@ -1854,14 +1864,18 @@ export function ChatRow({
     actions.push({
       label: "Copy text",
       drawerOnly: true,
-      onSelect: () => copyToClipboard(toPlainText(post.body ?? ""), "Text copied"),
+      onSelect: () =>
+        copyWithToast(
+          toPlainText(post.body ?? "", groupLabelOf(post.groupMentions)),
+          "Text copied"
+        ),
     });
   // A link to this message, to paste anywhere. Not for an event or a sign-up:
   // its own "Copy link" below is its share link, which is the one worth sharing.
   if (!isDeleted && post.kind !== "EVENT" && post.kind !== "SIGNUP")
     actions.push({
       label: "Copy link",
-      onSelect: () => copyToClipboard(messageUrl(groupId, post, parentKind), "Link copied"),
+      onSelect: () => copyWithToast(messageUrl(groupId, post, parentKind), "Link copied"),
     });
   // Saving and advertising the event or sign-up. Not for a cancelled one: there is nothing
   // to invite anybody to, and its public page already says it was cancelled.
@@ -2098,6 +2112,7 @@ export function ChatRow({
                   text={post.body}
                   mentions={post.mentions}
                   mentionsEveryone={post.mentionsEveryone}
+                  groupMentions={post.groupMentions}
                 />
                 {!header && post.editedAt && (
                   <span className="text-xs text-ink-muted"> (edited)</span>
@@ -2182,7 +2197,7 @@ export function ChatRow({
           {/* Which message this is for: its author and the start of what it says. */}
           <p className="mb-2 line-clamp-2 break-words rounded-md border-l-4 border-accent bg-accent-light/30 px-3 py-2 text-sm text-ink">
             <span className="font-bold">{post.authorName}</span>
-            {post.body ? `: ${toPlainText(post.body)}` : ""}
+            {post.body ? `: ${toPlainText(post.body, groupLabelOf(post.groupMentions))}` : ""}
           </p>
           {canReactHere && (
             <div className="mb-2 flex items-center justify-between gap-1">
@@ -2266,21 +2281,6 @@ export function ChatRow({
 /** The full address of a link to one message, for the clipboard. */
 function messageUrl(groupId: string, post: GroupPostDto, parentKind: GroupPostKind | null): string {
   return new URL(messagePath(groupId, post, parentKind), window.location.origin).href;
-}
-
-/**
- * Copies, and says so: the menu the action was in has already closed, so
- * without the toast nothing on screen would show that anything happened.
- */
-function copyToClipboard(text: string, done: string): void {
-  if (!navigator.clipboard) {
-    showToast("Copying is not available here");
-    return;
-  }
-  navigator.clipboard.writeText(text).then(
-    () => showToast(done),
-    () => showToast("Could not copy")
-  );
 }
 
 function AttachmentStrip({
@@ -2431,6 +2431,35 @@ export function MentionText({
   return <>{parts}</>;
 }
 
+/** Names the groups a post # mentions, for its plain-text form or the editor. */
+function groupLabelOf(mentions: GroupMentionDto[]): GroupLabel {
+  return (groupId) => mentions.find((m) => m.groupId === groupId)?.title;
+}
+
+/**
+ * A # mention of a group, in gold like an @ mention: a link to the group when
+ * the reader may open it, its name alone once the group has been deleted, and
+ * "#secret group" when the reader may not know which group it is. The server
+ * decides which (see api/src/services/group-mentions.ts).
+ */
+function GroupMentionChip({
+  groupId,
+  mention,
+}: {
+  groupId: string;
+  mention: GroupMentionDto | undefined;
+}) {
+  const label = groupMentionText(groupId, () => mention?.title);
+  if (mention?.linkable && mention.title) {
+    return (
+      <Link to={`/groups/${groupId}`} className="font-bold text-accent hover:underline">
+        {label}
+      </Link>
+    );
+  }
+  return <span className="font-bold text-accent">{label}</span>;
+}
+
 /**
  * A message's body with its formatting (lib/richText.ts) -- bold, italics,
  * links, lists -- and, in its text, @ mentions picked out by `MentionText`.
@@ -2440,10 +2469,12 @@ function RichText({
   text,
   mentions,
   mentionsEveryone,
+  groupMentions = [],
 }: {
   text: string;
   mentions: { appUserId: string; personId: string; name: string }[];
   mentionsEveryone?: boolean;
+  groupMentions?: GroupMentionDto[];
 }) {
   // `inLink`: inside a link's text, so a bare address there must not become a
   // second, nested link.
@@ -2457,6 +2488,15 @@ function RichText({
             mentions={mentions}
             mentionsEveryone={mentionsEveryone}
             linkify={!inLink}
+          />
+        );
+      }
+      if (node.kind === "groupMention") {
+        return (
+          <GroupMentionChip
+            key={k}
+            groupId={node.groupId}
+            mention={groupMentions.find((m) => m.groupId === node.groupId)}
           />
         );
       }
@@ -3102,6 +3142,13 @@ export function ChatComposer({
   const [error, setError] = useState<string | null>(null);
   const picker = useGroupAttachmentPicker();
   const mentionable = useMentionable(members);
+  const mentionableGroups = useMentionableGroups();
+  // The names of the groups a message being edited # mentions, for the box.
+  const editingGroupMentions = editing?.groupMentions;
+  const editingLabel = useMemo(
+    () => (editingGroupMentions ? groupLabelOf(editingGroupMentions) : undefined),
+    [editingGroupMentions]
+  );
   // While editing: ids of the message's existing attachments taken off it so far.
   const [removedIds, setRemovedIds] = useState<string[]>([]);
 
@@ -3394,6 +3441,8 @@ export function ChatComposer({
               value={body}
               onChange={onBodyChange}
               members={mentionable}
+              groups={mentionableGroups}
+              groupLabel={editingLabel}
               placeholder={placeholder}
               autoFocus={autoFocus}
               focusToken={editingId}
@@ -4549,9 +4598,28 @@ function MembersModal({
   const filtered = group.members.filter((m) => m.name.toLowerCase().includes(search.toLowerCase()));
   const admins = group.members.filter((m) => m.role === "ADMIN");
 
+  // "Copied" for a moment after, as on an event's or a sign-up's Copy link.
+  const [copied, setCopied] = useState(false);
+  useEffect(() => {
+    if (!copied) return;
+    const timer = window.setTimeout(() => setCopied(false), 2000);
+    return () => window.clearTimeout(timer);
+  }, [copied]);
+
   return (
     <Modal title={group.title} onClose={onClose} wide={group.canModerate}>
       <div className="space-y-6">
+        {/* The group's own address, to paste anywhere: whoever opens it sees
+            what their own access allows. */}
+        <div className="-mx-2">
+          <CopyLinkButton
+            copied={copied}
+            onClick={() => {
+              void navigator.clipboard?.writeText(groupUrl(groupId)).then(() => setCopied(true));
+            }}
+          />
+        </div>
+
         {/* Not on the group's own page: it only took room from the messages. */}
         {group.description && (
           <div>

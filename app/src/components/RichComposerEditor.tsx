@@ -4,6 +4,7 @@ import {
   Extension,
   InputRule,
   markInputRule,
+  Node,
   markPasteRule,
   useEditor,
   useEditorState,
@@ -16,8 +17,20 @@ import Strike from "@tiptap/extension-strike";
 import Underline from "@tiptap/extension-underline";
 import { Plugin, PluginKey } from "@tiptap/pm/state";
 import Suggestion, { exitSuggestion, type SuggestionProps } from "@tiptap/suggestion";
-import { GROUP_MENTION_EVERYONE, type GroupMemberDto } from "@shared";
-import { bodyToDoc, docToBody, isSafeHref, type DocNode } from "../lib/richText";
+import {
+  GROUP_MENTION_EVERYONE,
+  groupVisibilityLabel,
+  type GroupMemberDto,
+  type GroupVisibility,
+} from "@shared";
+import {
+  bodyToDoc,
+  docToBody,
+  groupMentionText,
+  isSafeHref,
+  type DocNode,
+  type GroupLabel,
+} from "../lib/richText";
 import { Button, Field, inputClass, Modal } from "./ui";
 
 /**
@@ -34,16 +47,77 @@ function isTouchDevice(): boolean {
   return window.matchMedia?.("(hover: none) and (pointer: coarse)").matches ?? false;
 }
 
-/** One row in the @ mention list: a member, or the whole group. */
-type MentionOption = { kind: "everyone" } | { kind: "member"; member: GroupMemberDto };
+/** A group the # list can offer. */
+export interface MentionableGroup {
+  id: string;
+  title: string;
+  visibility: GroupVisibility;
+}
+
+/** One row in the mention list: a member or the whole group after @, a group after #. */
+type MentionOption =
+  | { kind: "everyone" }
+  | { kind: "member"; member: GroupMemberDto }
+  | { kind: "group"; group: MentionableGroup };
 
 type MentionState = {
+  /** Which list is open: people (@) or groups (#). */
+  trigger: "@" | "#";
   query: string;
   range: { from: number; to: number };
   rect: DOMRect | null;
 };
 
 const mentionKey = new PluginKey("mention");
+const groupMentionKey = new PluginKey("groupMention");
+
+function optionKey(option: MentionOption): string {
+  if (option.kind === "everyone") return "@everyone";
+  if (option.kind === "member") return option.member.appUserId;
+  return `#${option.group.id}`;
+}
+
+/**
+ * A # mention of a group in the box: one gold "#Name" that is deleted, moved
+ * and selected as a whole. Saved as the group's id, `<#id>` (see
+ * lib/richText.ts) -- the name is only for show, so renaming the group later
+ * renames every mention of it.
+ */
+const GroupMention = Node.create({
+  name: "groupMention",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: false,
+  addAttributes() {
+    return { groupId: { default: null }, label: { default: null } };
+  },
+  parseHTML() {
+    return [
+      {
+        tag: "span[data-group-mention]",
+        getAttrs: (element) => ({
+          groupId: element.getAttribute("data-group-mention"),
+          label: element.getAttribute("data-label") || null,
+        }),
+      },
+    ];
+  },
+  renderHTML({ node }) {
+    return [
+      "span",
+      {
+        "data-group-mention": node.attrs.groupId,
+        "data-label": node.attrs.label ?? "",
+        class: "font-bold text-accent",
+      },
+      groupMentionText(node.attrs.groupId, () => node.attrs.label),
+    ];
+  },
+  renderText({ node }) {
+    return groupMentionText(node.attrs.groupId, () => node.attrs.label);
+  },
+});
 
 /*
  * Typing the markers formats the text in place, so the box never shows raw
@@ -123,6 +197,8 @@ export default function RichComposerEditor({
   value,
   onChange,
   members,
+  groups = [],
+  groupLabel,
   placeholder,
   ariaLabel,
   maxLength,
@@ -136,6 +212,10 @@ export default function RichComposerEditor({
   value: string;
   onChange: (value: string) => void;
   members: GroupMemberDto[];
+  /** The groups the # list offers. */
+  groups?: MentionableGroup[];
+  /** Names the groups a body loaded into the box # mentions (a message being edited). */
+  groupLabel?: GroupLabel;
   placeholder: string;
   ariaLabel: string;
   /** The longest body allowed; an edit that would pass it is refused. */
@@ -156,29 +236,57 @@ export default function RichComposerEditor({
   const lastEmitted = useRef(value);
 
   // The plugins are made once; these keep their callbacks on the latest render.
-  const latest = useRef({ onChange, onSubmit, onFocus, maxLength });
-  latest.current = { onChange, onSubmit, onFocus, maxLength };
+  const latest = useRef({ onChange, onSubmit, onFocus, maxLength, groupLabel, groups });
+  latest.current = { onChange, onSubmit, onFocus, maxLength, groupLabel, groups };
+  /** A group's name for the box: what the caller knows, else the # list's own. */
+  const labelFor: GroupLabel = (id) =>
+    latest.current.groupLabel?.(id) ?? latest.current.groups.find((g) => g.id === id)?.title;
 
   // "@everyone" leads the list while what's typed could still become it, and
   // only when there is someone besides the writer for it to reach.
+  const groupQuery = mention?.query.toLowerCase() ?? "";
   const matches: MentionOption[] =
     mention === null
       ? []
-      : [
-          ...(members.length > 0 && GROUP_MENTION_EVERYONE.startsWith(mention.query.toLowerCase())
-            ? [{ kind: "everyone" } as const]
-            : []),
-          ...members
-            .filter((m) => m.name.toLowerCase().includes(mention.query.toLowerCase()))
+      : mention.trigger === "#"
+        ? groups
+            .filter((g) => g.title.toLowerCase().includes(groupQuery))
             .slice(0, 6)
-            .map((member) => ({ kind: "member", member }) as const),
-        ];
+            .map((group) => ({ kind: "group", group }) as const)
+        : [
+            ...(members.length > 0 && GROUP_MENTION_EVERYONE.startsWith(mention.query.toLowerCase())
+              ? [{ kind: "everyone" } as const]
+              : []),
+            ...members
+              .filter((m) => m.name.toLowerCase().includes(mention.query.toLowerCase()))
+              .slice(0, 6)
+              .map((member) => ({ kind: "member", member }) as const),
+          ];
   const mentionRef = useRef({ mention, matches, highlighted });
   mentionRef.current = { mention, matches, highlighted };
 
   function pick(editor: Editor, option: MentionOption): void {
     const current = mentionRef.current.mention;
     if (!current) return;
+    if (option.kind === "group") {
+      editor
+        .chain()
+        .focus()
+        .insertContentAt(current.range, [
+          {
+            type: "groupMention",
+            attrs: { groupId: option.group.id, label: option.group.title },
+          },
+          { type: "text", text: " " },
+        ])
+        .run();
+      // Chrome leaves its own caret between the chip and the space after it,
+      // so what is typed next would butt up against the name. The same fix as
+      // Tiptap's own mention extension: move the browser's caret to the end.
+      editor.view.dom.ownerDocument.defaultView?.getSelection()?.collapseToEnd();
+      setMention(null);
+      return;
+    }
     const name = option.kind === "everyone" ? GROUP_MENTION_EVERYONE : option.member.name;
     // Literal text, not a mention node: the body says "@Name" and the mention
     // is read back out of it (see GroupDetail's @ mentions).
@@ -195,7 +303,7 @@ export default function RichComposerEditor({
 
   const editor = useEditor({
     autofocus: autoFocus ? "end" : false,
-    content: bodyToDoc(value),
+    content: bodyToDoc(value, labelFor),
     extensions: [
       StarterKit.configure({
         // Its empty line after a list stays behind when the list is undone,
@@ -217,6 +325,7 @@ export default function RichComposerEditor({
       MessageStrike,
       MessageUnderline,
       LinkShortcut,
+      GroupMention,
       Extension.create({
         name: "messageKeys",
         // Ahead of the lists' own Enter, so Enter on a desktop sends from a list too.
@@ -254,15 +363,16 @@ export default function RichComposerEditor({
         // The open list owns the arrows and Enter, so it goes first of all.
         priority: 200,
         addProseMirrorPlugins() {
-          return [
+          return (["@", "#"] as const).map((trigger) =>
             Suggestion({
               editor: this.editor,
-              pluginKey: mentionKey,
-              char: "@",
+              pluginKey: trigger === "@" ? mentionKey : groupMentionKey,
+              char: trigger,
               items: () => [],
               render: () => {
                 const show = (props: SuggestionProps) => {
                   setMention({
+                    trigger,
                     query: props.query,
                     range: props.range,
                     rect: props.clientRect?.() ?? null,
@@ -296,15 +406,15 @@ export default function RichComposerEditor({
                     if (event.key === "Escape") {
                       // Closes the list only; not whatever surrounds this box (a reply, an edit).
                       event.stopPropagation();
-                      exitSuggestion(view, mentionKey);
+                      exitSuggestion(view, trigger === "@" ? mentionKey : groupMentionKey);
                       return true;
                     }
                     return false;
                   },
                 };
               },
-            }),
-          ];
+            })
+          );
         },
       }),
     ],
@@ -320,7 +430,7 @@ export default function RichComposerEditor({
         const data = event.clipboardData;
         const text = data?.getData("text/plain");
         if (!text || data?.getData("text/html")) return false;
-        const content = bodyToDoc(text).content ?? [];
+        const content = bodyToDoc(text, labelFor).content ?? [];
         if (content.length === 0) return false;
         // A single line goes into the line where the caret is, not a new one.
         const only = content.length === 1 ? content[0] : null;
@@ -369,7 +479,7 @@ export default function RichComposerEditor({
   useEffect(() => {
     if (!editor || value === lastEmitted.current) return;
     lastEmitted.current = value;
-    editor.commands.setContent(bodyToDoc(value), { emitUpdate: false });
+    editor.commands.setContent(bodyToDoc(value, labelFor), { emitUpdate: false });
     // Typing carries on from the end of it -- a message opened for editing
     // arrives a render after the focus asked for it, so that focus's caret is gone.
     editor.commands.setTextSelection(editor.state.doc.content.size);
@@ -415,7 +525,7 @@ export default function RichComposerEditor({
           }}
         >
           {matches.map((option, index) => (
-            <li key={option.kind === "everyone" ? "@everyone" : option.member.appUserId}>
+            <li key={optionKey(option)}>
               <button
                 type="button"
                 onMouseDown={(event) => {
@@ -432,6 +542,15 @@ export default function RichComposerEditor({
                     <span className="block text-xs text-ink-muted">
                       Notify everyone in this group
                     </span>
+                  </>
+                ) : option.kind === "group" ? (
+                  <>
+                    #{option.group.title}
+                    {option.group.visibility !== "PUBLIC" && (
+                      <span className="block text-xs text-ink-muted">
+                        {groupVisibilityLabel(option.group.visibility)}
+                      </span>
+                    )}
                   </>
                 ) : (
                   option.member.name

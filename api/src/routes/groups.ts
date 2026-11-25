@@ -540,7 +540,20 @@ routes.delete("/:id", async (c) => {
     [id]
   );
 
-  await db.query("delete from groups where id = $1", [id]);
+  await db.transaction(async (tx) => {
+    // What a message that # mentions this group still needs once it is gone:
+    // its name, and who could see it. See V40__group_mentions.sql.
+    await tx.query(
+      `insert into deleted_groups (id, organization_id, title, visibility, member_app_user_ids)
+       select g.id, g.organization_id, g.title, g.visibility,
+              array(select gm.app_user_id from group_members gm where gm.group_id = g.id)
+         from groups g
+        where g.id = $1
+       on conflict (id) do nothing`,
+      [id]
+    );
+    await tx.query("delete from groups where id = $1", [id]);
+  });
   await audit(db, caller, {
     action: "group.delete",
     entityType: "group",
