@@ -48,6 +48,15 @@ const COMPONENTS = [
   { types: ["country"], longText: "United States", shortText: "US" },
 ];
 
+/**
+ * Types into the box the way a person would. The field asks Google nothing about
+ * a value it was handed -- that is the saved address, not a search -- so every
+ * test that wants suggestions has to type first.
+ */
+async function typeIn(text: string): Promise<void> {
+  await userEvent.type(screen.getByRole("combobox"), text);
+}
+
 function stubPlaces(): void {
   fetchSuggestions = vi.fn(async () => ({
     suggestions: [
@@ -107,11 +116,22 @@ describe("AddressAutocomplete", () => {
     vi.restoreAllMocks();
   });
 
-  function setup(onPick = vi.fn(), onChange = vi.fn()) {
+  async function setup(onPick = vi.fn(), onChange = vi.fn(), text = "4129 W New") {
     function Harness() {
-      return <AddressAutocomplete value="4129 W New" onChange={onChange} onPick={onPick} />;
+      const [value, setValue] = useState("");
+      return (
+        <AddressAutocomplete
+          value={value}
+          onChange={(next) => {
+            setValue(next);
+            onChange(next);
+          }}
+          onPick={onPick}
+        />
+      );
     }
     render(<Harness />);
+    await typeIn(text);
     return { onPick, onChange };
   }
 
@@ -125,7 +145,7 @@ describe("AddressAutocomplete", () => {
   });
 
   it("asks Google once the field has enough to go on", async () => {
-    setup();
+    await setup();
     await waitFor(() => expect(fetchSuggestions).toHaveBeenCalled());
     expect(fetchSuggestions.mock.calls[0]![0]).toMatchObject({ input: "4129 W New" });
   });
@@ -133,7 +153,7 @@ describe("AddressAutocomplete", () => {
   it("asks for addresses rather than businesses", async () => {
     // Nobody lives at a dry cleaner, and a list of shops is noise in a field
     // asking where somebody lives.
-    setup();
+    await setup();
     await waitFor(() => expect(fetchSuggestions).toHaveBeenCalled());
     expect(fetchSuggestions.mock.calls[0]![0].includedPrimaryTypes).toEqual([
       "street_address",
@@ -143,20 +163,38 @@ describe("AddressAutocomplete", () => {
   });
 
   it("says nothing to Google for a query too short to mean anything", async () => {
-    render(<AddressAutocomplete value="41" onChange={() => {}} onPick={() => {}} />);
+    await setup(vi.fn(), vi.fn(), "41");
     await new Promise((resolve) => setTimeout(resolve, 350));
     expect(fetchSuggestions).not.toHaveBeenCalled();
   });
 
+  it("leaves a saved address alone until somebody types in it", async () => {
+    // Settings opens on the church's saved street line. Asking Google about it
+    // dropped the list open over the field on page load, and opened a session
+    // nothing would close -- billed per request.
+    function Prefilled() {
+      const [value, setValue] = useState("4129 W Newport Ave");
+      return <AddressAutocomplete value={value} onChange={setValue} onPick={() => {}} />;
+    }
+    render(<Prefilled />);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(fetchSuggestions).not.toHaveBeenCalled();
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox")).toHaveAttribute("aria-expanded", "false");
+
+    await typeIn("{Backspace}");
+    expect(await screen.findByRole("option", { name: /4129 W Newport Ave/ })).toBeInTheDocument();
+  });
+
   it("offers what Google returned", async () => {
-    setup();
+    await setup();
     expect(
       await screen.findByRole("option", { name: /4129 W Newport Ave, Chicago/ })
     ).toBeInTheDocument();
   });
 
   it("fills every address field from the suggestion that was picked", async () => {
-    const { onPick } = setup();
+    const { onPick } = await setup();
     const option = await screen.findByRole("option", { name: /4129 W Newport Ave/ });
     await userEvent.click(option);
 
@@ -175,7 +213,7 @@ describe("AddressAutocomplete", () => {
 
   it("shares one session token across the typing and the lookup that ends it", async () => {
     // The whole reason this feature is affordable. One token, passed to both.
-    const { onPick } = setup();
+    const { onPick } = await setup();
     const option = await screen.findByRole("option", { name: /4129 W Newport Ave/ });
     await userEvent.click(option);
     await waitFor(() => expect(onPick).toHaveBeenCalled());
@@ -187,7 +225,7 @@ describe("AddressAutocomplete", () => {
   it("asks only for Essentials-tier fields", async () => {
     // Anything from a higher tier moves the closing call to a dearer SKU for
     // data this app never displays.
-    const { onPick } = setup();
+    const { onPick } = await setup();
     await userEvent.click(await screen.findByRole("option", { name: /4129 W Newport Ave/ }));
     await waitFor(() => expect(onPick).toHaveBeenCalled());
     expect(fetchFields.mock.calls[0]![0].fields).toEqual([
@@ -199,7 +237,7 @@ describe("AddressAutocomplete", () => {
   });
 
   it("closes the session against the place that was picked", async () => {
-    const { onPick } = setup();
+    const { onPick } = await setup();
     await userEvent.click(await screen.findByRole("option", { name: /4129 W Newport Ave/ }));
     await waitFor(() => expect(onPick).toHaveBeenCalled());
     expect(placeConstructions).toEqual([{ id: "ChIJnewport" }]);
@@ -207,7 +245,7 @@ describe("AddressAutocomplete", () => {
 
   it("keeps the field usable when Google refuses", async () => {
     fetchSuggestions.mockRejectedValue(new Error("REQUEST_DENIED"));
-    setup();
+    await setup();
     await waitFor(() => expect(fetchSuggestions).toHaveBeenCalled());
     // No list, no crash, and the box still takes typing.
     expect(screen.queryByRole("option")).not.toBeInTheDocument();
@@ -216,7 +254,7 @@ describe("AddressAutocomplete", () => {
 
   it("falls back to the text Google showed when the lookup fails", async () => {
     fetchFields.mockRejectedValue(new Error("timeout"));
-    const { onPick, onChange } = setup();
+    const { onPick, onChange } = await setup();
     await userEvent.click(await screen.findByRole("option", { name: /4129 W Newport Ave/ }));
 
     await waitFor(() => expect(onChange).toHaveBeenCalled());
@@ -231,8 +269,8 @@ describe("AddressAutocomplete", () => {
         { placePrediction: { placeId: "b", text: { toString: () => "4129 B St" } } },
       ],
     });
-    setup();
-    const input = await screen.findByRole("combobox");
+    await setup();
+    const input = screen.getByRole("combobox");
     await screen.findByRole("option", { name: "4129 A St" });
 
     expect(screen.getByRole("option", { name: "4129 A St" })).toHaveAttribute(
@@ -272,7 +310,7 @@ describe("AddressAutocomplete after a pick", () => {
 
   /** A harness that behaves like PersonForm: the pick writes back to `value`. */
   function Controlled({ onPick }: { onPick: (v: string) => void }) {
-    const [value, setValue] = useState("4129 W New");
+    const [value, setValue] = useState("");
     return (
       <AddressAutocomplete
         value={value}
@@ -288,6 +326,7 @@ describe("AddressAutocomplete after a pick", () => {
   it("does not reopen the list over the address it just filled in", async () => {
     const onPick = vi.fn();
     render(<Controlled onPick={onPick} />);
+    await typeIn("4129 W New");
 
     await userEvent.click(await screen.findByRole("option", { name: /4129 W Newport Ave/ }));
     await waitFor(() => expect(onPick).toHaveBeenCalledWith("4129 West Newport Avenue"));
@@ -300,6 +339,7 @@ describe("AddressAutocomplete after a pick", () => {
   it("asks Google nothing more, so the closed session stays closed", async () => {
     const onPick = vi.fn();
     render(<Controlled onPick={onPick} />);
+    await typeIn("4129 W New");
 
     await userEvent.click(await screen.findByRole("option", { name: /4129 W Newport Ave/ }));
     await waitFor(() => expect(onPick).toHaveBeenCalled());
@@ -315,6 +355,7 @@ describe("AddressAutocomplete after a pick", () => {
     // The guard is by value, not a flag, so it cannot get stuck shut.
     const onPick = vi.fn();
     render(<Controlled onPick={onPick} />);
+    await typeIn("4129 W New");
 
     await userEvent.click(await screen.findByRole("option", { name: /4129 W Newport Ave/ }));
     await waitFor(() => expect(onPick).toHaveBeenCalled());
@@ -343,15 +384,30 @@ describe("LocationAutocomplete", () => {
     expect(screen.queryByRole("combobox")).not.toBeInTheDocument();
   });
 
+  function Location({ onChange = () => {} }: { onChange?: (value: string) => void }) {
+    const [value, setValue] = useState("");
+    return (
+      <LocationAutocomplete
+        value={value}
+        onChange={(next) => {
+          setValue(next);
+          onChange(next);
+        }}
+      />
+    );
+  }
+
   it("suggests venues, not just street addresses", async () => {
-    render(<LocationAutocomplete value="St. Mary" onChange={() => {}} />);
+    render(<Location />);
+    await typeIn("St. Mary");
     await waitFor(() => expect(fetchSuggestions).toHaveBeenCalled());
     expect(fetchSuggestions.mock.calls[0]![0]).not.toHaveProperty("includedPrimaryTypes");
   });
 
   it("keeps the text Google showed, and closes the session with Essentials fields only", async () => {
     const onChange = vi.fn();
-    render(<LocationAutocomplete value="4129 W New" onChange={onChange} />);
+    render(<Location onChange={onChange} />);
+    await typeIn("4129 W New");
     await userEvent.click(await screen.findByRole("option", { name: /4129 W Newport Ave/ }));
 
     expect(onChange).toHaveBeenCalledWith("4129 W Newport Ave, Chicago, IL 60641, USA");

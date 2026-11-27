@@ -139,10 +139,28 @@ function PlaceCombobox({
    */
   const pickedValue = useRef<string | null>(null);
 
+  /**
+   * Whether anybody has typed in the box yet.
+   *
+   * A form that opens on a saved address hands this the address as `value`, and
+   * without this the effect below treated it as a query: the list dropped open
+   * over the field on page load, and the request opened a session that no pick
+   * would ever close -- billed per request. A value that arrived from the server
+   * is not a question, so nothing is asked until a keystroke. A ref, not a value
+   * comparison, so a form that fills itself in after mounting is covered too.
+   */
+  const edited = useRef(false);
+
   const query = value.trim();
 
   useEffect(() => {
     if (!places || query.length < MIN_QUERY) {
+      setSuggestions([]);
+      return;
+    }
+
+    // Nobody has typed: this is the saved address, not a search.
+    if (!edited.current) {
       setSuggestions([]);
       return;
     }
@@ -292,6 +310,7 @@ function PlaceCombobox({
         }
         onFocus={() => setOpen(true)}
         onChange={(event) => {
+          edited.current = true;
           onChange(event.target.value);
           setOpen(true);
           setActiveIndex(0);
